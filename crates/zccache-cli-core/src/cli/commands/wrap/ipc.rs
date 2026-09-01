@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::super::super::{link_retry_budget, wedge_recv_timeout};
-use super::super::util::{connect, exit_code_from_i32, slurp_stdin_if_piped, LOST_CONNECTION_MSG};
+use super::super::util::{connect, exit_code_from_i32, slurp_stdin_if_piped};
 use crate::cli::runtime::{current_daemon_instance, ensure_daemon, stop_wedged_daemon};
 
 pub(super) async fn cmd_compile(
@@ -197,14 +197,67 @@ enum RelayOutcome {
     /// The daemon completed the request without returning a compiler/tool
     /// verdict. This is intentionally not eligible for local fallback: the
     /// daemon may have already executed the tool or changed output state.
-    NoVerdict(String),
+    NoVerdict(RelayFailureDiagnostic),
+}
+
+/// Stable categories for a terminal daemon response that lacks a compiler
+/// verdict. These are wrapper failures, not compiler statuses: a compiler
+/// `255` remains a [`RelayOutcome::Verdict`] and is relayed unchanged.
+#[derive(Debug, PartialEq, Eq)]
+enum RelayFailureCause {
+    DaemonError,
+    ClosedConnection,
+    UnexpectedResponse,
+}
+
+impl RelayFailureCause {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::DaemonError => "daemon-error",
+            Self::ClosedConnection => "closed-connection",
+            Self::UnexpectedResponse => "unexpected-response",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RelayFailureDiagnostic {
+    cause: RelayFailureCause,
+    context: String,
+}
+
+impl RelayFailureDiagnostic {
+    fn write_to<W: Write>(&self, stderr: &mut W) -> std::io::Result<()> {
+        write!(
+            stderr,
+            "zccache[err][R]: daemon response failure ({}): ",
+            self.cause.as_str()
+        )?;
+        for character in self.context.chars() {
+            match character {
+                '\n' | '\r' => stderr.write_all(b" ")?,
+                _ => write!(stderr, "{character}")?,
+            }
+        }
+        writeln!(
+            stderr,
+            ". The requested tool returned no status; run 'zccache status' then retry."
+        )
+    }
 }
 
 fn report_relay_outcome(outcome: RelayOutcome) -> ExitCode {
+    report_relay_outcome_to_writer(outcome, &mut std::io::stderr())
+}
+
+fn report_relay_outcome_to_writer<W: Write>(outcome: RelayOutcome, stderr: &mut W) -> ExitCode {
     match outcome {
         RelayOutcome::Verdict(code) => code,
-        RelayOutcome::NoVerdict(message) => {
-            eprintln!("{message}");
+        RelayOutcome::NoVerdict(diagnostic) => {
+            // Preserve the wrapper's existing best-effort stderr policy: a
+            // failed diagnostic write cannot turn a known compiler status
+            // into a wrapper status, nor can it justify a retry/fallback.
+            let _ = diagnostic.write_to(stderr);
             ExitCode::FAILURE
         }
     }
@@ -839,15 +892,33 @@ fn relay_compile_response_with_color<W: Write, E: Write>(
         }) => {
             let _ = stdout.write_all(&out);
             let _ = write_relay_stderr(stderr, &err, color_unknown_warning);
+            if exit_code == 255 && err.is_empty() {
+                // A terminal result remains the tool's status. This advisory
+                // only makes the otherwise-silent shape actionable; it does
+                // not infer whether the tool, daemon, or transport produced
+                // it.
+                let _ = writeln!(
+                    stderr,
+                    "zccache[warn][R]: compile result reported exit 255 without stderr; \
+                     source is unknown. Run 'zccache status' then retry."
+                );
+            }
             RelayOutcome::Verdict(exit_code_from_i32(exit_code))
         }
         Some(crate::protocol::Response::Error { message }) => {
-            RelayOutcome::NoVerdict(format!("zccache[err][E]: daemon error: {message}"))
+            RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+                cause: RelayFailureCause::DaemonError,
+                context: message,
+            })
         }
-        None => RelayOutcome::NoVerdict(LOST_CONNECTION_MSG.to_string()),
-        Some(other) => RelayOutcome::NoVerdict(format!(
-            "zccache[err][U]: unexpected response from daemon: {other:?}"
-        )),
+        None => RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+            cause: RelayFailureCause::ClosedConnection,
+            context: "lost connection to daemon (no response)".to_string(),
+        }),
+        Some(other) => RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+            cause: RelayFailureCause::UnexpectedResponse,
+            context: format!("unexpected response from daemon: {other:?}"),
+        }),
     }
 }
 
@@ -889,12 +960,19 @@ fn relay_link_response_with_color<W: Write, E: Write>(
             RelayOutcome::Verdict(exit_code_from_i32(exit_code))
         }
         Some(crate::protocol::Response::Error { message }) => {
-            RelayOutcome::NoVerdict(format!("zccache[err][E]: daemon error: {message}"))
+            RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+                cause: RelayFailureCause::DaemonError,
+                context: message,
+            })
         }
-        None => RelayOutcome::NoVerdict(LOST_CONNECTION_MSG.to_string()),
-        Some(other) => RelayOutcome::NoVerdict(format!(
-            "zccache[err][U]: unexpected response from daemon: {other:?}"
-        )),
+        None => RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+            cause: RelayFailureCause::ClosedConnection,
+            context: "lost connection to daemon (no response)".to_string(),
+        }),
+        Some(other) => RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+            cause: RelayFailureCause::UnexpectedResponse,
+            context: format!("unexpected response from daemon: {other:?}"),
+        }),
     }
 }
 

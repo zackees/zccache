@@ -82,6 +82,75 @@ fn compile_response_relay_writes_stdout_stderr_and_exit_code() {
 }
 
 #[test]
+fn compiler_exit_255_with_stderr_preserves_compiler_stderr_without_wrapper_relabeling() {
+    let mut stdout = Vec::new();
+    let mut compiler_stderr = Vec::new();
+    let outcome = relay_compile_response(
+        Some(crate::protocol::Response::CompileResult {
+            exit_code: 255,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(b"LLVM ERROR: compiler diagnostic\n".to_vec()),
+            cached: false,
+        }),
+        &mut stdout,
+        &mut compiler_stderr,
+    );
+    let mut wrapper_stderr = Vec::new();
+
+    assert_eq!(
+        report_relay_outcome_to_writer(outcome, &mut wrapper_stderr),
+        ExitCode::from(255)
+    );
+    assert_eq!(compiler_stderr, b"LLVM ERROR: compiler diagnostic\n");
+    assert!(
+        wrapper_stderr.is_empty(),
+        "a compiler verdict is never relabeled"
+    );
+}
+
+#[test]
+fn compiler_exit_255_without_stderr_gets_one_cautious_wrapper_diagnostic() {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let outcome = relay_compile_response(
+        Some(crate::protocol::Response::CompileResult {
+            exit_code: 255,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            cached: false,
+        }),
+        &mut stdout,
+        &mut stderr,
+    );
+
+    assert_eq!(outcome, RelayOutcome::Verdict(ExitCode::from(255)));
+    assert_eq!(
+        String::from_utf8(stderr).unwrap(),
+        "zccache[warn][R]: compile result reported exit 255 without stderr; \
+         source is unknown. Run 'zccache status' then retry.\n"
+    );
+}
+
+#[test]
+fn empty_stderr_for_a_non_255_compiler_exit_is_not_diagnosed() {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let outcome = relay_compile_response(
+        Some(crate::protocol::Response::CompileResult {
+            exit_code: 1,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            cached: false,
+        }),
+        &mut stdout,
+        &mut stderr,
+    );
+
+    assert_eq!(outcome, RelayOutcome::Verdict(ExitCode::from(1)));
+    assert!(stderr.is_empty());
+}
+
+#[test]
 fn compile_response_relay_colors_only_unknown_warning_on_terminal() {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -118,11 +187,84 @@ fn daemon_error_is_a_no_verdict_failure_not_a_local_fallback_signal() {
         &mut stderr,
     );
 
-    assert!(
-        matches!(outcome, RelayOutcome::NoVerdict(message) if message.contains("cache staging failed"))
-    );
+    assert!(matches!(
+        outcome,
+        RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+            cause: RelayFailureCause::DaemonError,
+            context,
+        }) if context == "cache staging failed"
+    ));
     assert!(stdout.is_empty());
     assert!(stderr.is_empty());
+}
+
+#[test]
+fn daemon_response_failures_emit_one_actionable_diagnostic_with_cause_and_context() {
+    let cases = [
+        (
+            relay_compile_response(
+                Some(crate::protocol::Response::Error {
+                    message: "cache staging\nfailed".to_string(),
+                }),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            ),
+            "daemon-error",
+            "cache staging failed",
+        ),
+        (
+            relay_compile_response(None, &mut Vec::new(), &mut Vec::new()),
+            "closed-connection",
+            "lost connection to daemon (no response)",
+        ),
+        (
+            relay_compile_response(
+                Some(crate::protocol::Response::Pong),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            ),
+            "unexpected-response",
+            "Pong",
+        ),
+    ];
+
+    for (outcome, cause, context) in cases {
+        let mut stderr = Vec::new();
+        assert_eq!(
+            report_relay_outcome_to_writer(outcome, &mut stderr),
+            ExitCode::FAILURE,
+            "the nearest existing internal/transport failure mapping remains failure"
+        );
+        let diagnostic = String::from_utf8(stderr).unwrap();
+        assert_eq!(diagnostic.matches("zccache[err]").count(), 1);
+        assert_eq!(diagnostic.lines().count(), 1);
+        assert!(diagnostic.contains(&format!("({cause})")));
+        assert!(diagnostic.contains(context));
+        assert!(diagnostic.contains("requested tool returned no status"));
+        assert!(diagnostic.contains("zccache status"));
+    }
+}
+
+#[test]
+fn link_daemon_error_uses_the_same_response_failure_diagnostic() {
+    let outcome = relay_link_response(
+        Some(crate::protocol::Response::Error {
+            message: "archive staging failed".to_string(),
+        }),
+        &mut Vec::new(),
+        &mut Vec::new(),
+    );
+    let mut stderr = Vec::new();
+
+    assert_eq!(
+        report_relay_outcome_to_writer(outcome, &mut stderr),
+        ExitCode::FAILURE
+    );
+    assert_eq!(
+        String::from_utf8(stderr).unwrap(),
+        "zccache[err][R]: daemon response failure (daemon-error): archive staging failed. \
+         The requested tool returned no status; run 'zccache status' then retry.\n"
+    );
 }
 
 #[test]
@@ -131,7 +273,13 @@ fn missing_response_is_a_no_verdict_failure() {
     let mut stderr = Vec::new();
     let outcome = relay_compile_response(None, &mut stdout, &mut stderr);
 
-    assert!(matches!(outcome, RelayOutcome::NoVerdict(_)));
+    assert!(matches!(
+        outcome,
+        RelayOutcome::NoVerdict(RelayFailureDiagnostic {
+            cause: RelayFailureCause::ClosedConnection,
+            ..
+        })
+    ));
 }
 
 // ── Issue #666: wedge-detection helper ──────────────────────────────
@@ -363,6 +511,47 @@ async fn compile_progress_is_never_relayed_as_a_terminal_response() {
     let mut stderr = Vec::new();
     let relayed = relay_compile_response(response, &mut stdout, &mut stderr);
     assert_eq!(relayed, RelayOutcome::Verdict(exit_code_from_i32(7)));
+}
+
+#[tokio::test]
+async fn queue_progress_is_not_reported_as_the_cause_of_a_terminal_daemon_error() {
+    let mut conn = FakeConn {
+        behavior: FakeBehavior::Scripted(
+            [
+                (std::time::Duration::ZERO, progress(2, 5)),
+                (
+                    std::time::Duration::ZERO,
+                    crate::protocol::Response::Error {
+                        message: "internal staging failure".to_string(),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    };
+    let outcome = compile_recv_with_wedge_detection(
+        &mut conn,
+        TEST_BUDGET,
+        crate::protocol::wire_prost::WireFormat::BincodeV15,
+    )
+    .await;
+    let CompileRecvOutcome::Done(response) = outcome else {
+        panic!("expected the terminal daemon error after queue progress");
+    };
+    let mut stdout = Vec::new();
+    let mut compiler_stderr = Vec::new();
+    let relayed = relay_compile_response(response, &mut stdout, &mut compiler_stderr);
+    let mut wrapper_stderr = Vec::new();
+
+    assert_eq!(
+        report_relay_outcome_to_writer(relayed, &mut wrapper_stderr),
+        ExitCode::FAILURE
+    );
+    let diagnostic = String::from_utf8(wrapper_stderr).unwrap();
+    assert!(diagnostic.contains("(daemon-error)"));
+    assert!(diagnostic.contains("internal staging failure"));
+    assert!(!diagnostic.contains("queue"));
 }
 
 #[test]
