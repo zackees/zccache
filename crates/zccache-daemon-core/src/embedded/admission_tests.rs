@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 struct CountingHostPolicy {
     calls: Arc<AtomicUsize>,
+    acquires: Arc<AtomicUsize>,
 }
 
 impl HostAdmissionClassifier for CountingHostPolicy {
@@ -18,9 +19,28 @@ impl HostAdmissionClassifier for CountingHostPolicy {
         self.calls.fetch_add(1, Ordering::Relaxed);
         Ok(false)
     }
+
+    fn acquire<'a>(
+        &'a self,
+        _request: HostCompilerRequest<'a>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<HostAdmissionPermit, HostAdmissionError>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.acquires.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async { Ok(HostAdmissionPermit::default()) })
+    }
 }
 
-async fn start_service_with_policy(temp: &TempDir, calls: Arc<AtomicUsize>) -> ZccacheService {
+async fn start_service_with_policy(
+    temp: &TempDir,
+    calls: Arc<AtomicUsize>,
+    acquires: Arc<AtomicUsize>,
+) -> ZccacheService {
     let mut audit = AuditConfig::default();
     audit.mode = crate::audit::AuditMode::Off;
     ZccacheService::start_with_options_and_host_admission_classifier(
@@ -37,7 +57,7 @@ async fn start_service_with_policy(temp: &TempDir, calls: Arc<AtomicUsize>) -> Z
             cancellation: None,
         },
         ZccacheStartOptions::default(),
-        Arc::new(CountingHostPolicy { calls }),
+        Arc::new(CountingHostPolicy { calls, acquires }),
     )
     .await
     .expect("service start")
@@ -54,7 +74,8 @@ async fn host_policy_runs_for_a_miss_but_not_its_cache_hit() {
     std::fs::write(&source, "int admission_policy_unit(void) { return 1; }\n")
         .expect("source fixture");
     let calls = Arc::new(AtomicUsize::new(0));
-    let service = start_service_with_policy(&temp, Arc::clone(&calls)).await;
+    let acquires = Arc::new(AtomicUsize::new(0));
+    let service = start_service_with_policy(&temp, Arc::clone(&calls), Arc::clone(&acquires)).await;
     let request = CompileRequest {
         audit: AuditContext::new(
             crate::audit::AuditId::new("host-policy-run").expect("id"),
@@ -75,6 +96,7 @@ async fn host_policy_runs_for_a_miss_but_not_its_cache_hit() {
     let miss = service.compile(request.clone()).await.expect("cache miss");
     assert!(!miss.cached, "first compile must execute the compiler");
     assert_eq!(calls.load(Ordering::Relaxed), 1, "miss invokes policy once");
+    assert_eq!(acquires.load(Ordering::Relaxed), 1, "miss acquires once");
 
     std::fs::remove_file(&output).expect("remove cold output");
     let hit = service.compile(request).await.expect("cache hit");
@@ -83,6 +105,11 @@ async fn host_policy_runs_for_a_miss_but_not_its_cache_hit() {
         calls.load(Ordering::Relaxed),
         1,
         "cache hit must bypass the host policy and compiler admission"
+    );
+    assert_eq!(
+        acquires.load(Ordering::Relaxed),
+        1,
+        "cache hit must bypass host lease acquisition"
     );
     service
         .shutdown(ShutdownMode::Graceful)

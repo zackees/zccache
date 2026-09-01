@@ -150,22 +150,25 @@ pub(super) async fn run_compiler_direct_with_family(
     };
     let built_in_exclusive =
         super::compile_resource_gate::requires_exclusive_access_from_args(family_hint, args, cwd);
-    let exclusive = match super::compile_resource_gate::requires_exclusive_admission(
+    let (exclusive, host_admission) = match super::compile_resource_gate::host_admission(
         state,
         family_hint,
         args,
         None,
         built_in_exclusive,
-    ) {
+    )
+    .await
+    {
         Ok(exclusive) => exclusive,
         Err(error) => {
             return Response::Error {
-                message: format!("host compiler-admission classification failed: {error}"),
+                message: format!("host compiler admission failed: {error}"),
             };
         }
     };
     let (compiler_admission, _) =
-        super::compile_resource_gate::acquire_compiler_admission(state, exclusive).await;
+        super::compile_resource_gate::acquire_compiler_admission(state, exclusive, host_admission)
+            .await;
     if exclusive {
         tracing::info!(
             event = "compile_exclusive",

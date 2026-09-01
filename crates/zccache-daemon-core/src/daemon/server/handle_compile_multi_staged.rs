@@ -216,18 +216,20 @@ pub(super) async fn try_handle_staged_misses(
                 &compiler_args,
                 miss.source_path.as_path(),
             );
-        let exclusive =
-            match crate::daemon::server::compile_resource_gate::requires_exclusive_admission(
+        let (exclusive, host_admission) =
+            match crate::daemon::server::compile_resource_gate::host_admission(
                 state.as_ref(),
                 family,
                 &compiler_args,
                 Some(miss.source_path.as_path()),
                 built_in_exclusive,
-            ) {
+            )
+            .await
+            {
                 Ok(exclusive) => exclusive,
                 Err(error) => {
                     return Some(Response::Error {
-                        message: format!("host compiler-admission classification failed: {error}"),
+                        message: format!("host compiler admission failed: {error}"),
                     });
                 }
             };
@@ -242,6 +244,7 @@ pub(super) async fn try_handle_staged_misses(
                 crate::daemon::server::compile_resource_gate::acquire_compiler_admission(
                     &admission_state,
                     exclusive,
+                    host_admission,
                 )
                 .await;
             if let Some(available_before) = available_before {

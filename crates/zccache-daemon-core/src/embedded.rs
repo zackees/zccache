@@ -18,7 +18,7 @@ use crate::daemon::server::{
 
 pub use crate::audit::{AuditConfig, AuditContext, AuditEvent};
 pub use crate::daemon::server::compile_resource_gate::{
-    HostAdmissionClassifier, HostAdmissionError, HostCompilerRequest,
+    HostAdmissionClassifier, HostAdmissionError, HostAdmissionPermit, HostCompilerRequest,
 };
 pub use control::EmbeddedEventSink;
 
