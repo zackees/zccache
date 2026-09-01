@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 pub(in crate::daemon::server) enum StagedHookPoint {
     PublicationStoreLocked,
     MaterializeOutput,
+    MaterializePublish,
     MaintenanceStoreLockPending,
 }
 

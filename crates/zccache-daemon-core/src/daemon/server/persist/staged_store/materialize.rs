@@ -75,25 +75,36 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
                 ),
             ));
         }
-        let _ = crate::platform::fs::permissions::set_readonly(destination, false);
-        fs::remove_file(destination)?;
     }
-    copy_output(source, destination).map(|(reflink, copy_bytes)| {
+
+    let temporary = super::temporary_path(destination, "materialize");
+    let result = (|| {
+        let (reflink, copy_bytes) = copy_output(source, &temporary)?;
+        #[cfg(test)]
+        super::hook::pause(destination, super::StagedHookPoint::MaterializePublish);
+        if fs::metadata(destination).is_ok() {
+            let _ = crate::platform::fs::permissions::set_readonly(destination, false);
+        }
+        super::replace_staged_path(&temporary, destination)?;
         let _ = crate::platform::fs::permissions::set_readonly(destination, false);
-        StagedMaterializationStats {
+        Ok(StagedMaterializationStats {
             reflink_count: u64::from(reflink),
             hardlink_count: 0,
             copy_count: u64::from(!reflink),
             copy_bytes,
-        }
-    })
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::{
         load_staged_artifact_paths, persist_staged_artifact_paths, StagedFaultGuard,
-        StagedFaultPoint,
+        StagedFaultPoint, StagedHookGuard, StagedHookPoint,
     };
     use super::*;
 
@@ -129,7 +140,7 @@ mod tests {
 
         let fallback = dir.path().join("fallback.rlib");
         let reflink_fault =
-            StagedFaultGuard::arm(&fallback, [StagedFaultPoint::MaterializeReflink]);
+            StagedFaultGuard::arm(dir.path(), [StagedFaultPoint::MaterializeReflink]);
         let observed = materialize_independent_with_stats(&source, &fallback).unwrap();
         assert_eq!(observed.reflink_count, 0);
         assert_eq!(observed.copy_count, 1);
@@ -142,7 +153,7 @@ mod tests {
 
         let failed = dir.path().join("failed.rlib");
         let all_faults = StagedFaultGuard::arm(
-            &failed,
+            dir.path(),
             [
                 StagedFaultPoint::MaterializeReflink,
                 StagedFaultPoint::MaterializeCopy,
@@ -154,5 +165,27 @@ mod tests {
             "failed copy tier left a partial destination"
         );
         all_faults.assert_all_consumed();
+    }
+
+    #[test]
+    fn independent_materialization_publishes_only_complete_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.bin");
+        let destination = dir.path().join("destination.bin");
+        fs::write(&source, b"new complete output").unwrap();
+        fs::write(&destination, b"old complete output").unwrap();
+
+        let hook = StagedHookGuard::arm(&destination, StagedHookPoint::MaterializePublish);
+        let source_for_thread = source.clone();
+        let destination_for_thread = destination.clone();
+        let materialize = std::thread::spawn(move || {
+            materialize_independent_with_stats(&source_for_thread, &destination_for_thread)
+        });
+
+        hook.wait_until_reached();
+        assert_eq!(fs::read(&destination).unwrap(), b"old complete output");
+        hook.resume();
+        materialize.join().unwrap().unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new complete output");
     }
 }
