@@ -164,7 +164,7 @@ pub(super) async fn run_compiler_direct_with_family(
             };
         }
     };
-    let (_compiler_admission, _) =
+    let (compiler_admission, _) =
         super::compile_resource_gate::acquire_compiler_admission(state, exclusive).await;
     if exclusive {
         tracing::info!(
@@ -199,6 +199,8 @@ pub(super) async fn run_compiler_direct_with_family(
             None,
         )
     };
+
+    let _resource_admission = compiler_admission.release_compiler_slot();
 
     match result {
         Ok(mut output) => {

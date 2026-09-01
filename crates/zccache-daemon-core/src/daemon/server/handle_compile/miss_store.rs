@@ -38,6 +38,8 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) compile_start: Instant,
     pub(super) synchronous_persist: bool,
     pub(super) publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    pub(super) resource_admission:
+        crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 }
 
 #[derive(Default)]
@@ -83,6 +85,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         compile_start,
         synchronous_persist,
         publication_guard,
+        resource_admission,
     } = request;
     let state = state_arc.as_ref();
     let t_store = Instant::now();
@@ -146,6 +149,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 synchronous_persist,
                 staged_persist_plan,
                 publication_guard,
+                resource_admission,
             );
         } else {
             store_single_output(
@@ -165,6 +169,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 t_artifact_build,
                 synchronous_persist,
                 publication_guard,
+                resource_admission,
             );
         }
     }
@@ -317,6 +322,7 @@ fn store_rustc_outputs(
     synchronous_persist: bool,
     staged_persist_plan: Option<StagedCompilePlan>,
     publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    resource_admission: crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 ) {
     let state = state_arc.as_ref();
     let t_artifact_meta_build = Instant::now();
@@ -407,6 +413,7 @@ fn store_rustc_outputs(
                 .expect("persist_semaphore is owned by ServerState and never closed");
             let published = tokio::task::spawn_blocking(move || {
                 let _publication_guard = publication_guard;
+                let _resource_admission = resource_admission;
                 let _staged_plan = plan_for_publish;
                 let snapshot =
                     persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths)?;
@@ -593,6 +600,7 @@ fn store_rustc_outputs(
     });
     stats.artifact_insert_stats_ns = t_artifact_insert_stats.elapsed().as_nanos() as u64;
     drop(publication_guard);
+    drop(resource_admission);
 }
 
 fn remove_provisional_artifact(state: &SharedState, key_hex: &str, provisional: &CachedArtifact) {
@@ -689,6 +697,7 @@ fn store_single_output(
     t_artifact_build: Instant,
     synchronous_persist: bool,
     publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    resource_admission: crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 ) {
     let state = state_arc.as_ref();
     // Issue #643: stash the user's depfile as a second output so cache
@@ -833,6 +842,7 @@ fn store_single_output(
         });
         stats.artifact_insert_stats_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
         drop(publication_guard);
+        drop(resource_admission);
         return;
     }
 
@@ -864,6 +874,7 @@ fn store_single_output(
         let written = tokio::task::spawn_blocking(move || {
             let _guard = guard;
             let _publication_guard = publication_guard;
+            let _resource_admission = resource_admission;
             let _user_depfile_persist_temp = user_depfile_persist_temp;
             // Issue #728: `gap_ms` = wall-clock between
             // "linker-success-recorded" (immediately before this spawn was

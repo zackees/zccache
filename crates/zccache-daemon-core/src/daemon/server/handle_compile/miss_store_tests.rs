@@ -6,6 +6,7 @@ use super::{
     MissArtifactStoreStats, PersistOutcome, MAX_STAGED_PUBLICATION_ERROR_CHARS,
 };
 use crate::core::NormalizedPath;
+use crate::daemon::server::compile_resource_gate::CompileResourceGate;
 use crate::daemon::server::*;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -67,6 +68,8 @@ async fn perf_staged_rust_hit_uses_provisional_payload_before_durable_publicatio
     let source_path: NormalizedPath = work.path().join("lib.rs").into();
     let mut stats = MissArtifactStoreStats::default();
     let publication_guard = begin_artifact_publication(&state).await.unwrap();
+    let resource_gate = CompileResourceGate::default();
+    let resource_admission = resource_gate.acquire(false).await;
 
     store_rustc_outputs(
         &state,
@@ -84,6 +87,15 @@ async fn perf_staged_rust_hit_uses_provisional_payload_before_durable_publicatio
         false,
         Some(plan),
         publication_guard,
+        resource_admission,
+    );
+    let exclusive_gate = resource_gate.clone();
+    let mut exclusive = tokio::spawn(async move { exclusive_gate.acquire(true).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut exclusive)
+            .await
+            .is_err(),
+        "exclusive compiler must wait while detached shared publication is blocked"
     );
     assert!(
         staged.is_file(),
@@ -148,6 +160,10 @@ async fn perf_staged_rust_hit_uses_provisional_payload_before_durable_publicatio
         pending_writes::await_all(&state.pending_cache_writes, Duration::from_secs(10)).await,
         "detached publisher did not complete after its permit was released"
     );
+    tokio::time::timeout(Duration::from_secs(1), exclusive)
+        .await
+        .expect("exclusive compiler should acquire after detached publication")
+        .expect("exclusive task");
 }
 
 #[tokio::test]

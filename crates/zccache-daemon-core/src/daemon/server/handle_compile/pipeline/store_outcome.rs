@@ -70,6 +70,8 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) hash_headers_ns: u64,
     pub(super) depgraph_check_ns: u64,
     pub(super) break_outputs_ns: u64,
+    pub(super) resource_admission:
+        crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 }
 
 enum CompileOutputCollection {
@@ -179,6 +181,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         hash_headers_ns,
         depgraph_check_ns,
         break_outputs_ns,
+        resource_admission,
     } = req;
 
     let state = state_arc.as_ref();
@@ -634,6 +637,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                 compile_start,
                 synchronous_persist,
                 publication_guard,
+                resource_admission,
             })
         })
     } else {

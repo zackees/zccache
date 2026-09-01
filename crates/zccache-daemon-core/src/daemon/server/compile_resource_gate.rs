@@ -4,7 +4,10 @@
 //! Published Rust crates can have the same shape without a large root file:
 //! zccache's release crate folds its internal workspace into one rustc unit.
 //! Ordinary compiles take shared admission; either kind of amalgamation takes
-//! exclusive admission immediately before the compiler child is spawned.
+//! exclusive admission immediately before the compiler child is spawned. The
+//! resource permit remains live through cache hashing/publication after the
+//! bounded compiler slot is returned, so post-compiler work cannot overlap a
+//! queued exclusive unit.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -112,6 +115,19 @@ pub(super) enum CompileResourcePermit {
 pub(super) struct CompilerAdmission {
     _resource: CompileResourcePermit,
     _compile: super::compile_progress::CompileGateGuard,
+}
+
+impl CompilerAdmission {
+    /// Return scarce compiler capacity while preserving build-wide resource
+    /// ownership for the request's hashing and publication phases.
+    pub(super) fn release_compiler_slot(self) -> CompileResourcePermit {
+        let Self {
+            _resource: resource,
+            _compile: compile,
+        } = self;
+        drop(compile);
+        resource
+    }
 }
 
 impl CompileResourceGate {
@@ -550,6 +566,45 @@ mod tests {
             .expect("ordinary compiles must not serialize");
     }
 
+    #[tokio::test]
+    async fn compiler_slot_can_be_released_while_resource_admission_remains_live() {
+        use std::time::Duration;
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let queue = Arc::new(crate::daemon::server::compile_progress::CompileQueueGauge::default());
+        let resource_gate = CompileResourceGate::default();
+        let (compile, _) =
+            crate::daemon::server::compile_progress::acquire_compile_gate(Some(&semaphore), &queue)
+                .await;
+        let admission = CompilerAdmission {
+            _resource: resource_gate.acquire(false).await,
+            _compile: compile,
+        };
+
+        assert_eq!(semaphore.available_permits(), 0);
+        let resource = admission.release_compiler_slot();
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "post-compiler work must not consume a compiler-capacity slot"
+        );
+
+        let exclusive_gate = resource_gate.clone();
+        let mut exclusive = tokio::spawn(async move { exclusive_gate.acquire(true).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut exclusive)
+                .await
+                .is_err(),
+            "exclusive compiler must wait for shared post-compiler work"
+        );
+
+        drop(resource);
+        tokio::time::timeout(Duration::from_secs(1), exclusive)
+            .await
+            .expect("exclusive compiler should acquire after post-processing")
+            .expect("exclusive task");
+    }
+
     #[test]
     fn direct_rust_and_c_invocations_use_the_same_classifier() {
         assert!(requires_exclusive_access_from_args(
@@ -638,6 +693,10 @@ mod tests {
             assert!(
                 source.contains("acquire_compiler_admission("),
                 "{name} compiler path bypasses shared admission"
+            );
+            assert!(
+                source.contains("release_compiler_slot()"),
+                "{name} compiler path does not split compiler capacity from post-compiler resource ownership"
             );
         }
     }

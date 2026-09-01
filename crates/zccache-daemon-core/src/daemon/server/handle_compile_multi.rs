@@ -784,7 +784,7 @@ pub(super) async fn handle_compile_multi(
     let result =
         super::super::process::tokio_command_output_with_priority(&mut cmd, compiler_priority)
             .await;
-    drop(compiler_admission);
+    let _resource_admission = compiler_admission.release_compiler_slot();
 
     let output = match result {
         Ok(o) => o,
