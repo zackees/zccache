@@ -9,6 +9,9 @@ use std::sync::{Mutex, OnceLock};
 pub(in crate::daemon::server) enum StagedHookPoint {
     PublicationStoreLocked,
     MaterializeOutput,
+    /// Inside the materialization copy window: the sibling temporary exists
+    /// and a write descriptor on it is still open (zccache#1562).
+    MaterializeTemporaryOpen,
     MaterializePublish,
     MaintenanceStoreLockPending,
 }

@@ -77,9 +77,32 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
         }
     }
 
+    // The copy lands in a unique sibling temporary that is renamed over the
+    // requested path, so readers never observe a partial output (#1563). That
+    // rename does NOT make the output safe to execute on its own: `rename(2)`
+    // keeps the inode, and a child forked by this process while the copy's
+    // write descriptor was open inherits that descriptor until its own
+    // `execve`. Cargo hard-links `build-script-build` to the published inode
+    // and execs it, and `ETXTBSY` is evaluated per inode, so the exec fails
+    // with `Text file busy` for the child's fork-to-exec window even though
+    // this process closed its descriptor before publishing (zccache#1562).
+    // The exclusive guard below keeps every daemon child spawn out of the
+    // open-write-close + rename window; see `daemon::spawn_exclusion`.
     let temporary = super::temporary_path(destination, "materialize");
     let result = (|| {
+        let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
         let (reflink, copy_bytes) = copy_output(source, &temporary)?;
+        #[cfg(test)]
+        {
+            // Test seam: keep a write descriptor on the temporary open while
+            // paused, modelling the descriptor `copy_output` holds mid-copy.
+            let open_for_write = fs::OpenOptions::new().write(true).open(&temporary)?;
+            super::hook::pause(
+                destination,
+                super::StagedHookPoint::MaterializeTemporaryOpen,
+            );
+            drop(open_for_write);
+        }
         #[cfg(test)]
         super::hook::pause(destination, super::StagedHookPoint::MaterializePublish);
         if fs::metadata(destination).is_ok() {
@@ -187,5 +210,77 @@ mod tests {
         hook.resume();
         materialize.join().unwrap().unwrap();
         assert_eq!(fs::read(&destination).unwrap(), b"new complete output");
+    }
+
+    /// zccache#1562: a child forked while the materialization copy held a
+    /// write descriptor on the sibling temporary inherits that descriptor
+    /// across the rename, so executing the published output fails with
+    /// `ETXTBSY` until the child execs. The spawn/materialize lock must keep
+    /// the fork out of the copy window. Disabling the exclusive guard in
+    /// `materialize_independent_with_stats` makes this test fail.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn materialized_executable_runs_while_a_child_is_between_fork_and_exec() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("build_script_build-source");
+        let destination = dir.path().join("build-script-build");
+        fs::write(&source, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let hook = StagedHookGuard::arm(&destination, StagedHookPoint::MaterializeTemporaryOpen);
+        let source_for_thread = source.clone();
+        let destination_for_thread = destination.clone();
+        let materialize = std::thread::spawn(move || {
+            materialize_independent_with_stats(&source_for_thread, &destination_for_thread)
+        });
+        hook.wait_until_reached();
+
+        // Another daemon task spawns a compiler child. Its fork-to-exec window
+        // is stretched to 500 ms so the inherited descriptor demonstrably
+        // outlives the rename below.
+        let spawner = std::thread::spawn(|| {
+            let mut cmd = tokio::process::Command::new("true");
+            // SAFETY: the closure only sleeps; it is async-signal-safe enough
+            // for a test and touches no locks or allocations.
+            unsafe {
+                cmd.as_std_mut().pre_exec(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    Ok(())
+                });
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                crate::daemon::process::tokio_leaf_command_output_with_priority(
+                    &mut cmd,
+                    crate::daemon::process::CompilePriority::Normal,
+                )
+                .await
+            })
+        });
+        // Give the spawner time to reach the lock (or, without the lock, to
+        // fork while the temporary's write descriptor is still open).
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        hook.resume();
+        materialize.join().unwrap().unwrap();
+
+        let status = std::process::Command::new(&destination)
+            .status()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "published output {} must be executable immediately after \
+                     materialization returns: {error}",
+                    destination.display()
+                )
+            });
+        assert!(status.success());
+        let output = spawner.join().unwrap().unwrap();
+        assert!(output.status.success());
     }
 }

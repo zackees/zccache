@@ -665,7 +665,7 @@ async fn tokio_command_output_with_priority_stdin_inner(
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child = match running_process::spawn_tokio(cmd, owned_child_spawn_options()) {
+    let mut child = match spawn_tokio_excluding_materialization(cmd) {
         Ok(child) => child,
         Err(error) => return (Err(error), decision),
     };
@@ -702,10 +702,24 @@ pub(crate) async fn tokio_leaf_command_output_with_priority(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let child = running_process::spawn_tokio(cmd, owned_child_spawn_options())?;
+    let child = spawn_tokio_excluding_materialization(cmd)?;
     attach_child_owner_death(&child);
     apply_priority_to_child(&child, priority);
     child.wait_with_output().await
+}
+
+/// Spawn a daemon-owned child while holding the shared half of the
+/// materialization/spawn lock (zccache#1562). `spawn` returns only after the
+/// child has exec'd (or failed to), so the guard covers the whole fork-to-exec
+/// window in which the child still holds a copy of this process's descriptor
+/// table. Holding it here, at the single choke point every compiler, linker,
+/// archiver, exec-tool, deploy-hook, and async identity-probe child passes
+/// through, keeps every call site covered without touching them.
+fn spawn_tokio_excluding_materialization(
+    cmd: &mut tokio::process::Command,
+) -> io::Result<tokio::process::Child> {
+    let _spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
+    running_process::spawn_tokio(cmd, owned_child_spawn_options())
 }
 
 fn attach_child_owner_death(child: &tokio::process::Child) {

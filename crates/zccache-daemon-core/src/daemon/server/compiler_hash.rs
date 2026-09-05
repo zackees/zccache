@@ -89,6 +89,12 @@ struct ProbeOutput {
 fn output_within(cmd: std::process::Command, timeout: std::time::Duration) -> ProbeOutcome {
     const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 
+    // zccache#1562: running-process owns spawn *and* wait here, so the shared
+    // materialization/spawn guard has to bracket the whole bounded run rather
+    // than the spawn alone. A shared guard only blocks materialization (the
+    // exclusive side), never other spawns; this probe is a cold path taken
+    // once per compiler identity, normally ~10 ms, and bounded by `timeout`.
+    let _spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
     match running_process::run_std_command_bounded(cmd, Some(timeout), PROBE_OUTPUT_LIMIT) {
         Ok(output) => ProbeOutcome::Completed(ProbeOutput {
             success: output.exit_code == 0,

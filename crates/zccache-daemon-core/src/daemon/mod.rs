@@ -33,6 +33,10 @@ pub mod log_sink;
 pub(crate) mod process;
 pub mod server;
 pub mod side_effect;
+/// Process-wide exclusion between staged-output materialization and child
+/// spawn so a forked child cannot inherit a write descriptor on an inode that
+/// is about to be executed (zccache#1562).
+pub(crate) mod spawn_exclusion;
 pub(crate) mod staged_stats;
 pub mod stats;
 pub mod trampoline;
