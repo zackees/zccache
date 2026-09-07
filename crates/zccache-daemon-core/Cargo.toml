@@ -54,7 +54,6 @@ dashmap = { workspace = true }
 arc-swap = { workspace = true }
 rayon = { workspace = true }
 tempfile = { workspace = true }
-notify = { workspace = true }
 clang = { workspace = true }
 rkyv = { workspace = true }
 uuid = { version = "1", features = ["v4"] }

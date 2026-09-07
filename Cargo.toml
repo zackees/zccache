@@ -59,7 +59,6 @@ clap = { version = "4", features = ["derive", "env"] }
 dashmap = "6"
 arc-swap = "1"
 clang = { version = "2", features = ["runtime"] }
-notify = "7"
 tempfile = "3"
 rayon = "1"
 bytes = "1"
@@ -91,7 +90,7 @@ rkyv = "0.8"
 # its own AGENTS.md forbids as a dependency -- so this tracks an exact commit
 # to keep the branch reproducible and CI-buildable. It must become an exact
 # published version before this reaches a release branch.
-kernal-api = { git = "https://github.com/zackees/kernal-api", rev = "c5b1275f8a1e143847534b746990519624bf8f2e", default-features = false }
+kernal-api = { git = "https://github.com/zackees/kernal-api", rev = "e519d9c91aebcb9349cf7631425eba401efad5e4", default-features = false }
 running-process = { version = "4.10.5", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
@@ -115,14 +114,6 @@ zccache-test-support = { path = "crates/zccache-test-support" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }
-
-# Vendored notify with fixes for Windows ReadDirectoryChangesW:
-# 1. Detect buffer overflow (bytes_written == 0) and report as error
-# 2. Report start_read failure (watcher silently dying) as error
-# Kept in-repo (vendor/notify) so workspace builds need no sibling checkout;
-# the tree tracks soldr's _vender/notify (patched for windows-sys 0.61).
-[patch.crates-io]
-notify = { path = "vendor/notify" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]

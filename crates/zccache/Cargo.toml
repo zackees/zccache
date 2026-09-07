@@ -131,7 +131,6 @@ rayon = { workspace = true }
 tempfile = { workspace = true }
 
 # watcher
-notify = { workspace = true }
 
 # compiler
 clang = { workspace = true }
@@ -165,7 +164,6 @@ running-process = { workspace = true }
 # `running_process::broker::client::connect_local_socket` (the v1 path).
 # The version is already locked transitively via running-process; making
 # it explicit in [dependencies] does not add a new resolved crate.
-interprocess = "2.4.2"
 sysinfo = "0.30.13"
 sadness-generator = { version = "0.6", optional = true }
 
@@ -198,7 +196,7 @@ tracing-subscriber = { workspace = true, optional = true }
 # only be made by whoever declares the dependency -- which is now kernal-api,
 # and it pins `=0.9.4`. If that pin ever regresses below 0.9.3 the aarch64
 # Windows release lane breaks here, so it is a facade-side constraint now.
-kernal-api = { workspace = true, features = ["fs"] }
+kernal-api = { workspace = true, features = ["fs", "ipc"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

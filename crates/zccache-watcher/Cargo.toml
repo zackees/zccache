@@ -17,10 +17,9 @@ crate-type = ["rlib"]
 default = []
 
 [dependencies]
-kernal-api = { workspace = true, features = ["fs"] }
+kernal-api = { workspace = true, features = ["fs", "fs-watch"] }
 zccache-core = { workspace = true }
 zccache-fscache = { workspace = true }
-notify = { workspace = true }
 rayon = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
