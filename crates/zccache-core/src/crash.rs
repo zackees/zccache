@@ -62,7 +62,7 @@ static BIN_STEM: OnceLock<String> = OnceLock::new();
 #[must_use = "drop unregisters the native signal/exception handlers — bind this for the whole process lifetime"]
 pub struct CrashGuard {
     #[allow(dead_code)]
-    inner: Option<crash_handler::CrashHandler>,
+    inner: Option<kernal_api::crash::CrashGuard>,
 }
 
 /// Install panic hook + native signal/exception handlers for this binary.
@@ -165,34 +165,40 @@ fn install_panic_hook() {
     }));
 }
 
-fn install_signal_handler() -> Option<crash_handler::CrashHandler> {
-    // SAFETY: crash_handler::make_crash_event takes a callback that
-    // runs in signal context on Unix. We write only via the
-    // pre-allocated path buffer + a single `std::fs::write` of a
-    // pre-formatted String. `std::fs::write` does allocate the
-    // intermediate `File`, which is technically not async-signal-safe
-    // — but in practice it is what every Rust crash-handling crate
-    // (sentry-rust, crash-handler's own samples) does on Linux, and
-    // the alternative (raw `write(2)` to a manually-opened fd) buys
-    // little when we've already given up isolation by formatting a
-    // String. For v1 we accept that tradeoff in exchange for richer
-    // dumps; tracked in the module-level doc.
-    let handler = crash_handler::CrashHandler::attach(unsafe {
-        crash_handler::make_crash_event(move |ctx: &crash_handler::CrashContext| {
-            write_signal_dump(ctx);
-            // Let the OS take the process down so parent `wait()`
-            // semantics match a true crash, not a clean exit.
-            crash_handler::CrashEventResult::Handled(false)
-        })
-    });
-    match handler {
-        Ok(h) => Some(h),
-        Err(e) => {
+/// Arm the facade's native crash capture (kernal-api#72).
+///
+/// The signal-level dump is no longer written here. kernal-api is the single
+/// native crash handler -- installing a second one is what its AGENTS.md
+/// forbids and what the previous version of this function did -- and it
+/// captures to its own bounded, owner-private spool from signal context.
+/// That is a strictly better place for it: this function used to format a
+/// `String` and call `std::fs::write` from a signal handler, which the
+/// module doc admitted was not async-signal-safe.
+///
+/// The Rust-level panic hook below is unaffected and still writes this
+/// crate's own dumps to `crash_dump_dir`.
+fn install_signal_handler() -> Option<kernal_api::crash::CrashGuard> {
+    let metadata = kernal_api::crash::spool::CrashMetadata {
+        app_class: "build-cache".to_string(),
+        app_name: bin_stem().to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        instance_name: String::new(),
+        creation_time_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0),
+        cwd: std::env::current_dir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default(),
+    };
+    match kernal_api::crash::install(kernal_api::crash::CrashPolicy::On, metadata) {
+        Ok(guard) => Some(guard),
+        Err(error) => {
             // Emit via stderr rather than tracing — tracing may not be
             // initialised yet when we're called from `main`. The
             // panic hook still covers Rust-level faults.
             eprintln!(
-                "[zccache] {bin}: failed to install native crash handler: {e}",
+                "[zccache] {bin}: failed to install native crash handler: {error}",
                 bin = bin_stem()
             );
             None
@@ -200,55 +206,8 @@ fn install_signal_handler() -> Option<crash_handler::CrashHandler> {
     }
 }
 
-fn write_signal_dump(ctx: &crash_handler::CrashContext) {
-    let crash_dir = super::config::crash_dump_dir();
-    // Same tree as the deployed daemon binary; create it private (#1325).
-    if super::config::create_dir_all_private(&crash_dir).is_err() {
-        return;
-    }
-    let sig_label = signal_label(ctx);
-    let path = unique_dump_path(&crash_dir, &sig_label, "txt");
-    let signal_summary = format_signal_summary(ctx);
-    let body = format!(
-        "zccache {bin} crash report (signal-level)\n\
-         ==========================================\n\
-         Version: {version}\n\
-         Binary:  {bin}\n\
-         OS:      {os}\n\
-         Arch:    {arch}\n\
-         PID:     {pid}\n\
-         Signal:  {sig}\n\
-         Time:    {ts}\n\
-         \n\
-         Detail:\n\
-         {signal_summary}\n\
-         \n\
-         Backtrace: <not captured — async-signal-unsafe; rerun under \
-         a debugger or attach RUST_BACKTRACE-enabled child for stack>\n",
-        bin = bin_stem(),
-        version = env!("CARGO_PKG_VERSION"),
-        os = crate::platform::host::os(),
-        arch = crate::platform::host::arch(),
-        pid = std::process::id(),
-        sig = sig_label,
-        ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-    );
-    let _ = std::fs::write(&path, body);
-}
-
 /// Map the platform-specific crash context to its stable filename label.
-fn signal_label(context: &crash_handler::CrashContext) -> String {
-    crate::platform::process::exit::context_label(context)
-}
-
 /// Render host-native crash details for the signal-level report body.
-fn format_signal_summary(context: &crash_handler::CrashContext) -> String {
-    crate::platform::process::exit::context_summary(context)
-}
-
 /// Write a Rust-panic dump. Caller is the panic hook (not signal
 /// context), so allocation here is fine.
 fn write_panic_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedPath> {
