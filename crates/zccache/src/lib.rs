@@ -66,14 +66,40 @@ pub use zccache_gha as gha;
 /// the embedding executable because a Rust library cannot select a global
 /// allocator on its consumer's behalf.
 ///
+/// The allocator and the dump implementation are owned by `kernal-api`
+/// (kernal-api#71); this module is the stable zccache spelling of that one
+/// facade, so embedders keep the names issue #1359 published.
+///
 /// [`MiMalloc`]: heap_profile::MiMalloc
 /// [`prof`]: heap_profile::prof
 #[cfg(feature = "heap-profile")]
 pub mod heap_profile {
-    pub use mimalloc_pprof::{
-        enable_heap_profiling, enable_heap_profiling_with, prof, DumpFormat, MiMalloc, ProfConfig,
-        ProfConfigMode,
-    };
+    /// The one shared allocator type, for the final binary's
+    /// `#[global_allocator]`.
+    pub use kernal_api::allocator::Allocator as MiMalloc;
+
+    /// Sampling control and pprof snapshot capture.
+    pub mod prof {
+        pub use kernal_api::allocator::{
+            dump_to as dump_proto_to, dump_to_vec as dump_proto_to_vec, is_enabled,
+            live_sample_count, start, stop, DEFAULT_SAMPLE_RATE,
+        };
+
+        /// Sampler counters. `live_samples` is the retained-sample count the
+        /// embedded contract asserts on; it comes from
+        /// `kernal_api::allocator::live_sample_count`.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct Stats {
+            pub live_samples: usize,
+        }
+
+        /// Snapshot the sampler counters.
+        pub fn stats() -> Stats {
+            Stats {
+                live_samples: live_sample_count(),
+            }
+        }
+    }
 }
 pub use zccache_hash as hash;
 pub use zccache_ipc as ipc;

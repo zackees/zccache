@@ -88,13 +88,16 @@ lzma-rs = "0.3"
 # sourcing the maintained successor recommended by RustSec.
 sevenz-rust = { package = "sevenz-rust2", version = "0.22.2" }
 rkyv = "0.8"
-# 0.9.3 is the floor, not a preference (#1439): earlier releases compile the
-# vendored mimalloc amalgamation with MSVC's deprecated C-mode Interlocked
-# atomics wrapper, whose `_acq`/`_rel` ARM64 intrinsics clang-cl does not
-# declare, so the cargo-xwin `aarch64-pc-windows-msvc` release lane cannot
-# build them. 0.9.3 selects clang's C11 `stdatomic` for that target inside its
-# own build script -- the only package-scoped place the choice can be made.
-mimalloc-pprof = "0.9.3"
+# The shared systems facade (kernal-api#69). Capabilities are enabled one
+# migration slice at a time, so this stays `default-features = false` and each
+# slice adds only the feature it needs.
+#
+# MIGRATION PIN, not a release pin. `kernal-api` has no usable registry
+# release yet -- crates.io carries only the yanked `0.0.0` reservation, which
+# its own AGENTS.md forbids as a dependency -- so this tracks an exact commit
+# to keep the branch reproducible and CI-buildable. It must become an exact
+# published version before this reaches a release branch.
+kernal-api = { git = "https://github.com/zackees/kernal-api", rev = "7bf324035beec541e62564f64c8913f6f238344e", default-features = false, features = ["allocator"] }
 running-process = { version = "4.10.5", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
