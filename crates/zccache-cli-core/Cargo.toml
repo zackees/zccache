@@ -78,7 +78,6 @@ tokio-util = { workspace = true }
 running-process = { workspace = true }
 interprocess = "2.4.2"
 dashmap = { workspace = true }
-fs2 = { workspace = true }
 regex = { workspace = true }
 rayon = { workspace = true }
 tempfile = { workspace = true }

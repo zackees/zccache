@@ -142,7 +142,6 @@ uuid = { version = "1", features = ["v4"] }
 
 # fingerprint
 clap = { workspace = true, optional = true }
-fs2 = { workspace = true }
 
 # exec (issue #272): regex compiles `--key-args-filter` patterns
 regex = { workspace = true }

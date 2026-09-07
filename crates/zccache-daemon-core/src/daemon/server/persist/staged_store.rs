@@ -505,7 +505,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
     let root = staged_root(artifact_dir);
     let store_lock = open_store_lock(&root)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
-    fs2::FileExt::lock_shared(&store_lock)
+    let _store_lock_guard = kernal_api::platform::fs::lock_shared(&store_lock)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
     #[cfg(test)]
     hook::pause(artifact_dir, StagedHookPoint::PublicationStoreLocked);
@@ -519,7 +519,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
         .truncate(false)
         .open(key_root.join(PUBLISH_LOCK))
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
-    fs2::FileExt::lock_exclusive(&publish_lock)
+    let _publish_lock_guard = kernal_api::platform::fs::lock_exclusive(&publish_lock)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
     let temporary_generation = key_root.join(format!(
         ".tmp-{}-{}",
@@ -910,7 +910,7 @@ pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(
         return Ok(0);
     }
     let store_lock = open_store_lock(&root)?;
-    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let _store_lock_guard = kernal_api::platform::fs::lock_exclusive(&store_lock)?;
     let entries = fs::read_dir(&root)?;
     let mut removed = 0;
     for entry in entries.flatten() {

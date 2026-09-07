@@ -216,7 +216,10 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
     // needed.
     let lockfile_path = prefix.join(LOCK_FILENAME);
     let lockfile = open_lockfile(&lockfile_path)?;
-    if !acquire_exclusive(&lockfile, opts.lock_behavior)? {
+    // Bound for the rest of this function: dropping it would release the
+    // install lock while the install is still running.
+    let _lockfile_guard = acquire_exclusive(&lockfile, opts.lock_behavior)?;
+    if _lockfile_guard.is_none() {
         return Ok(InstallReport {
             prefix,
             installed: Vec::new(),
@@ -355,23 +358,28 @@ fn open_lockfile(path: &Path) -> Result<File, SymbolsError> {
         })
 }
 
-/// Acquire the install lock. Returns `Ok(true)` on success, `Ok(false)` only
+/// Acquire the install lock. Returns the guard on success, `Ok(None)` only
 /// when `SkipIfBusy` and another holder is present. Other errors propagate
 /// as `SymbolsError::Io` so a permission problem surfaces clearly.
-fn acquire_exclusive(file: &File, behavior: LockBehavior) -> Result<bool, SymbolsError> {
-    // fs2 trait methods are called via UFCS to avoid the ambiguity with
-    // `std::fs::File::try_lock_exclusive` that landed in Rust 1.89.
+///
+/// The guard is returned rather than a bool because the facade releases on
+/// drop: a caller that discarded it would unlock immediately, which under
+/// `fs2` could not happen because the lock lived on the handle itself.
+fn acquire_exclusive(
+    file: &File,
+    behavior: LockBehavior,
+) -> Result<Option<kernal_api::platform::fs::FileLock<'_>>, SymbolsError> {
     match behavior {
-        LockBehavior::SkipIfBusy => match fs2::FileExt::try_lock_exclusive(file) {
-            Ok(()) => Ok(true),
-            Err(err) if is_would_block(&err) => Ok(false),
+        LockBehavior::SkipIfBusy => match kernal_api::platform::fs::try_lock_exclusive(file) {
+            Ok(guard) => Ok(Some(guard)),
+            Err(err) if is_would_block(&err) => Ok(None),
             Err(err) => Err(SymbolsError::Io {
                 path: PathBuf::from(LOCK_FILENAME),
                 source: err,
             }),
         },
-        LockBehavior::Wait => fs2::FileExt::lock_exclusive(file)
-            .map(|()| true)
+        LockBehavior::Wait => kernal_api::platform::fs::lock_exclusive(file)
+            .map(Some)
             .map_err(|err| SymbolsError::Io {
                 path: PathBuf::from(LOCK_FILENAME),
                 source: err,
@@ -703,11 +711,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let lock = dir.path().join(LOCK_FILENAME);
         let first = open_lockfile(&lock).expect("open lock 1");
-        assert!(acquire_exclusive(&first, LockBehavior::SkipIfBusy).unwrap());
+        let _first_guard = acquire_exclusive(&first, LockBehavior::SkipIfBusy)
+            .unwrap()
+            .expect("first holder takes the lock");
 
         let second = open_lockfile(&lock).expect("open lock 2");
         assert!(
-            !acquire_exclusive(&second, LockBehavior::SkipIfBusy).unwrap(),
+            acquire_exclusive(&second, LockBehavior::SkipIfBusy)
+                .unwrap()
+                .is_none(),
             "second process should have been told the lock is busy"
         );
     }
@@ -722,13 +734,17 @@ mod tests {
 
         {
             let first = open_lockfile(&lock).expect("open lock 1");
-            assert!(acquire_exclusive(&first, LockBehavior::SkipIfBusy).unwrap());
+            let _first_guard = acquire_exclusive(&first, LockBehavior::SkipIfBusy)
+            .unwrap()
+            .expect("first holder takes the lock");
             // handle drops here — kernel releases the advisory lock.
         }
 
         let second = open_lockfile(&lock).expect("open lock 2");
         assert!(
-            acquire_exclusive(&second, LockBehavior::SkipIfBusy).unwrap(),
+            acquire_exclusive(&second, LockBehavior::SkipIfBusy)
+                .unwrap()
+                .is_some(),
             "lock should be free after first holder drops the handle"
         );
     }
@@ -753,11 +769,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let lock = dir.path().join(LOCK_FILENAME);
         let holder = open_lockfile(&lock).unwrap();
-        assert!(acquire_exclusive(&holder, LockBehavior::SkipIfBusy).unwrap());
+        let _holder_guard = acquire_exclusive(&holder, LockBehavior::SkipIfBusy)
+            .unwrap()
+            .expect("holder takes the lock");
 
         let challenger = open_lockfile(&lock).unwrap();
         let got = acquire_exclusive(&challenger, LockBehavior::SkipIfBusy).unwrap();
-        assert!(!got, "challenger must see SkipIfBusy -> Ok(false)");
+        assert!(got.is_none(), "challenger must see SkipIfBusy -> Ok(None)");
     }
 
     /// The archive cache lives under the configured `default_cache_dir`

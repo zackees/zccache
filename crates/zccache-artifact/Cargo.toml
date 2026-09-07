@@ -29,7 +29,6 @@ zccache-platform = { workspace = true }
 bincode = { workspace = true }
 dashmap = { workspace = true }
 flate2 = { workspace = true, optional = true }
-fs2 = { workspace = true }
 prost = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

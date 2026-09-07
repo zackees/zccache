@@ -109,7 +109,9 @@ pub fn open_store_lock(root: &Path) -> io::Result<File> {
 /// than a lock/unlock pair.
 #[derive(Debug)]
 pub struct StagedReadGuard {
-    _store_lock: File,
+    // Owns the handle, because the lock outlives the call that took it. Under
+    // `fs2` the open `File` was itself the token; `OwnedFileLock` names that.
+    _store_lock: kernal_api::platform::fs::OwnedFileLock,
 }
 
 impl StagedReadGuard {
@@ -120,9 +122,8 @@ impl StagedReadGuard {
     /// that has never staged anything.
     pub fn acquire(artifact_dir: &Path) -> io::Result<Self> {
         let store_lock = open_store_lock(staged_root(artifact_dir).as_path())?;
-        fs2::FileExt::lock_shared(&store_lock)?;
         Ok(Self {
-            _store_lock: store_lock,
+            _store_lock: kernal_api::platform::fs::lock_shared_owned(store_lock)?,
         })
     }
 
@@ -190,8 +191,9 @@ mod tests {
         let root = staged_root(dir.path());
         fs::create_dir_all(root.as_path()).unwrap();
 
-        let exclusive = open_store_lock(root.as_path()).unwrap();
-        fs2::FileExt::lock_exclusive(&exclusive).unwrap();
+        let exclusive =
+            kernal_api::platform::fs::lock_exclusive_owned(open_store_lock(root.as_path()).unwrap())
+                .unwrap();
 
         let (tx, rx) = mpsc::channel();
         let path = dir.path().to_path_buf();
@@ -207,6 +209,8 @@ mod tests {
             "reader must not acquire while an exclusive lock is held"
         );
 
+        // Dropping the owned lock releases it and closes the handle, which
+        // is what the reader below is waiting on.
         drop(exclusive);
 
         rx.recv_timeout(std::time::Duration::from_secs(10))

@@ -1,7 +1,7 @@
 //! Shared staged-generation ownership for cache-hit materialization.
 
 use super::{is_staged_link_or_reparse, open_store_lock, pointer_path, staged_root, STAGED_ROOT};
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -126,7 +126,10 @@ pub(super) fn validate_key(key_hex: &str) -> io::Result<()> {
 /// `Arc`, so only the transition from zero to one active hit opens and locks
 /// `.store.lock`; dropping the final payload releases cross-process exclusion.
 pub(in crate::daemon::server) struct StagedMaterializationLock {
-    _store_lock: File,
+    // Owns the handle: this lock is shared through an `Arc` and outlives the
+    // call that took it, so a borrowing guard cannot express it. Under `fs2`
+    // the open `File` was itself the token.
+    _store_lock: kernal_api::platform::fs::OwnedFileLock,
 }
 
 /// Shared ownership of the staged store while resolved generation paths are
@@ -173,8 +176,8 @@ fn acquire_staged_materialization_guard_from(
     wait_started: Instant,
 ) -> io::Result<StagedMaterializationGuard> {
     let root = staged_root(artifact_dir);
-    let store_lock = open_store_lock(&root)?;
-    fs2::FileExt::lock_shared(&store_lock)?;
+    let store_lock =
+        kernal_api::platform::fs::lock_shared_owned(open_store_lock(&root)?)?;
     #[cfg(test)]
     record_test_shared_lock_acquisition(&root);
     let wait_ns = wait_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
@@ -260,8 +263,8 @@ fn acquire_staged_materialization_guard_for_state_from(
     }
 
     let root = staged_root(artifact_dir);
-    let store_lock = open_store_lock(&root)?;
-    fs2::FileExt::lock_shared(&store_lock)?;
+    let store_lock =
+        kernal_api::platform::fs::lock_shared_owned(open_store_lock(&root)?)?;
     #[cfg(test)]
     record_test_shared_lock_acquisition(&root);
     let store_lock = Arc::new(StagedMaterializationLock {

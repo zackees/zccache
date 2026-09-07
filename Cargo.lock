@@ -895,16 +895,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1552,7 +1542,7 @@ dependencies = [
 [[package]]
 name = "kernal-api"
 version = "0.1.0"
-source = "git+https://github.com/zackees/kernal-api?rev=dbd4961b17c129eaa481b468be85d3e99621e5cb#dbd4961b17c129eaa481b468be85d3e99621e5cb"
+source = "git+https://github.com/zackees/kernal-api?rev=c5b1275f8a1e143847534b746990519624bf8f2e#c5b1275f8a1e143847534b746990519624bf8f2e"
 dependencies = [
  "blake3",
  "dirs",
@@ -4200,7 +4190,6 @@ dependencies = [
  "criterion",
  "dashmap",
  "flate2",
- "fs2",
  "futures",
  "interprocess",
  "kernal-api",
@@ -4262,7 +4251,6 @@ dependencies = [
  "bincode",
  "dashmap",
  "flate2",
- "fs2",
  "kernal-api",
  "prost",
  "rayon",
@@ -4308,7 +4296,6 @@ dependencies = [
  "crash-handler",
  "dashmap",
  "flate2",
- "fs2",
  "futures",
  "interprocess",
  "kernal-api",
@@ -4395,7 +4382,6 @@ dependencies = [
  "console-subscriber",
  "crash-handler",
  "dashmap",
- "fs2",
  "kernal-api",
  "notify",
  "prost",
@@ -4482,7 +4468,6 @@ dependencies = [
 name = "zccache-fingerprint"
 version = "1.13.22"
 dependencies = [
- "fs2",
  "kernal-api",
  "rayon",
  "serde",

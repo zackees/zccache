@@ -164,8 +164,8 @@ impl MaintenanceEnvironment for RealMaintenanceEnvironment {
 
     fn filesystem_space(&self, root: &Path) -> io::Result<FilesystemSpace> {
         Ok(FilesystemSpace {
-            capacity_bytes: fs2::total_space(root)?,
-            free_bytes: fs2::available_space(root)?,
+            capacity_bytes: kernal_api::platform::resources::total_space(root)?,
+            free_bytes: kernal_api::platform::resources::available_space(root)?,
         })
     }
 }
