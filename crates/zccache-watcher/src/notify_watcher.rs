@@ -2,21 +2,21 @@
 //!
 //! Creates a `kernal_api::platform::fs_watch::Watcher` that converts host
 //! filesystem notifications into `WatchEvent`s, filters them through an
-//! `IgnoreFilter`, and sends them over a `tokio::sync::mpsc` channel for
-//! consumption by the settle buffer.
+//! `IgnoreFilter`, and sends them over a `kernal_api::async_engine` channel
+//! for consumption by the settle buffer.
 //!
 //! The watcher callback runs on a dedicated OS thread owned by the facade's
-//! backend. Using `tokio::sync::mpsc` (not crossbeam) ensures safe crossing
-//! from the OS thread into the async runtime.
+//! backend. Using the facade's async channel (not crossbeam) ensures safe
+//! crossing from the OS thread into the async runtime.
 
 use super::ignore::IgnoreFilter;
 use super::WatchEvent;
+use kernal_api::async_engine as mpsc;
 use kernal_api::platform::fs_watch::{
     ChangeEvent, ChangeKind, RecursiveMode, RenameSide, WatchNotification, Watcher,
 };
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 /// File watcher backed by the shared systems facade.
 ///
