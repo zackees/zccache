@@ -26,9 +26,7 @@
 //!    its daemon could be reaped.
 
 use crate::core::NormalizedPath;
-use std::borrow::Cow;
 use std::env;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -36,26 +34,6 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
-
-trait ProcessNameExt {
-    fn to_lossy_name(&self) -> Cow<'_, str>;
-}
-
-impl ProcessNameExt for str {
-    fn to_lossy_name(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self)
-    }
-}
-
-impl ProcessNameExt for OsStr {
-    fn to_lossy_name(&self) -> Cow<'_, str> {
-        self.to_string_lossy()
-    }
-}
-
-fn process_name_lossy<N: ProcessNameExt + ?Sized>(name: &N) -> Cow<'_, str> {
-    name.to_lossy_name()
-}
 
 /// Default wall-clock timeout for the entire stop hook run, in seconds.
 ///
