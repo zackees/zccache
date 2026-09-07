@@ -389,25 +389,21 @@ impl CpuUsageMonitor {
     }
 
     fn run_sampler(&'static self) {
-        let mut system = sysinfo::System::new();
-        system.refresh_cpu_usage();
+        // The facade owns the averaging, the clamp, and the host's minimum
+        // sampling interval, so this loop is now only the cadence and the
+        // publish. Its first sample is the baseline and is documented as
+        // unreliable, which is why the sleep comes first.
+        let mut sampler = kernal_api::platform::host_processes::CpuSampler::new();
 
         loop {
-            std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-            system.refresh_cpu_usage();
-            let usage = average_cpu_usage_percent(&system).clamp(0.0, 100.0);
+            std::thread::sleep(
+                kernal_api::platform::host_processes::CpuSampler::minimum_interval(),
+            );
+            let usage = sampler.sample();
             self.last_usage_percent_bits
                 .store(usage.to_bits(), Ordering::Relaxed);
         }
     }
-}
-
-fn average_cpu_usage_percent(system: &sysinfo::System) -> f32 {
-    let cpus = system.cpus();
-    if cpus.is_empty() {
-        return 0.0;
-    }
-    cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32
 }
 
 fn current_cpu_usage_percent() -> Option<f32> {

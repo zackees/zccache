@@ -615,7 +615,7 @@ fn now_secs() -> u64 {
 }
 
 fn snapshot_to_bundle(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if reflink_copy::reflink(src, dst).is_err() {
+    if kernal_api::platform::fs::reflink_file(src, dst).is_err() {
         std::fs::copy(src, dst)?;
     }
     let mut permissions = std::fs::metadata(dst)?.permissions();
@@ -627,7 +627,7 @@ fn restore_bundle_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     // Rust-plan bundles are immutable. Reflink is ideal; where unavailable we
     // copy instead of hardlinking because this crate does not own the daemon's
     // mediated-write registry and must not create an untracked shared writer.
-    if reflink_copy::reflink(src, dst).is_err() {
+    if kernal_api::platform::fs::reflink_file(src, dst).is_err() {
         std::fs::copy(src, dst)?;
     }
     make_bundle_file_writable(dst)

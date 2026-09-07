@@ -335,7 +335,7 @@ fn load_manifest(
 
 fn digest_file(path: &Path) -> io::Result<(u64, String)> {
     let mut file = fs::File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     let mut buffer = [0_u8; 1024 * 1024];
     let mut size = 0_u64;
     loop {
@@ -350,7 +350,7 @@ fn digest_file(path: &Path) -> io::Result<(u64, String)> {
 }
 
 fn generation_digest(key_hex: &str, outputs: &[StagedOutput]) -> String {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(key_hex.as_bytes());
     for output in outputs {
         hasher.update(&output.index.to_le_bytes());
@@ -480,7 +480,7 @@ pub mod fixtures {
             .map(|(index, payload)| StagedOutput {
                 index,
                 size: payload.len() as u64,
-                digest_hex: blake3::hash(payload).to_hex().to_string(),
+                digest_hex: kernal_api::hash::blake3_bytes(payload).to_hex().to_string(),
             })
             .collect();
         let generation_hex = generation_digest(key_hex, &outputs);

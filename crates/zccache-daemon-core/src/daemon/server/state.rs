@@ -35,7 +35,7 @@ const STAGING_ABANDONED_MIN_AGE: std::time::Duration = std::time::Duration::from
 /// daemon's compiler outputs.
 pub(super) struct StagingRoot {
     path: NormalizedPath,
-    lock: Option<std::fs::File>,
+    lock: Option<kernal_api::platform::fs::OwnedFileLock>,
 }
 
 impl StagingRoot {
@@ -44,7 +44,6 @@ impl StagingRoot {
         configured_parent: Option<&Path>,
         instance: u64,
     ) -> std::io::Result<Self> {
-        use fs2::FileExt;
         use std::io::Write;
 
         let nonce = std::time::SystemTime::now()
@@ -56,7 +55,7 @@ impl StagingRoot {
             .unwrap_or_else(|| cache_dir.join("staging"));
         let path = parent.join(format!("{}-{instance}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&path)?;
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -65,11 +64,11 @@ impl StagingRoot {
         // Never wait behind a cleaner that observed this just-created
         // directory before we acquired its lock. Failing daemon startup is
         // safer than returning a staging root a concurrent cleaner unlinked.
-        file.try_lock_exclusive()?;
-        writeln!(file, "{}", std::process::id())?;
+        let lock = kernal_api::platform::fs::try_lock_exclusive_owned(file)?;
+        writeln!(lock.file(), "{}", std::process::id())?;
         Ok(Self {
             path: path.into(),
-            lock: Some(file),
+            lock: Some(lock),
         })
     }
 
@@ -85,8 +84,6 @@ impl StagingRoot {
     /// lockless case, so tests can exercise both sides of the age gate
     /// without sleeping.
     fn cleanup_abandoned_older_than(&self, min_age: std::time::Duration) -> std::io::Result<usize> {
-        use fs2::FileExt;
-
         let Some(parent) = self.path.parent() else {
             return Ok(0);
         };
@@ -120,10 +117,12 @@ impl StagingRoot {
                 }
                 Err(_) => continue,
             };
-            if lock.try_lock_exclusive().is_err() {
+            // Taking the lock is the probe: if a live daemon holds it, this
+            // root is not abandoned. Release it again before deleting.
+            let Ok(probe) = kernal_api::platform::fs::try_lock_exclusive(&lock) else {
                 continue;
-            }
-            FileExt::unlock(&lock)?;
+            };
+            drop(probe);
             drop(lock);
             std::fs::remove_dir_all(&path)?;
             removed += 1;
@@ -154,7 +153,6 @@ fn staging_dir_is_older_than(path: &Path, min_age: std::time::Duration) -> bool 
 impl Drop for StagingRoot {
     fn drop(&mut self) {
         if let Some(lock) = self.lock.take() {
-            let _ = fs2::FileExt::unlock(&lock);
             drop(lock);
         }
         let _ = std::fs::remove_dir_all(self.path.as_path());
@@ -186,7 +184,7 @@ impl Drop for StagingRoot {
 /// and which the integration suite does — would be refused. `Drop` remains as
 /// the crash backstop.
 pub(super) struct CacheRootWriterLock {
-    lock: std::sync::Mutex<Option<std::fs::File>>,
+    lock: std::sync::Mutex<Option<kernal_api::platform::fs::OwnedFileLock>>,
 }
 
 impl CacheRootWriterLock {
@@ -196,17 +194,16 @@ impl CacheRootWriterLock {
     /// holds the root; `lifecycle::cache_root_error` preserves that kind, so
     /// callers can tell contention from a genuine filesystem fault.
     pub(super) fn acquire(cache_dir: &Path) -> std::io::Result<Self> {
-        use fs2::FileExt;
         use std::io::Write;
 
         std::fs::create_dir_all(cache_dir)?;
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(cache_dir.join(CACHE_ROOT_WRITER_LOCK_FILE))?;
-        if file.try_lock_exclusive().is_err() {
+        let Ok(lock) = kernal_api::platform::fs::try_lock_exclusive_owned(file) else {
             crate::core::lifecycle::write_event_in_cache_root(
                 cache_dir,
                 "daemon_cache_root_contended",
@@ -224,13 +221,13 @@ impl CacheRootWriterLock {
                 std::io::ErrorKind::WouldBlock,
                 "another live daemon already holds this cache root as its writer",
             ));
-        }
+        };
         // Best-effort provenance for whoever inspects the lock file; the lock
         // itself is what enforces exclusion, so a failed write is not fatal.
-        let _ = file.set_len(0);
-        let _ = writeln!(file, "{}", std::process::id());
+        let _ = lock.file().set_len(0);
+        let _ = writeln!(lock.file(), "{}", std::process::id());
         Ok(Self {
-            lock: std::sync::Mutex::new(Some(file)),
+            lock: std::sync::Mutex::new(Some(lock)),
         })
     }
 
@@ -245,8 +242,10 @@ impl CacheRootWriterLock {
             .lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(file) = guard.take() {
-            let _ = fs2::FileExt::unlock(&file);
+        if let Some(lock) = guard.take() {
+            // Dropping releases; `unlock` would too, but the handle is not
+            // wanted back here.
+            drop(lock);
         }
     }
 }
@@ -657,7 +656,11 @@ mod staging_tests {
     /// test having to sleep.
     fn backdate(path: &Path, by: Duration) {
         let when = std::time::SystemTime::now() - by;
-        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when)).unwrap();
+        kernal_api::platform::fs::set_file_mtime(
+            path,
+            kernal_api::platform::fs::FileTime::from_system_time(when),
+        )
+        .unwrap();
     }
 
     /// #1162 finding 1: `index.bin` is last-writer-wins, so a second writer on

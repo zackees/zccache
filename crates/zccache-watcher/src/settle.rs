@@ -7,9 +7,9 @@
 //! Overflow events bypass coalescing entirely — they clear pending state and
 //! emit immediately, since everything is invalidated.
 
+use kernal_api::async_engine as mpsc;
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use zccache_core::NormalizedPath;
 
 use super::WatchEvent;
@@ -107,10 +107,11 @@ impl SettleBuffer {
             // Coalesce: keep reading until either (a) the settle window elapses
             // with no new events, or (b) max_wait from the first event is reached.
             // Without (b), continuous writes (e.g. session log) starve the buffer.
-            let deadline = tokio::time::Instant::now() + self.max_wait;
+            let deadline = kernal_api::async_engine::Deadline::after(self.max_wait);
             loop {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                let wait = self.settle_window.min(remaining);
+                // `remaining` clamps to zero after expiry, as
+                // `saturating_duration_since` did.
+                let wait = self.settle_window.min(deadline.remaining());
                 if wait.is_zero() {
                     // Max wait reached — force emit.
                     if !pending.is_empty() {
@@ -118,7 +119,7 @@ impl SettleBuffer {
                     }
                     break;
                 }
-                match tokio::time::timeout(wait, rx.recv()).await {
+                match kernal_api::async_engine::timeout(wait, rx.recv()).await {
                     Ok(Some(WatchEvent::Overflow | WatchEvent::Error(_))) => {
                         pending.clear();
                         let _ = tx.send(SettledEvent::Overflow);

@@ -91,9 +91,9 @@ const HEADER_LEN: usize = 4 + 4 + 8 + 32;
 pub struct Key(pub [u8; 32]);
 
 impl Key {
-    /// Wrap a [`blake3::Hash`].
+    /// Wrap a [`kernal_api::hash::Blake3Digest`].
     #[must_use]
-    pub fn from_hash(h: blake3::Hash) -> Self {
+    pub fn from_hash(h: kernal_api::hash::Blake3Digest) -> Self {
         Self(*h.as_bytes())
     }
 
@@ -200,7 +200,7 @@ fn encode_header(payload: &[u8]) -> [u8; HEADER_LEN] {
     header[0..4].copy_from_slice(&MAGIC);
     header[4..8].copy_from_slice(&SCHEMA_VERSION.to_le_bytes());
     header[8..16].copy_from_slice(&(payload.len() as u64).to_le_bytes());
-    header[16..48].copy_from_slice(::blake3::hash(payload).as_bytes());
+    header[16..48].copy_from_slice(::kernal_api::hash::blake3_bytes(payload).as_bytes());
     header
 }
 
@@ -242,7 +242,7 @@ fn decode_and_verify(label: &str, raw: &[u8]) -> KvResult<Vec<u8>> {
         ));
     }
     let expected = &raw[16..48];
-    if ::blake3::hash(payload).as_bytes() != expected {
+    if ::kernal_api::hash::blake3_bytes(payload).as_bytes() != expected {
         return Err(KvError::Corrupt(
             label.to_string(),
             "blake3 mismatch".to_string(),
@@ -430,7 +430,7 @@ impl KvStore {
         let store = self.clone();
         let namespace = namespace.to_string();
         let key = *key;
-        tokio::task::spawn_blocking(move || store.get(&namespace, &key))
+        kernal_api::async_engine::launch_blocking(move || store.get(&namespace, &key))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -463,7 +463,7 @@ impl KvStore {
         let namespace = namespace.to_string();
         let key = *key;
         let value = value.to_vec();
-        tokio::task::spawn_blocking(move || store.put(&namespace, &key, &value))
+        kernal_api::async_engine::launch_blocking(move || store.put(&namespace, &key, &value))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -485,7 +485,7 @@ impl KvStore {
         let store = self.clone();
         let namespace = namespace.to_string();
         let key = *key;
-        tokio::task::spawn_blocking(move || store.remove(&namespace, &key))
+        kernal_api::async_engine::launch_blocking(move || store.remove(&namespace, &key))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -506,7 +506,7 @@ impl KvStore {
     pub async fn clear_namespace_async(&self, namespace: &str) -> KvResult<()> {
         let store = self.clone();
         let namespace = namespace.to_string();
-        tokio::task::spawn_blocking(move || store.clear_namespace(&namespace))
+        kernal_api::async_engine::launch_blocking(move || store.clear_namespace(&namespace))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -549,7 +549,7 @@ impl KvStore {
     pub async fn list_namespace_async(&self, namespace: &str) -> KvResult<Vec<(Key, u64)>> {
         let store = self.clone();
         let namespace = namespace.to_string();
-        tokio::task::spawn_blocking(move || store.list_namespace(&namespace))
+        kernal_api::async_engine::launch_blocking(move || store.list_namespace(&namespace))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -565,7 +565,7 @@ impl KvStore {
     pub async fn namespace_bytes_async(&self, namespace: &str) -> KvResult<u64> {
         let store = self.clone();
         let namespace = namespace.to_string();
-        tokio::task::spawn_blocking(move || store.namespace_bytes(&namespace))
+        kernal_api::async_engine::launch_blocking(move || store.namespace_bytes(&namespace))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -606,7 +606,7 @@ impl KvStore {
     /// off Tokio runtime threads.
     pub async fn total_bytes_async(&self) -> KvResult<u64> {
         let store = self.clone();
-        tokio::task::spawn_blocking(move || store.total_bytes())
+        kernal_api::async_engine::launch_blocking(move || store.total_bytes())
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -625,7 +625,7 @@ impl KvStore {
     /// Tokio runtime threads.
     pub async fn stats_async(&self) -> KvResult<Vec<(String, u64)>> {
         let store = self.clone();
-        tokio::task::spawn_blocking(move || store.stats())
+        kernal_api::async_engine::launch_blocking(move || store.stats())
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -642,7 +642,7 @@ mod tests {
     }
 
     fn key_from(seed: &[u8]) -> Key {
-        Key::from_hash(::blake3::hash(seed))
+        Key::from_hash(::kernal_api::hash::blake3_bytes(seed))
     }
 
     fn value_file(dir: &tempfile::TempDir, ns: &str, k: &Key) -> std::path::PathBuf {
@@ -847,7 +847,7 @@ mod tests {
     // ---- F10: hex round-trip + bad inputs ----
     #[test]
     fn f10_key_hex_round_trip() {
-        let h = ::blake3::hash(b"hello");
+        let h = ::kernal_api::hash::blake3_bytes(b"hello");
         let k = Key::from_hash(h);
         let hex = k.to_hex();
         assert_eq!(hex.len(), 64);
@@ -995,7 +995,7 @@ mod tests {
     // ---- P3: case-insensitive key parsing means UPPER and lower collide ----
     #[test]
     fn p3_case_insensitive_key_parses_to_same_key() {
-        let k = Key::from_hash(::blake3::hash(b"x"));
+        let k = Key::from_hash(::kernal_api::hash::blake3_bytes(b"x"));
         let lower = k.to_hex();
         let upper = lower.to_ascii_uppercase();
         assert_eq!(

@@ -266,7 +266,10 @@ fn bump_mtime_past_ntfs(path: &Path) {
     // used elsewhere in this test suite.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let now = std::time::SystemTime::now();
-    let _ = filetime::set_file_mtime(path, filetime::FileTime::from_system_time(now));
+    let _ = kernal_api::platform::fs::set_file_mtime(
+        path,
+        kernal_api::platform::fs::FileTime::from_system_time(now),
+    );
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────

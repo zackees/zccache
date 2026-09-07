@@ -40,6 +40,21 @@ fn run(mode: &str, expected_label: &str) -> (PathBuf, tempfile::TempDir) {
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn {bin}: {e}"));
 
+    // The signal path spools a binary record and leaves formatting to the
+    // next start (kernal-api#72); drive that start so the dump exists. The
+    // panic path writes in-process and does not need it.
+    let drain = std::process::Command::new(bin)
+        .arg("drain")
+        .env("ZCCACHE_CACHE_DIR", &cache_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    assert!(
+        drain.is_ok_and(|status| status.success()),
+        "the drain pass that converts spooled records must itself succeed"
+    );
+
     let dump = wait_for_dump_with_label(&crash_dir, expected_label, Duration::from_secs(5));
     let path = dump.unwrap_or_else(|| {
         panic!(

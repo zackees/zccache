@@ -50,7 +50,9 @@ fn read_to_string(path: &Path) -> String {
 }
 
 fn hash_str(input: &str) -> String {
-    blake3::hash(input.as_bytes()).to_hex().to_string()
+    kernal_api::hash::blake3_bytes(input.as_bytes())
+        .to_hex()
+        .to_string()
 }
 
 fn hash_file(path: &Path) -> String {

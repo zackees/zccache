@@ -320,7 +320,7 @@ pub fn client_download_exists(
 
 fn infer_download_file_name(source: &DownloadSource, archive_format: ArchiveFormat) -> String {
     let base = infer_source_file_name(source);
-    let hash = blake3::hash(download_source_key(source).as_bytes())
+    let hash = kernal_api::hash::blake3_bytes(download_source_key(source).as_bytes())
         .to_hex()
         .to_string();
     let suffix = archive_suffix(archive_format);

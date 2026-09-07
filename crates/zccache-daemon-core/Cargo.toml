@@ -21,6 +21,7 @@ test-support = ["dep:tracing-subscriber", "zccache-artifact/test-support"]
 tokio-console = ["dep:console-subscriber"]
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs"] }
 # internal subsystem crates the daemon uses
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
@@ -41,9 +42,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-crash-handler = "0.6"
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
@@ -55,17 +53,10 @@ dashmap = { workspace = true }
 arc-swap = { workspace = true }
 rayon = { workspace = true }
 tempfile = { workspace = true }
-notify = { workspace = true }
-jwalk = { workspace = true }
-globset = "0.4"
 clang = { workspace = true }
 rkyv = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 regex = { workspace = true }
-fs2 = { workspace = true }
-filetime = { workspace = true }
-reflink-copy = { workspace = true }
-sysinfo = "0.30.13"
 # daemon-entry / test-support
 clap = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }

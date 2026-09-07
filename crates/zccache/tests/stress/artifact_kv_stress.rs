@@ -22,7 +22,7 @@ fn store_in_dir(dir: &std::path::Path) -> KvStore {
 }
 
 fn key_from(seed: &[u8]) -> Key {
-    Key::from_hash(blake3::hash(seed))
+    Key::from_hash(kernal_api::hash::blake3_bytes(seed))
 }
 
 // =====================================================================

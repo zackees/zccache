@@ -11,7 +11,7 @@ description = "Core shared types and utilities for zccache"
 publish = false
 
 [dependencies]
-crash-handler = "0.6"
+kernal-api = { workspace = true, features = ["crash"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

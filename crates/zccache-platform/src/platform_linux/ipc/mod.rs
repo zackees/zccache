@@ -19,9 +19,10 @@ pub fn select_host_text(file_value: String, _windows_value: String) -> String {
 }
 
 pub fn probe_native(endpoint: &str) -> std::io::Result<()> {
-    use interprocess::local_socket::traits::Stream as _;
-    use interprocess::local_socket::{GenericFilePath, Stream, ToFsName};
-    let name = ToFsName::to_fs_name::<GenericFilePath>(endpoint)?;
-    drop(Stream::connect(name)?);
+    // The facade owns endpoint naming per host -- filesystem paths here,
+    // the kernel namespace on Windows -- so this no longer picks a name
+    // type, and no longer names the transport crate to do it.
+    let endpoint = kernal_api::IpcEndpoint::new(endpoint)?;
+    drop(kernal_api::IpcStream::connect(&endpoint)?);
     Ok(())
 }

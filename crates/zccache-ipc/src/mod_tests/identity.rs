@@ -12,7 +12,7 @@ fn identity_blake3_mmaps_large_files_without_changing_the_digest() {
     std::fs::write(&path, &bytes).unwrap();
 
     let actual_blake3 = executable_hash_blake3(&path).unwrap();
-    let expected_blake3 = *blake3::hash(&bytes).as_bytes();
+    let expected_blake3 = *kernal_api::hash::blake3_bytes(&bytes).as_bytes();
 
     assert_eq!(actual_blake3, expected_blake3);
 }

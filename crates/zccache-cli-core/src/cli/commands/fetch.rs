@@ -109,7 +109,7 @@ fn sharded(base: PathBuf, hex: &str) -> PathBuf {
 /// Stable per-URL key. blake3 of the URL bytes — an index into the record
 /// store, never a content address.
 pub(crate) fn url_key(url: &str) -> zccache_artifact::kv::Key {
-    zccache_artifact::kv::Key::from_hash(blake3::hash(url.as_bytes()))
+    zccache_artifact::kv::Key::from_hash(kernal_api::hash::blake3_bytes(url.as_bytes()))
 }
 
 /// Whether a pin matches. Case-insensitive; a pin that is not 64 hex chars is
@@ -402,7 +402,7 @@ pub(crate) fn format_tag(format: ArchiveFormat) -> &'static str {
 /// (strip-components, filters) extends this key instead of silently reusing a
 /// tree produced under different options.
 pub(crate) fn tree_key(archive_digest: &str, format: ArchiveFormat) -> String {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(TREE_KEY_DOMAIN.as_bytes());
     hasher.update(&[0]);
     hasher.update(archive_digest.as_bytes());

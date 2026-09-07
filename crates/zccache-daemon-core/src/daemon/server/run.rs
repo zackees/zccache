@@ -537,11 +537,11 @@ pub(super) fn record_watcher_degradation(state: &Arc<SharedState>, reason: &str)
 /// armed watcher's raw event stream.
 pub(super) fn start_watcher_tasks(
     state: &Arc<SharedState>,
-    raw_rx: tokio::sync::mpsc::UnboundedReceiver<crate::watcher::WatchEvent>,
+    raw_rx: kernal_api::async_engine::UnboundedReceiver<crate::watcher::WatchEvent>,
 ) {
     {
         // Settle buffer: coalesces raw events into batches after a quiet period.
-        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (settled_tx, mut settled_rx) = kernal_api::async_engine::unbounded_channel();
         let settle = SettleBuffer::default_window();
         tokio::spawn(async move {
             settle.run(raw_rx, settled_tx).await;

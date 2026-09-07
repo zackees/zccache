@@ -251,7 +251,10 @@ fn write_file(path: &Path, content: &[u8]) {
 fn bump_mtime(path: &Path) {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let now = std::time::SystemTime::now();
-    let _ = filetime::set_file_mtime(path, filetime::FileTime::from_system_time(now));
+    let _ = kernal_api::platform::fs::set_file_mtime(
+        path,
+        kernal_api::platform::fs::FileTime::from_system_time(now),
+    );
 }
 
 // ─── Path A: include scan ────────────────────────────────────────────────
@@ -915,8 +918,8 @@ async fn cache_restore_with_normalized_mtimes_still_hits() {
 
     // Normalize the input's mtime to a fixed past value, mirroring what
     // `tar --mtime` would do during restore.
-    let normalized = filetime::FileTime::from_unix_time(1_600_000_000, 0);
-    let _ = filetime::set_file_mtime(&input, normalized);
+    let normalized = kernal_api::platform::fs::FileTime::from_unix_time(1_600_000_000, 0);
+    let _ = kernal_api::platform::fs::set_file_mtime(&input, normalized);
 
     // Bring a fresh daemon up on the same cache root and verify the warm
     // hit still works.

@@ -303,7 +303,7 @@ fn hash_d_file_sources(d_file: &Path, workspace_root: &Path) -> Option<BTreeMap<
                 return None;
             }
             let bytes = std::fs::read(&canon).ok()?;
-            let hash = blake3::hash(&bytes).to_hex().to_string();
+            let hash = kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string();
             Some((path_to_unix(rel), hash))
         })
         .collect();
@@ -363,7 +363,7 @@ fn process_run_build_script(
             let Ok(bytes) = std::fs::read(&canon) else {
                 continue;
             };
-            let hash = blake3::hash(&bytes).to_hex().to_string();
+            let hash = kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string();
             sources.insert(path_to_unix(ws_rel), hash);
         }
     }
@@ -395,28 +395,29 @@ fn strip_hash_suffix(s: &str) -> Option<&str> {
 /// `package_name → manifest_dir` map. Skips `target/`, `.cargo/`, `.git/`,
 /// `node_modules/`, and dot-directories.
 fn discover_workspace_crates(workspace_root: &Path) -> HashMap<String, PathBuf> {
-    use jwalk::WalkDirGeneric;
     let mut map: HashMap<String, PathBuf> = HashMap::new();
-    let walker: WalkDirGeneric<((), ())> = WalkDirGeneric::new(workspace_root)
-        .skip_hidden(false)
-        .process_read_dir(|_depth, _parent, _, children| {
-            children.retain(|c| match c {
-                Ok(e) => {
-                    let name = e.file_name();
-                    let name_str = name.to_string_lossy();
+    // The facade prunes directories rather than filtering every child, so a
+    // *file* with one of these names is no longer dropped here. That changes
+    // nothing: the loop below keeps only `Cargo.toml`, so such a file was
+    // discarded either way.
+    let walker = kernal_api::platform::fs::DirectoryWalk::new(workspace_root.to_path_buf())
+        .include_hidden_entries(true)
+        .prune_directories(|directory| {
+            directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_none_or(|name| {
                     !matches!(
-                        name_str.as_ref(),
+                        name,
                         "target" | ".cargo" | ".git" | "node_modules" | ".venv"
                     )
-                }
-                Err(_) => false,
-            });
+                })
         });
-    for entry in walker.into_iter().filter_map(|e| e.ok()) {
-        if entry.file_name() != "Cargo.toml" {
+    for entry in walker.walk().filter_map(|e| e.ok()) {
+        let path = entry.path().to_path_buf();
+        if path.file_name() != Some(std::ffi::OsStr::new("Cargo.toml")) {
             continue;
         }
-        let path = entry.path();
         let Some(pkg_name) = parse_package_name(&path) else {
             continue;
         };
@@ -514,7 +515,9 @@ pub fn validate(
             let all_unchanged = entry.sources.par_iter().all(|(rel, expected_hex)| {
                 let abs = workspace_root.join(rel);
                 match std::fs::read(&abs) {
-                    Ok(bytes) => blake3::hash(&bytes).to_hex().to_string() == *expected_hex,
+                    Ok(bytes) => {
+                        kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string() == *expected_hex
+                    }
                     Err(_) => false,
                 }
             });

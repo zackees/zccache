@@ -7,8 +7,8 @@
 
 use super::clock::{ChangeJournal, Clock};
 use super::metadata::{CandidateEvictionResult, EvictionCandidate, MetadataCache};
+use kernal_api::async_engine::Semaphore;
 use std::sync::{Arc, OnceLock};
-use tokio::sync::Semaphore;
 use zccache_core::{NormalizedPath, Result};
 use zccache_hash::ContentHash;
 
@@ -180,14 +180,13 @@ impl CacheSystem {
         since_clock: Clock,
     ) -> Result<ClockLookup> {
         let cache = self.clone();
-        let _permit = hash_semaphore()
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|err| zccache_core::Error::Cache {
-                message: format!("hash semaphore closed: {err}"),
-            })?;
-        tokio::task::spawn_blocking(move || cache.lookup_since(&path, since_clock))
+        // The facade's semaphore cannot be closed, so `acquire` yields a
+        // permit rather than a `Result` and the "semaphore closed" arm has
+        // no state left to describe. Borrowed rather than owned for the same
+        // reason the original cloned the `Arc`: the permit only has to
+        // outlive this call, and the semaphore itself is `'static`.
+        let _permit = hash_semaphore().acquire().await;
+        kernal_api::async_engine::launch_blocking(move || cache.lookup_since(&path, since_clock))
             .await
             .map_err(|err| zccache_core::Error::Cache {
                 message: format!("cache lookup worker failed: {err}"),
@@ -254,7 +253,7 @@ impl CacheSystem {
     /// Async bridge for [`Self::rescan_entries`].
     pub async fn rescan_entries_async(&self) -> Result<usize> {
         let cache = self.clone();
-        tokio::task::spawn_blocking(move || cache.rescan_entries())
+        kernal_api::async_engine::launch_blocking(move || cache.rescan_entries())
             .await
             .map_err(|err| zccache_core::Error::Cache {
                 message: format!("cache rescan worker failed: {err}"),

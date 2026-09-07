@@ -66,7 +66,7 @@ impl std::fmt::Display for ContentHash {
 /// Hash the contents of a byte slice.
 #[must_use]
 pub fn hash_bytes(data: &[u8]) -> ContentHash {
-    let hash = blake3::hash(data);
+    let hash = kernal_api::hash::blake3_bytes(data);
     ContentHash(*hash.as_bytes())
 }
 
@@ -74,13 +74,13 @@ pub fn hash_bytes(data: &[u8]) -> ContentHash {
 ///
 /// Avoids allocating an intermediate buffer when the input is spread across
 /// multiple slices (e.g., request fingerprinting).
-pub struct StreamHasher(blake3::Hasher);
+pub struct StreamHasher(kernal_api::hash::Blake3Hasher);
 
 impl StreamHasher {
     /// Create a new streaming hasher.
     #[must_use]
     pub fn new() -> Self {
-        Self(blake3::Hasher::new())
+        Self(kernal_api::hash::Blake3Hasher::new())
     }
 
     /// Feed bytes into the hasher.
@@ -108,7 +108,7 @@ impl Default for StreamHasher {
 ///
 /// Returns an error if reading from the reader fails.
 pub fn hash_reader<R: Read>(mut reader: R) -> std::io::Result<ContentHash> {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     let mut buf = [0u8; 16384];
     loop {
         let n = reader.read(&mut buf)?;
@@ -119,11 +119,6 @@ pub fn hash_reader<R: Read>(mut reader: R) -> std::io::Result<ContentHash> {
     }
     Ok(ContentHash(*hasher.finalize().as_bytes()))
 }
-
-/// Files at or above this size use blake3's rayon-parallel path; smaller
-/// files stay single-threaded because rayon's task-spawn overhead is
-/// larger than the work below this point. Issue #556.
-const RAYON_HASH_THRESHOLD_BYTES: u64 = 128 * 1024;
 
 /// Mapping tiny files costs more than copying them into Blake3's working
 /// buffer. Archive and linker requests commonly hash dozens of small object
@@ -173,18 +168,18 @@ pub fn hash_open_file(file: &std::fs::File, len: u64) -> std::io::Result<Content
         return hash_reader(file);
     }
 
-    // SAFETY: Mapping may observe concurrent modifications. Callers that need
-    // change detection must compare file metadata before and after hashing.
-    let mmap = unsafe { memmap2::Mmap::map(file)? };
-    if len >= RAYON_HASH_THRESHOLD_BYTES {
-        // Issue #556: blake3's rayon-parallel path. ~4x speedup on a
-        // 4-core CI runner for a 100 MB clang++ binary (cold compiler
-        // hash, first-after-daemon-start cc/cpp link overhead).
-        let mut hasher = blake3::Hasher::new();
-        hasher.update_rayon(&mmap);
-        return Ok(ContentHash(*hasher.finalize().as_bytes()));
-    }
-    Ok(hash_bytes(&mmap))
+    // Mapping, the #556 rayon-parallel path above its own threshold, and the
+    // fallback when a file cannot be mapped all belong to the facade now
+    // (kernal-api#70). `blake3_open_file` takes the handle we already hold
+    // rather than a path: reopening would cost a second open and stat of a
+    // file whose metadata our callers compare around this call, and the
+    // reopened path could resolve to a different inode than this handle.
+    kernal_api::hash::blake3_open_file(
+        file,
+        kernal_api::hash::Blake3ReadOptions::new().memory_map(true),
+    )
+    .map(|digest| ContentHash(*digest.as_bytes()))
+    .map_err(std::io::Error::other)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -259,12 +254,14 @@ mod tests {
     /// Issue #556: rayon-parallel path produces bit-identical output
     /// to the single-threaded path. Files above the threshold take
     /// the parallel branch; below stay on the single-thread branch.
-    /// Both must hash to the same value as `blake3::hash` of the same
+    /// Both must hash to the same value as `kernal_api::hash::blake3_bytes` of the same
     /// bytes — a mismatch would silently churn every cache key.
     #[test]
     fn hash_file_rayon_path_matches_single_threaded() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        // 256 KB — comfortably above RAYON_HASH_THRESHOLD_BYTES (128 KB).
+        // 256 KB — comfortably above both this crate's mmap threshold and
+        // the facade's own 128 KB parallel-hash cutoff, so this exercises
+        // the mapped, rayon-parallel path rather than the buffered one.
         let payload: Vec<u8> = (0..(256 * 1024)).map(|i| (i % 251) as u8).collect();
         std::fs::write(tmp.path(), &payload).unwrap();
         let via_file = hash_file(tmp.path()).unwrap();

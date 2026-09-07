@@ -521,8 +521,10 @@ fn rustc_output_kind(path: &std::path::Path) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    fn file_time(path: &Path) -> filetime::FileTime {
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(path).unwrap())
+    fn file_time(path: &Path) -> kernal_api::platform::fs::FileTime {
+        kernal_api::platform::fs::FileTime::from_last_modification_time(
+            &std::fs::metadata(path).unwrap(),
+        )
     }
 
     #[test]
@@ -688,8 +690,8 @@ mod tests {
         std::fs::write(&cache_path, payload.as_slice()).unwrap();
         write_authoritative_blob_digest(&cache_path).unwrap();
 
-        let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0);
-        filetime::set_file_mtime(&cache_path, old_time).unwrap();
+        let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0);
+        kernal_api::platform::fs::set_file_mtime(&cache_path, old_time).unwrap();
 
         let sid = state.sessions.create(crate::depgraph::SessionConfig {
             client_pid: std::process::id(),

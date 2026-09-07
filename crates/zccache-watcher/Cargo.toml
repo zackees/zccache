@@ -17,16 +17,17 @@ crate-type = ["rlib"]
 default = []
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs", "fs-watch"] }
 zccache-core = { workspace = true }
 zccache-fscache = { workspace = true }
-globset = "0.4"
-jwalk = { workspace = true }
-notify = { workspace = true }
 rayon = { workspace = true }
-tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Production code reaches the runtime through `kernal_api::async_engine`
+# (kernal-api#69). tokio stays here only for `#[tokio::test]` and the
+# `tokio::spawn` / `tokio::time` calls inside those tests.
+tokio = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

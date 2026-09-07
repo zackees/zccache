@@ -81,7 +81,7 @@ pub(in crate::daemon::server) fn floor_materialized_outputs_to_input_max<'a>(
         }
     }
 
-    let ft = filetime::FileTime::from_system_time(max_mtime);
+    let ft = kernal_api::platform::fs::FileTime::from_system_time(max_mtime);
     for path in outputs {
         let Ok(current) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
             continue;
@@ -120,7 +120,7 @@ pub(in crate::daemon::server) fn floor_artifact_mtime_to_sibling_max(
 /// blob in place).
 pub(in crate::daemon::server) fn compute_sibling_floor(
     path: &Path,
-) -> std::io::Result<Option<filetime::FileTime>> {
+) -> std::io::Result<Option<kernal_api::platform::fs::FileTime>> {
     if mtime_floor_disabled() {
         return Ok(None);
     }
@@ -158,7 +158,9 @@ pub(in crate::daemon::server) fn compute_sibling_floor(
         }
     }
     if max_mtime > my_mtime {
-        Ok(Some(filetime::FileTime::from_system_time(max_mtime)))
+        Ok(Some(kernal_api::platform::fs::FileTime::from_system_time(
+            max_mtime,
+        )))
     } else {
         Ok(None)
     }
@@ -166,13 +168,13 @@ pub(in crate::daemon::server) fn compute_sibling_floor(
 
 pub(in crate::daemon::server) fn set_materialized_mtime(
     path: &Path,
-    mtime: filetime::FileTime,
+    mtime: kernal_api::platform::fs::FileTime,
 ) -> std::io::Result<()> {
     let readonly = std::fs::metadata(path)?.permissions().readonly();
     if readonly {
         crate::platform::fs::permissions::make_writable(path)?;
     }
-    let result = filetime::set_file_mtime(path, mtime);
+    let result = kernal_api::platform::fs::set_file_mtime(path, mtime);
     if readonly {
         let restore = crate::platform::fs::permissions::set_readonly(path, true);
         if result.is_ok() {

@@ -92,7 +92,7 @@ pub fn compute_artifact_key_normalized_with_root(
         .collect();
     indexed.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(b"zccache-artifact-key-v1\0");
     hasher.update(context_key.0.as_bytes());
     hasher.update(b"\0");
@@ -137,7 +137,7 @@ where
         .collect();
     indexed.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(b"zccache-artifact-key-v1\0");
     hasher.update(context_key.0.as_bytes());
     hasher.update(b"\0");

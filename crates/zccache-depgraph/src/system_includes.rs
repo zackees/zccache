@@ -647,9 +647,9 @@ End of search list.
         let tmp = tempfile::tempdir().unwrap();
         let compiler = tmp.path().join("clang++");
         touch(&compiler, b"#!/bin/sh\n# v1\n");
-        filetime::set_file_mtime(
+        kernal_api::platform::fs::set_file_mtime(
             &compiler,
-            filetime::FileTime::from_unix_time(1_000_000_000, 0),
+            kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0),
         )
         .unwrap();
 
@@ -662,9 +662,9 @@ End of search list.
             &compiler,
             b"#!/bin/sh\n# v2 with a totally different size\n",
         );
-        filetime::set_file_mtime(
+        kernal_api::platform::fs::set_file_mtime(
             &compiler,
-            filetime::FileTime::from_unix_time(1_000_001_000, 0),
+            kernal_api::platform::fs::FileTime::from_unix_time(1_000_001_000, 0),
         )
         .unwrap();
 
@@ -788,9 +788,9 @@ End of search list.
         let compiler = tmp.path().join("clang++");
         let snapshot = tmp.path().join("system_includes.bin");
         touch(&compiler, b"#!/bin/sh\n# original\n");
-        filetime::set_file_mtime(
+        kernal_api::platform::fs::set_file_mtime(
             &compiler,
-            filetime::FileTime::from_unix_time(1_000_000_000, 0),
+            kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0),
         )
         .unwrap();
 
@@ -800,9 +800,9 @@ End of search list.
 
         // Simulate compiler upgrade.
         touch(&compiler, b"#!/bin/sh\n# upgraded - different size\n");
-        filetime::set_file_mtime(
+        kernal_api::platform::fs::set_file_mtime(
             &compiler,
-            filetime::FileTime::from_unix_time(1_000_001_000, 0),
+            kernal_api::platform::fs::FileTime::from_unix_time(1_000_001_000, 0),
         )
         .unwrap();
 

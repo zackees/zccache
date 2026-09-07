@@ -58,6 +58,25 @@ fn run_crash_scenario(mode: &str, expected_label: &str) -> (PathBuf, tempfile::T
     // exit status. The disk evidence is the real assertion.
     let _ = output;
 
+    // A fatal signal is captured by kernal-api into a binary record from
+    // signal context, where formatting a report is not safe to do
+    // (kernal-api#72). Turning that record into a readable dump happens at
+    // the next start, so drive one: this is the same conversion a real
+    // `zccache` invocation after a daemon crash performs. The panic path
+    // writes its dump in-process and does not need this, but running it
+    // unconditionally keeps the two paths on one code path here.
+    let drain = std::process::Command::new(bin)
+        .arg("drain")
+        .env("ZCCACHE_CACHE_DIR", &cache_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    assert!(
+        drain.is_ok_and(|status| status.success()),
+        "the drain pass that converts spooled records must itself succeed"
+    );
+
     let dump = wait_for_dump_with_label(&crash_dir, expected_label, Duration::from_secs(5));
     let path = dump.unwrap_or_else(|| {
         panic!(

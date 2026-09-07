@@ -52,7 +52,6 @@ tokio = { version = "1", features = ["full"] }
 console-subscriber = "0.5"
 serde = { version = "1", features = ["derive", "rc"] }
 bincode = "1"
-blake3 = { version = "1", features = ["pure", "rayon"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -60,11 +59,8 @@ clap = { version = "4", features = ["derive", "env"] }
 dashmap = "6"
 arc-swap = "1"
 clang = { version = "2", features = ["runtime"] }
-notify = "7"
-memmap2 = "0.9"
 tempfile = "3"
 rayon = "1"
-jwalk = "0.8"
 bytes = "1"
 prost = "0.14"
 prost-build = "0.14"
@@ -72,9 +68,6 @@ protoc-bin-vendored = "3"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream"] }
 tokio-util = "0.7"
-filetime = "0.2"
-reflink-copy = "=0.1.30"
-fs2 = "0.4"
 regex = "1"
 serde_json = "1"
 sha2 = "0.10"
@@ -88,13 +81,16 @@ lzma-rs = "0.3"
 # sourcing the maintained successor recommended by RustSec.
 sevenz-rust = { package = "sevenz-rust2", version = "0.22.2" }
 rkyv = "0.8"
-# 0.9.3 is the floor, not a preference (#1439): earlier releases compile the
-# vendored mimalloc amalgamation with MSVC's deprecated C-mode Interlocked
-# atomics wrapper, whose `_acq`/`_rel` ARM64 intrinsics clang-cl does not
-# declare, so the cargo-xwin `aarch64-pc-windows-msvc` release lane cannot
-# build them. 0.9.3 selects clang's C11 `stdatomic` for that target inside its
-# own build script -- the only package-scoped place the choice can be made.
-mimalloc-pprof = "0.9.3"
+# The shared systems facade (kernal-api#69). Capabilities are enabled one
+# migration slice at a time, so this stays `default-features = false` and each
+# slice adds only the feature it needs.
+#
+# MIGRATION PIN, not a release pin. `kernal-api` has no usable registry
+# release yet -- crates.io carries only the yanked `0.0.0` reservation, which
+# its own AGENTS.md forbids as a dependency -- so this tracks an exact commit
+# to keep the branch reproducible and CI-buildable. It must become an exact
+# published version before this reaches a release branch.
+kernal-api = { git = "https://github.com/zackees/kernal-api", rev = "b718da080826d2c2d9c13aa54cb9d04fae2f468e", default-features = false }
 running-process = { version = "4.10.5", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
@@ -118,14 +114,6 @@ zccache-test-support = { path = "crates/zccache-test-support" }
 zccache-watcher = { path = "crates/zccache-watcher" }
 zccache-cli = { path = "crates/zccache-cli" }
 zccache-fingerprint = { path = "crates/zccache-fingerprint" }
-
-# Vendored notify with fixes for Windows ReadDirectoryChangesW:
-# 1. Detect buffer overflow (bytes_written == 0) and report as error
-# 2. Report start_read failure (watcher silently dying) as error
-# Kept in-repo (vendor/notify) so workspace builds need no sibling checkout;
-# the tree tracks soldr's _vender/notify (patched for windows-sys 0.61).
-[patch.crates-io]
-notify = { path = "vendor/notify" }
 
 [workspace.metadata.dylint]
 libraries = [{ path = "dylints/*" }]

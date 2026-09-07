@@ -11,17 +11,20 @@ description = "Filesystem metadata cache for zccache"
 publish = false
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs"] }
 bincode = { workspace = true }
 dashmap = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true }
 tracing = { workspace = true }
 zccache-core = { workspace = true }
 zccache-hash = { workspace = true }
 
 [dev-dependencies]
-filetime = { workspace = true }
+# Test-only: `#[tokio::test]` needs the runtime in scope. The library
+# itself reaches the runtime through `kernal_api::async_engine`
+# (kernal-api#73).
+tokio = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

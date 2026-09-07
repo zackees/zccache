@@ -20,26 +20,29 @@ test-support = []
 gha = ["dep:zccache-gha", "dep:flate2", "dep:tar"]
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs"] }
 zccache-core = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
 zccache-platform = { workspace = true }
 
 bincode = { workspace = true }
-blake3 = { workspace = true }
 dashmap = { workspace = true }
 flate2 = { workspace = true, optional = true }
-fs2 = { workspace = true }
 prost = { workspace = true }
 rayon = { workspace = true }
-reflink-copy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tar = { workspace = true, optional = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
 tracing = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Test-only: `#[tokio::test]` needs the runtime in scope. The library
+# itself reaches the runtime through `kernal_api::async_engine`
+# (kernal-api#73).
+tokio = { workspace = true }

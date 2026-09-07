@@ -45,6 +45,7 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs", "ipc"] }
 # internal crates
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
@@ -68,22 +69,15 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-crash-handler = "0.6"
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-util = { workspace = true }
 running-process = { workspace = true }
-interprocess = "2.4.2"
 dashmap = { workspace = true }
-filetime = { workspace = true }
-fs2 = { workspace = true }
 regex = { workspace = true }
 rayon = { workspace = true }
-jwalk = { workspace = true }
 tempfile = { workspace = true }
 clap = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }

@@ -162,7 +162,7 @@ fn files_have_equal_contents(a: &Path, b: &Path) -> bool {
 fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let read = file.read(&mut buf)?;

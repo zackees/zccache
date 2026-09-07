@@ -11,12 +11,12 @@ description = "Dependency graph and include-aware invalidation for zccache"
 publish = false
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs"] }
 zccache-core = { workspace = true }
 zccache-compiler = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-platform = { workspace = true }
 bincode = { workspace = true }
-blake3 = { workspace = true }
 dashmap = { workspace = true }
 rayon = { workspace = true }
 rkyv = { workspace = true }
@@ -27,7 +27,6 @@ tracing = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-filetime = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

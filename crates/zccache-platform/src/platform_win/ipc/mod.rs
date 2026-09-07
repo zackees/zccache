@@ -15,9 +15,10 @@ pub fn current_user_name() -> Option<String> { super::host::current_user() }
 pub fn select_host_text(_file_value: String, windows_value: String) -> String { windows_value }
 
 pub fn probe_native(endpoint: &str) -> std::io::Result<()> {
-    use interprocess::local_socket::traits::Stream as _;
-    use interprocess::local_socket::{GenericNamespaced, Stream, ToNsName};
-    let name = ToNsName::to_ns_name::<GenericNamespaced>(endpoint)?;
-    drop(Stream::connect(name)?);
+    // The facade owns endpoint naming per host -- filesystem paths here,
+    // the kernel namespace on Windows -- so this no longer picks a name
+    // type, and no longer names the transport crate to do it.
+    let endpoint = kernal_api::IpcEndpoint::new(endpoint)?;
+    drop(kernal_api::IpcStream::connect(&endpoint)?);
     Ok(())
 }

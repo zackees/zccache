@@ -5,7 +5,7 @@
 //! dominated by Defender / antivirus interception (5–20 µs each), so a
 //! 10k-file repo can spend 50–200 ms in this step alone on cold start.
 //!
-//! This bench measures the syscall pattern only (not the jwalk
+//! This bench measures the syscall pattern only (not the walk
 //! traversal): given N pre-discovered file paths, time
 //! `paths.iter().map(metadata)` versus `paths.par_iter().map(metadata)`.
 //!

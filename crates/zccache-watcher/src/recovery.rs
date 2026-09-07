@@ -9,9 +9,9 @@
 //! overflow → wait(delay OR build_event) → rescan_entries → loop
 //! ```
 
+use kernal_api::async_engine::Notify;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::Notify;
 use zccache_fscache::CacheSystem;
 
 /// Deferred overflow recovery.
@@ -95,14 +95,17 @@ impl OverflowRecovery {
                 "overflow recovery: rescan scheduled"
             );
 
-            // Wait for either the delay or a build event.
-            tokio::select! {
-                () = tokio::time::sleep(self.delay) => {
-                    tracing::info!(
-                        "overflow recovery: delay elapsed, starting deferred rescan"
-                    );
+            // Wait for either the delay or a build event. `timeout` is the
+            // whole of this race: it resolves as soon as the build trigger
+            // fires and drops that future when the delay wins, which is the
+            // cancellation the old `select!` relied on. `Err` is the delay
+            // branch, `Ok` the build branch.
+            match kernal_api::async_engine::timeout(self.delay, self.build_trigger.notified()).await
+            {
+                Err(kernal_api::async_engine::DeadlineElapsed) => {
+                    tracing::info!("overflow recovery: delay elapsed, starting deferred rescan");
                 }
-                () = self.build_trigger.notified() => {
+                Ok(()) => {
                     tracing::info!(
                         "overflow recovery: build event triggered immediate rescan, \
                          deferred timer cancelled"

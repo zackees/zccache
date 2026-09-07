@@ -386,7 +386,10 @@ fn set_timestamp(path: &Path, seconds: u64, nanos: u32) -> std::io::Result<()> {
     let modified = UNIX_EPOCH
         .checked_add(Duration::new(seconds, nanos))
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid mtime"))?;
-    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(modified))
+    kernal_api::platform::fs::set_file_mtime(
+        path,
+        kernal_api::platform::fs::FileTime::from_system_time(modified),
+    )
 }
 
 fn invalid_bundle(error: impl std::fmt::Display) -> std::io::Error {
@@ -405,10 +408,11 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         let binary = nested.join("app");
         std::fs::write(&binary, b"debug-bytes").unwrap();
-        let mtime = filetime::FileTime::from_unix_time(1_700_000_000, 123_456_700);
-        filetime::set_file_mtime(&binary, mtime).unwrap();
-        let root_mtime = filetime::FileTime::from_unix_time(1_600_000_000, 765_432_100);
-        filetime::set_file_mtime(&source, root_mtime).unwrap();
+        let mtime = kernal_api::platform::fs::FileTime::from_unix_time(1_700_000_000, 123_456_700);
+        kernal_api::platform::fs::set_file_mtime(&binary, mtime).unwrap();
+        let root_mtime =
+            kernal_api::platform::fs::FileTime::from_unix_time(1_600_000_000, 765_432_100);
+        kernal_api::platform::fs::set_file_mtime(&source, root_mtime).unwrap();
         let archive = temp.path().join("bundle.bin");
         pack_directory(&source, &archive).unwrap();
         let target = temp.path().join("target.dSYM");
@@ -418,11 +422,15 @@ mod tests {
         let restored = target.join("Contents/Resources/DWARF/app");
         assert_eq!(std::fs::read(&restored).unwrap(), b"debug-bytes");
         assert_eq!(
-            filetime::FileTime::from_last_modification_time(&std::fs::metadata(restored).unwrap()),
+            kernal_api::platform::fs::FileTime::from_last_modification_time(
+                &std::fs::metadata(restored).unwrap()
+            ),
             mtime
         );
         assert_eq!(
-            filetime::FileTime::from_last_modification_time(&std::fs::metadata(target).unwrap()),
+            kernal_api::platform::fs::FileTime::from_last_modification_time(
+                &std::fs::metadata(target).unwrap()
+            ),
             root_mtime
         );
     }
