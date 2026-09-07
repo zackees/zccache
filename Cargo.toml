@@ -52,7 +52,6 @@ tokio = { version = "1", features = ["full"] }
 console-subscriber = "0.5"
 serde = { version = "1", features = ["derive", "rc"] }
 bincode = "1"
-blake3 = { version = "1", features = ["pure", "rayon"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
@@ -61,7 +60,6 @@ dashmap = "6"
 arc-swap = "1"
 clang = { version = "2", features = ["runtime"] }
 notify = "7"
-memmap2 = "0.9"
 tempfile = "3"
 rayon = "1"
 jwalk = "0.8"
