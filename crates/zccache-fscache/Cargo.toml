@@ -11,6 +11,7 @@ description = "Filesystem metadata cache for zccache"
 publish = false
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs"] }
 bincode = { workspace = true }
 dashmap = { workspace = true }
 rayon = { workspace = true }
@@ -21,7 +22,6 @@ zccache-core = { workspace = true }
 zccache-hash = { workspace = true }
 
 [dev-dependencies]
-filetime = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

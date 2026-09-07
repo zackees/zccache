@@ -358,7 +358,7 @@ fn copy_independent(source: &Path, destination: &Path) -> io::Result<(bool, u64)
             true
         }
     };
-    if reflink_allowed && reflink_copy::reflink(source, destination).is_ok() {
+    if reflink_allowed && kernal_api::platform::fs::reflink_file(source, destination).is_ok() {
         return Ok((true, 0));
     }
     // A failed reflink probe may leave a partial destination, including
@@ -386,8 +386,8 @@ fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
     // Keep the destination writable while restoring timestamps. On Windows,
     // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
     crate::platform::fs::permissions::make_writable(destination)?;
-    let mtime = filetime::FileTime::from_last_modification_time(&source_metadata);
-    filetime::set_file_mtime(destination, mtime)?;
+    let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&source_metadata);
+    kernal_api::platform::fs::set_file_mtime(destination, mtime)?;
     result
 }
 

@@ -10,8 +10,8 @@ use std::time::{Duration, SystemTime};
 
 fn write_with_mtime(path: &Path, contents: &[u8], mtime: SystemTime) {
     std::fs::write(path, contents).unwrap();
-    let ft = filetime::FileTime::from_system_time(mtime);
-    filetime::set_file_mtime(path, ft).unwrap();
+    let ft = kernal_api::platform::fs::FileTime::from_system_time(mtime);
+    kernal_api::platform::fs::set_file_mtime(path, ft).unwrap();
 }
 
 fn mtime_of(path: &Path) -> SystemTime {
@@ -130,8 +130,8 @@ fn batch_floor_bumps_build_script_output_to_extern_mtime() {
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
     std::fs::write(&cache, b"build script exe").unwrap();
     write_authoritative_blob_digest(&cache).unwrap();
-    let old_time = filetime::FileTime::from_unix_time(1_000_000, 0);
-    filetime::set_file_mtime(&cache, old_time).unwrap();
+    let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000, 0);
+    kernal_api::platform::fs::set_file_mtime(&cache, old_time).unwrap();
 
     let extern_dep = deps_dir.join("libcc-new.rlib");
     write_with_mtime(
@@ -181,7 +181,7 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
     std::fs::write(&cache, b"rlib").unwrap();
     write_authoritative_blob_digest(&cache).unwrap();
     let old_mtime = epoch_plus(1_000_000);
-    filetime::set_file_mtime(&cache, filetime::FileTime::from_system_time(old_mtime)).unwrap();
+    kernal_api::platform::fs::set_file_mtime(&cache, kernal_api::platform::fs::FileTime::from_system_time(old_mtime)).unwrap();
 
     let output = dir.path().join("target/debug/deps/libcrate.rlib");
     let targets = vec![output.clone()];

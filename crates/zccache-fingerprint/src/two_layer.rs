@@ -221,7 +221,7 @@ impl TwoLayerCache {
 mod tests {
     use super::super::{persist, scan};
     use super::*;
-    use filetime::{set_file_mtime, FileTime};
+    use kernal_api::platform::fs::{set_file_mtime, FileTime};
     use std::fs;
     use tempfile::TempDir;
 

@@ -270,7 +270,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     // non-reflink filesystem (most Linux ext4, most Windows NTFS without
     // ReFS) — issue #1042.
     let result = (|| {
-        if reflink_copy::reflink(source_path, &tmp_path).is_ok() {
+        if kernal_api::platform::fs::reflink_file(source_path, &tmp_path).is_ok() {
             crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
             digest.write_for(&tmp_path, cache_path)?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;

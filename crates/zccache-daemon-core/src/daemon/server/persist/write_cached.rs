@@ -166,7 +166,7 @@ fn materialize_verified_cached_file_observed(
         if !hardlink_allowed {
             let bytes = std::fs::metadata(cache_file)?.len();
             let floor =
-                filetime::FileTime::from_last_modification_time(&std::fs::metadata(cache_file)?);
+                kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(cache_file)?);
             detach_with_floored_mtime(out_path, cache_file, floor)?;
             return Ok(observed(0, 0, 1, bytes));
         }
@@ -193,7 +193,7 @@ fn materialize_verified_cached_file_observed(
             true
         }
     };
-    if reflink_allowed && caps.reflink && reflink_copy::reflink(cache_file, out_path).is_ok() {
+    if reflink_allowed && caps.reflink && kernal_api::platform::fs::reflink_file(cache_file, out_path).is_ok() {
         crate::platform::fs::permissions::make_writable(out_path)?;
         restore_cache_mtime(cache_file, out_path)?;
         touch_mtime(out_path);
@@ -335,7 +335,7 @@ fn cleanup_failed_hardlink(
 fn detach_with_floored_mtime(
     out_path: &Path,
     cache_file: &Path,
-    floor: filetime::FileTime,
+    floor: kernal_api::platform::fs::FileTime,
 ) -> std::io::Result<()> {
     let registration = prepare_registered_detach(out_path);
     crate::platform::fs::permissions::make_writable(out_path)?;
@@ -351,8 +351,8 @@ fn detach_with_floored_mtime(
 }
 
 fn restore_cache_mtime(cache_file: &Path, out_path: &Path) -> std::io::Result<()> {
-    let mtime = filetime::FileTime::from_last_modification_time(&std::fs::metadata(cache_file)?);
-    filetime::set_file_mtime(out_path, mtime)
+    let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(cache_file)?);
+    kernal_api::platform::fs::set_file_mtime(out_path, mtime)
 }
 
 fn remove_materialized_output(path: &Path) -> std::io::Result<()> {

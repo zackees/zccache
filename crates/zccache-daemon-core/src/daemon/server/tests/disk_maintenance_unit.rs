@@ -247,9 +247,9 @@ fn issue_1148_live_and_persisted_access_control_full_expiry() {
     std::fs::write(&payload_path, vec![0_u8; 4096]).unwrap();
     let now = SystemTime::now();
     let old = now - 31 * DAY;
-    let old_time = filetime::FileTime::from_system_time(old);
-    filetime::set_file_mtime(&meta_path, old_time).unwrap();
-    filetime::set_file_mtime(&payload_path, old_time).unwrap();
+    let old_time = kernal_api::platform::fs::FileTime::from_system_time(old);
+    kernal_api::platform::fs::set_file_mtime(&meta_path, old_time).unwrap();
+    kernal_api::platform::fs::set_file_mtime(&payload_path, old_time).unwrap();
 
     let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
     let dep_graph = DepGraph::new();

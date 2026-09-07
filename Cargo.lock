@@ -1552,13 +1552,17 @@ dependencies = [
 [[package]]
 name = "kernal-api"
 version = "0.1.0"
-source = "git+https://github.com/zackees/kernal-api?rev=4805c299f21ad16f3c36b9c9cd87f4d564407aeb#4805c299f21ad16f3c36b9c9cd87f4d564407aeb"
+source = "git+https://github.com/zackees/kernal-api?rev=f9ad2687e4a5a248be38f4154ce76879d52aabf2#f9ad2687e4a5a248be38f4154ce76879d52aabf2"
 dependencies = [
  "blake3",
+ "dirs",
+ "globset",
+ "jwalk",
  "libc",
  "mach2",
  "memmap2",
  "mimalloc-pprof",
+ "reflink-copy",
  "running-process",
  "sysinfo",
  "thiserror",
@@ -4195,7 +4199,6 @@ dependencies = [
  "crash-handler",
  "criterion",
  "dashmap",
- "filetime",
  "flate2",
  "fs2",
  "futures",
@@ -4209,7 +4212,6 @@ dependencies = [
  "notify",
  "prost",
  "rayon",
- "reflink-copy",
  "regex",
  "reqwest",
  "rkyv",
@@ -4266,7 +4268,6 @@ dependencies = [
  "kernal-api",
  "prost",
  "rayon",
- "reflink-copy",
  "serde",
  "serde_json",
  "tar",
@@ -4308,7 +4309,6 @@ dependencies = [
  "clap",
  "crash-handler",
  "dashmap",
- "filetime",
  "flate2",
  "fs2",
  "futures",
@@ -4398,7 +4398,6 @@ dependencies = [
  "console-subscriber",
  "crash-handler",
  "dashmap",
- "filetime",
  "fs2",
  "globset",
  "jwalk",
@@ -4406,7 +4405,6 @@ dependencies = [
  "notify",
  "prost",
  "rayon",
- "reflink-copy",
  "regex",
  "rkyv",
  "running-process",
@@ -4442,7 +4440,6 @@ version = "1.13.22"
 dependencies = [
  "bincode",
  "dashmap",
- "filetime",
  "kernal-api",
  "rayon",
  "rkyv",
@@ -4490,10 +4487,10 @@ dependencies = [
 name = "zccache-fingerprint"
 version = "1.13.22"
 dependencies = [
- "filetime",
  "fs2",
  "globset",
  "jwalk",
+ "kernal-api",
  "rayon",
  "serde",
  "serde_json",
@@ -4520,7 +4517,7 @@ version = "1.13.22"
 dependencies = [
  "bincode",
  "dashmap",
- "filetime",
+ "kernal-api",
  "rayon",
  "serde",
  "tempfile",

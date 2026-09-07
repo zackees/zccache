@@ -123,22 +123,22 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     let original = b"matrix-original-bytes";
     std::fs::write(&blob, original).unwrap();
     write_authoritative_blob_digest(&blob).unwrap();
-    let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 123);
-    filetime::set_file_mtime(&blob, old_time).unwrap();
+    let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 123);
+    kernal_api::platform::fs::set_file_mtime(&blob, old_time).unwrap();
     // FAT/exFAT store mtime with 2-second granularity, so the value that
     // actually lands on disk can differ from what was requested. Compare
     // the materialized mtime against the blob's *actual* stored mtime
     // (which `restore_cache_mtime` reads and propagates) rather than the
     // pre-rounding `old_time` we asked for.
     let blob_time =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&blob).unwrap());
+        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&blob).unwrap());
     let caps = fs_caps(&blob, &output);
     if cross_volume {
         assert!(!caps.reflink && !caps.hardlink);
     }
     let observed = write_cached_file_observed(&output, &blob).unwrap();
     let output_time =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
+        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
     assert_eq!(output_time.unix_seconds(), blob_time.unix_seconds());
     let shares_file_identity = crate::platform::fs::identity::same_file(&blob, &output).unwrap();
     let mut blob_may_be_evicted = false;
@@ -220,8 +220,8 @@ fn refs_non_cluster_multiple_round_trips() {
     let output = fixture.root().join("unaligned-out.bin");
     let bytes = vec![0xa5; 64 * 1024 + 17];
     std::fs::write(&blob, &bytes).unwrap();
-    let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 100);
-    filetime::set_file_mtime(&blob, old_time).unwrap();
+    let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 100);
+    kernal_api::platform::fs::set_file_mtime(&blob, old_time).unwrap();
     write_authoritative_blob_digest(&blob).unwrap();
     let observed = write_cached_file_observed(&output, &blob).unwrap();
     assert_eq!(observed.reflink_count, 1, "ReFS must use the reflink tier");
@@ -229,7 +229,7 @@ fn refs_non_cluster_multiple_round_trips() {
     assert!(!crate::platform::fs::identity::same_file(&blob, &output).unwrap());
     assert_eq!(std::fs::read(&output).unwrap(), bytes);
     let output_time =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
+        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
     assert_eq!(output_time.unix_seconds(), old_time.unix_seconds());
     std::fs::write(&output, b"private").unwrap();
     assert_eq!(std::fs::read(&blob).unwrap(), bytes);
@@ -265,8 +265,8 @@ fn reflink_larger_than_four_gib_uses_chunked_clone() {
         file.write_all(marker).unwrap();
     }
     file.sync_all().unwrap();
-    let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 100);
-    filetime::set_file_mtime(&blob, old_time).unwrap();
+    let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 100);
+    kernal_api::platform::fs::set_file_mtime(&blob, old_time).unwrap();
     drop(file);
     register_trusted_blob_for_test(&blob).unwrap();
     let caps = fs_caps(&blob, &output);
@@ -279,7 +279,7 @@ fn reflink_larger_than_four_gib_uses_chunked_clone() {
     assert_eq!(read_at(&output, FOUR_GIB - 7, 15), b"boundary-before");
     assert_eq!(read_at(&output, FOUR_GIB + 9, 14), b"boundary-after");
     let output_time =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
+        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
     assert_eq!(output_time.unix_seconds(), old_time.unix_seconds());
     let mut output_file = std::fs::OpenOptions::new()
         .write(true)

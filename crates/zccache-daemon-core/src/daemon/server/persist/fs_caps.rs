@@ -185,7 +185,7 @@ fn probe_caps(src: &Path, dst: &Path) -> VolumeCaps {
     );
     let reflink_probe = parent.join(format!(".zccache-reflink-probe-{nonce}"));
     let hardlink_probe = parent.join(format!(".zccache-hardlink-probe-{nonce}"));
-    let reflink = reflink_copy::reflink(src, &reflink_probe).is_ok();
+    let reflink = kernal_api::platform::fs::reflink_file(src, &reflink_probe).is_ok();
     let _ = std::fs::remove_file(&reflink_probe);
     let hardlink = std::fs::hard_link(src, &hardlink_probe).is_ok();
     let _ = std::fs::remove_file(&hardlink_probe);

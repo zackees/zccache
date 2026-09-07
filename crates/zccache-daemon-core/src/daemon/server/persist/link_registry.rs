@@ -33,7 +33,7 @@ static WATCHER_AVAILABLE: AtomicBool = AtomicBool::new(true);
 
 fn stat_signature(path: &Path) -> Option<StatSignature> {
     let metadata = std::fs::metadata(path).ok()?;
-    let mtime = filetime::FileTime::from_last_modification_time(&metadata);
+    let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&metadata);
     let mtime_ns =
         i128::from(mtime.unix_seconds()) * 1_000_000_000 + i128::from(mtime.nanoseconds());
     Some((mtime_ns, metadata.len()))

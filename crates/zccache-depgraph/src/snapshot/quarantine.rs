@@ -247,9 +247,9 @@ mod tests {
             std::fs::write(path.as_path(), b"foreign").unwrap();
             // Distinct mtimes so "oldest first" is well-defined on filesystems
             // with coarse timestamps.
-            filetime::set_file_mtime(
+            kernal_api::platform::fs::set_file_mtime(
                 path.as_path(),
-                filetime::FileTime::from_unix_time(1_700_000_000 + i64::from(offset), 0),
+                kernal_api::platform::fs::FileTime::from_unix_time(1_700_000_000 + i64::from(offset), 0),
             )
             .unwrap();
             foreign.push(path);

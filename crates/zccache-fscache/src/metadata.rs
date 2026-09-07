@@ -465,7 +465,7 @@ impl Default for MetadataCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use filetime::{set_file_mtime, FileTime};
+    use kernal_api::platform::fs::{set_file_mtime, FileTime};
     use std::collections::HashSet;
     use std::fs;
 

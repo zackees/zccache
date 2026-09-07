@@ -32,9 +32,9 @@ fn compiler_hash_cache_rehashes_when_compiler_metadata_changes() {
     let tmp = tempfile::tempdir().unwrap();
     let compiler = tmp.path().join("rustc.exe");
     std::fs::write(&compiler, b"fake rustc").unwrap();
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(1_000_000_000, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0),
     )
     .unwrap();
 
@@ -46,9 +46,9 @@ fn compiler_hash_cache_rehashes_when_compiler_metadata_changes() {
     });
 
     std::fs::write(&compiler, b"fake rustc changed").unwrap();
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(1_000_000_010, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_010, 0),
     )
     .unwrap();
 
@@ -67,9 +67,9 @@ async fn changed_compiler_identity_attributes_version_skew() {
     let tmp = tempfile::tempdir().unwrap();
     let compiler = tmp.path().join("rustc.exe");
     std::fs::write(&compiler, b"first compiler").unwrap();
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(1_000_000_000, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0),
     )
     .unwrap();
     let cache = CompilerHashCache::new();
@@ -77,9 +77,9 @@ async fn changed_compiler_identity_attributes_version_skew() {
     let (_, reason, _) = crate::daemon::compile_journal::capture_miss_reason(Box::pin(async {
         cache.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([1; 32])));
         std::fs::write(&compiler, b"second compiler").unwrap();
-        filetime::set_file_mtime(
+        kernal_api::platform::fs::set_file_mtime(
             &compiler,
-            filetime::FileTime::from_unix_time(1_000_000_100, 0),
+            kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_100, 0),
         )
         .unwrap();
         cache.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([2; 32])));
@@ -152,9 +152,9 @@ fn cc_context_build_reuses_compiler_hash_cache() {
     let source = tmp.path().join("main.c");
     let output = tmp.path().join("main.o");
     std::fs::write(&compiler, b"fake cc v1").unwrap();
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(1_000_000_000, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0),
     )
     .unwrap();
     std::fs::write(&source, b"int main(void) { return 0; }").unwrap();
@@ -195,9 +195,9 @@ fn cc_context_build_reuses_compiler_hash_cache() {
 
     // In-place toolchain upgrade: same path, new binary content/mtime.
     std::fs::write(&compiler, b"fake cc v2, totally different codegen").unwrap();
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(1_000_000_500, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_500, 0),
     )
     .unwrap();
 
@@ -429,9 +429,9 @@ fn compiler_hash_cache_load_rehashes_when_binary_changes_after_save() {
     let compiler = tmp.path().join("rustc.exe");
     let snapshot = tmp.path().join("compiler_hash.bin");
     std::fs::write(&compiler, b"original rustc").unwrap();
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(1_000_000_000, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0),
     )
     .unwrap();
 
@@ -440,9 +440,9 @@ fn compiler_hash_cache_load_rehashes_when_binary_changes_after_save() {
     cache.save_to_disk(&snapshot).unwrap();
 
     std::fs::write(&compiler, b"changed rustc binary").unwrap();
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(1_000_000_500, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_500, 0),
     )
     .unwrap();
 

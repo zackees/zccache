@@ -45,7 +45,7 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 
 [dependencies]
-kernal-api = { workspace = true }
+kernal-api = { workspace = true, features = ["fs"] }
 # internal crates
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
@@ -78,7 +78,6 @@ tokio-util = { workspace = true }
 running-process = { workspace = true }
 interprocess = "2.4.2"
 dashmap = { workspace = true }
-filetime = { workspace = true }
 fs2 = { workspace = true }
 regex = { workspace = true }
 rayon = { workspace = true }
