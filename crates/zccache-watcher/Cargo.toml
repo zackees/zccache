@@ -20,7 +20,6 @@ default = []
 kernal-api = { workspace = true, features = ["fs"] }
 zccache-core = { workspace = true }
 zccache-fscache = { workspace = true }
-jwalk = { workspace = true }
 notify = { workspace = true }
 rayon = { workspace = true }
 tokio = { workspace = true }

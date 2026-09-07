@@ -4203,7 +4203,6 @@ dependencies = [
  "fs2",
  "futures",
  "interprocess",
- "jwalk",
  "kernal-api",
  "libc",
  "lzma-rs",
@@ -4312,7 +4311,6 @@ dependencies = [
  "fs2",
  "futures",
  "interprocess",
- "jwalk",
  "kernal-api",
  "lzma-rs",
  "prost",
@@ -4398,7 +4396,6 @@ dependencies = [
  "crash-handler",
  "dashmap",
  "fs2",
- "jwalk",
  "kernal-api",
  "notify",
  "prost",
@@ -4486,7 +4483,6 @@ name = "zccache-fingerprint"
 version = "1.13.22"
 dependencies = [
  "fs2",
- "jwalk",
  "kernal-api",
  "rayon",
  "serde",
@@ -4616,7 +4612,6 @@ dependencies = [
 name = "zccache-watcher"
 version = "1.13.22"
 dependencies = [
- "jwalk",
  "kernal-api",
  "notify",
  "rayon",

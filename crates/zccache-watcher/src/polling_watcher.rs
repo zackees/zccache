@@ -500,42 +500,32 @@ fn scan_snapshot(config: &ScanConfig) -> HashMap<NormalizedPath, FileState> {
         let exclude_names = config.excluded_names.clone();
         let exclude_globs = config.exclude_globs.clone();
 
-        let walker = jwalk::WalkDir::new(base)
-            .follow_links(false)
-            .skip_hidden(false)
-            .process_read_dir(move |_depth, _path, _state, children| {
-                children.retain(|entry| {
-                    let Ok(entry) = entry else {
-                        return true;
-                    };
-                    if !entry.file_type.is_dir() {
-                        return true;
+        let walker = kernal_api::platform::fs::DirectoryWalk::new(base.to_path_buf())
+            .follow_symbolic_links(false)
+            .include_hidden_entries(true)
+            .prune_directories(move |directory| {
+                if let Some(name) = directory.file_name().and_then(|name| name.to_str()) {
+                    if exclude_names.contains(name) {
+                        return false;
                     }
-                    let path = entry.path();
-                    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                        if exclude_names.contains(name) {
-                            return false;
-                        }
-                    }
-                    let rel = rel_string(&root, &path);
-                    !exclude_globs.is_match(&rel)
-                });
+                }
+                let rel = rel_string(&root, directory);
+                !exclude_globs.is_match(&rel)
             });
 
         // Step 1: collect the candidate file paths from the (already-parallel)
-        // jwalk traversal. Applying the include/exclude globs here is cheap
-        // (string match) and avoids an extra `metadata()` syscall for files
-        // we'd just drop. Normalize at collection time so step 2's parallel
-        // metadata fetch already operates on the watcher's canonical key
-        // type.
+        // traversal. Applying the include/exclude globs here is cheap (string
+        // match) and avoids an extra `metadata()` syscall for files we'd just
+        // drop. Normalize at collection time so step 2's parallel metadata
+        // fetch already operates on the watcher's canonical key type.
         let candidates: Vec<NormalizedPath> = walker
-            .into_iter()
+            .walk()
             .flatten()
             .filter_map(|entry| {
-                if !entry.file_type.is_file() {
+                if !entry.is_file() {
                     return None;
                 }
-                let path = entry.path();
+                let path = entry.path().to_path_buf();
                 let rel = rel_string(&config.root, &path);
                 if config.exclude_globs.is_match(&rel) || !config.include_globs.is_match(&rel) {
                     return None;

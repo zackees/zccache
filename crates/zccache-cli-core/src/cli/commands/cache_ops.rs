@@ -664,7 +664,7 @@ pub(crate) async fn cmd_release_handles(endpoint: &str, path: PathBuf, json: boo
 /// prints the total bytes of every regular file under it. Hardlinks are
 /// counted once via `snapshot_bytes_walk`'s `(dev, inode)` dedup.
 ///
-/// The walk reuses the same parallel jwalk helper as `snapshot-bytes`, so
+/// The walk reuses the same parallel walk helper as `snapshot-bytes`, so
 /// it picks up the Windows-Defender mitigation already validated by #189.
 /// `prune_incremental` / `prune_build_script_out` do not apply here — the
 /// zccache cache root has no `target/incremental` / `target/build/*/out`
@@ -855,7 +855,7 @@ fn format_relative(now: u64, then: u64) -> String {
 }
 
 /// Parallel walk of `target` summing the bytes of every regular file, with
-/// optional pruning. Uses jwalk for parallel readdir + stat (rayon under the
+/// optional pruning. Uses the facade's parallel readdir + stat (rayon under the
 /// hood) — on Windows this hides per-file Defender callback latency that
 /// dominates the single-threaded `os.walk` baseline. See zccache#189.
 pub(crate) fn cmd_snapshot_bytes(
@@ -956,7 +956,6 @@ pub(crate) fn snapshot_bytes_walk(
     prune_incremental: bool,
     prune_build_script_out: bool,
 ) -> std::io::Result<u64> {
-    use jwalk::WalkDirGeneric;
     use std::sync::Mutex;
 
     if !target.exists() {
@@ -967,32 +966,33 @@ pub(crate) fn snapshot_bytes_walk(
     let seen: Mutex<std::collections::HashSet<crate::platform::fs::identity::FileIdentity>> =
         Mutex::new(Default::default());
 
-    let walker = WalkDirGeneric::<((), Option<u64>)>::new(target).process_read_dir(
-        move |_depth, parent_path, _read_dir_state, children| {
-            for child in children.iter_mut() {
-                let Ok(entry) = child.as_mut() else { continue };
-                if !entry.file_type().is_dir() {
-                    continue;
-                }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if prune_incremental && name == "incremental" {
-                    entry.read_children_path = None;
-                    continue;
-                }
-                if prune_build_script_out && name == "out" {
-                    // `*/build/*/out` — only prune if grandparent is `build`.
-                    if let Some(grandparent) = parent_path.parent() {
-                        if grandparent.file_name().and_then(|s| s.to_str()) == Some("build") {
-                            entry.read_children_path = None;
-                        }
-                    }
+    // The facade asks about each candidate directory instead of handing us a
+    // parent's children, so `parent_path.parent()` (the grandparent of the
+    // children) becomes the candidate's own grandparent -- two `parent()`
+    // hops from the directory being considered rather than one from its
+    // parent. Same `*/build/*/out` shape, read from the other end.
+    let walker = kernal_api::platform::fs::DirectoryWalk::new(target.to_path_buf())
+        .include_hidden_entries(true)
+        .prune_directories(move |directory| {
+            let Some(name) = directory.file_name().and_then(|s| s.to_str()) else {
+                return true;
+            };
+            if prune_incremental && name == "incremental" {
+                return false;
+            }
+            if prune_build_script_out && name == "out" {
+                let grandparent = directory.parent().and_then(|p| p.parent());
+                if grandparent.and_then(|g| g.file_name()).and_then(|s| s.to_str())
+                    == Some("build")
+                {
+                    return false;
                 }
             }
-        },
-    );
+            true
+        });
 
     let mut total: u64 = 0;
-    for entry in walker {
+    for entry in walker.walk() {
         let entry = match entry {
             Ok(e) => e,
             Err(err) => {
@@ -1003,14 +1003,14 @@ pub(crate) fn snapshot_bytes_walk(
                 continue;
             }
         };
-        if !entry.file_type().is_file() {
+        if !entry.is_file() {
             continue;
         }
         let meta = match entry.metadata() {
             Ok(m) => m,
             Err(_) => continue,
         };
-        if let Ok(key) = crate::platform::fs::identity::file_identity(&entry.path()) {
+        if let Ok(key) = crate::platform::fs::identity::file_identity(entry.path()) {
             let mut seen_guard = seen.lock().unwrap_or_else(|p| p.into_inner());
             if !seen_guard.insert(key) {
                 continue;

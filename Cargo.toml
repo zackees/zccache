@@ -62,7 +62,6 @@ clang = { version = "2", features = ["runtime"] }
 notify = "7"
 tempfile = "3"
 rayon = "1"
-jwalk = "0.8"
 bytes = "1"
 prost = "0.14"
 prost-build = "0.14"

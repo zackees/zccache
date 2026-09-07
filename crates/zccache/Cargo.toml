@@ -132,7 +132,6 @@ tempfile = { workspace = true }
 
 # watcher
 notify = { workspace = true }
-jwalk = { workspace = true }
 
 # compiler
 clang = { workspace = true }
