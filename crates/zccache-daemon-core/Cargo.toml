@@ -58,7 +58,6 @@ clang = { workspace = true }
 rkyv = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 regex = { workspace = true }
-sysinfo = "0.30.13"
 # daemon-entry / test-support
 clap = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }

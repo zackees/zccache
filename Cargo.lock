@@ -1542,7 +1542,7 @@ dependencies = [
 [[package]]
 name = "kernal-api"
 version = "0.1.0"
-source = "git+https://github.com/zackees/kernal-api?rev=e519d9c91aebcb9349cf7631425eba401efad5e4#e519d9c91aebcb9349cf7631425eba401efad5e4"
+source = "git+https://github.com/zackees/kernal-api?rev=905ca71fb88bd271039aae234e0be509c7155187#905ca71fb88bd271039aae234e0be509c7155187"
 dependencies = [
  "blake3",
  "dirs",
@@ -4211,7 +4211,6 @@ dependencies = [
  "serde_json",
  "sevenz-rust2",
  "sha2 0.10.9",
- "sysinfo",
  "tar",
  "tempfile",
  "thiserror",
@@ -4391,7 +4390,6 @@ dependencies = [
  "running-process",
  "serde",
  "serde_json",
- "sysinfo",
  "tempfile",
  "thiserror",
  "tokio",
