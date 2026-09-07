@@ -42,4 +42,3 @@ pub fn crash_label(exit: NativeExit) -> &'static str {
         NativeExit::Success => "success",
     }
 }
-

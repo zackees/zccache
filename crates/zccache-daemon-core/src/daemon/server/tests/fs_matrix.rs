@@ -130,15 +130,17 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     // the materialized mtime against the blob's *actual* stored mtime
     // (which `restore_cache_mtime` reads and propagates) rather than the
     // pre-rounding `old_time` we asked for.
-    let blob_time =
-        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&blob).unwrap());
+    let blob_time = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&blob).unwrap(),
+    );
     let caps = fs_caps(&blob, &output);
     if cross_volume {
         assert!(!caps.reflink && !caps.hardlink);
     }
     let observed = write_cached_file_observed(&output, &blob).unwrap();
-    let output_time =
-        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
+    let output_time = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&output).unwrap(),
+    );
     assert_eq!(output_time.unix_seconds(), blob_time.unix_seconds());
     let shares_file_identity = crate::platform::fs::identity::same_file(&blob, &output).unwrap();
     let mut blob_may_be_evicted = false;
@@ -228,8 +230,9 @@ fn refs_non_cluster_multiple_round_trips() {
     assert_eq!(observed.copy_bytes, 0);
     assert!(!crate::platform::fs::identity::same_file(&blob, &output).unwrap());
     assert_eq!(std::fs::read(&output).unwrap(), bytes);
-    let output_time =
-        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
+    let output_time = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&output).unwrap(),
+    );
     assert_eq!(output_time.unix_seconds(), old_time.unix_seconds());
     std::fs::write(&output, b"private").unwrap();
     assert_eq!(std::fs::read(&blob).unwrap(), bytes);
@@ -278,8 +281,9 @@ fn reflink_larger_than_four_gib_uses_chunked_clone() {
     assert!(!crate::platform::fs::identity::same_file(&blob, &output).unwrap());
     assert_eq!(read_at(&output, FOUR_GIB - 7, 15), b"boundary-before");
     assert_eq!(read_at(&output, FOUR_GIB + 9, 14), b"boundary-after");
-    let output_time =
-        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&output).unwrap());
+    let output_time = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&output).unwrap(),
+    );
     assert_eq!(output_time.unix_seconds(), old_time.unix_seconds());
     let mut output_file = std::fs::OpenOptions::new()
         .write(true)

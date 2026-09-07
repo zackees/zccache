@@ -735,8 +735,8 @@ mod tests {
         {
             let first = open_lockfile(&lock).expect("open lock 1");
             let _first_guard = acquire_exclusive(&first, LockBehavior::SkipIfBusy)
-            .unwrap()
-            .expect("first holder takes the lock");
+                .unwrap()
+                .expect("first holder takes the lock");
             // handle drops here — kernel releases the advisory lock.
         }
 

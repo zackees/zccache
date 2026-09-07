@@ -251,7 +251,10 @@ fn write_file(path: &Path, content: &[u8]) {
 fn bump_mtime(path: &Path) {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let now = std::time::SystemTime::now();
-    let _ = kernal_api::platform::fs::set_file_mtime(path, kernal_api::platform::fs::FileTime::from_system_time(now));
+    let _ = kernal_api::platform::fs::set_file_mtime(
+        path,
+        kernal_api::platform::fs::FileTime::from_system_time(now),
+    );
 }
 
 // ─── Path A: include scan ────────────────────────────────────────────────

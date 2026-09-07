@@ -191,9 +191,10 @@ mod tests {
         let root = staged_root(dir.path());
         fs::create_dir_all(root.as_path()).unwrap();
 
-        let exclusive =
-            kernal_api::platform::fs::lock_exclusive_owned(open_store_lock(root.as_path()).unwrap())
-                .unwrap();
+        let exclusive = kernal_api::platform::fs::lock_exclusive_owned(
+            open_store_lock(root.as_path()).unwrap(),
+        )
+        .unwrap();
 
         let (tx, rx) = mpsc::channel();
         let path = dir.path().to_path_buf();

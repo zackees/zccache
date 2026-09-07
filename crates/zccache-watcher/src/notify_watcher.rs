@@ -122,7 +122,10 @@ impl NotifyWatcher {
 ///
 /// Split out from the watcher callback so the rescan routing is testable
 /// without standing up a real watcher and racing a real filesystem.
-fn convert_notification(ignore: &IgnoreFilter, notification: &WatchNotification) -> Vec<WatchEvent> {
+fn convert_notification(
+    ignore: &IgnoreFilter,
+    notification: &WatchNotification,
+) -> Vec<WatchEvent> {
     match notification {
         // Both halves are overflow to this crate: the view is incomplete
         // either way, and every watched path must be treated as stale. The
@@ -382,10 +385,7 @@ mod tests {
     #[test]
     fn event_with_empty_paths() {
         let filter = test_filter();
-        let event = ChangeEvent::new(
-            ChangeKind::ContentModified,
-            vec![],
-        );
+        let event = ChangeEvent::new(ChangeKind::ContentModified, vec![]);
         let result = convert_event(&filter, &event);
         assert!(result.is_empty());
     }
@@ -393,10 +393,7 @@ mod tests {
     #[test]
     fn event_kind_other_becomes_modified() {
         let filter = test_filter();
-        let event = ChangeEvent::new(
-            ChangeKind::Other,
-            vec![Path::new("mystery.c").to_owned()],
-        );
+        let event = ChangeEvent::new(ChangeKind::Other, vec![Path::new("mystery.c").to_owned()]);
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Modified(_)));
@@ -405,10 +402,7 @@ mod tests {
     #[test]
     fn event_kind_any_becomes_modified() {
         let filter = test_filter();
-        let event = ChangeEvent::new(
-            ChangeKind::Other,
-            vec![Path::new("any.c").to_owned()],
-        );
+        let event = ChangeEvent::new(ChangeKind::Other, vec![Path::new("any.c").to_owned()]);
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Modified(_)));

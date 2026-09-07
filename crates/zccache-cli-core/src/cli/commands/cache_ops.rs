@@ -982,7 +982,9 @@ pub(crate) fn snapshot_bytes_walk(
             }
             if prune_build_script_out && name == "out" {
                 let grandparent = directory.parent().and_then(|p| p.parent());
-                if grandparent.and_then(|g| g.file_name()).and_then(|s| s.to_str())
+                if grandparent
+                    .and_then(|g| g.file_name())
+                    .and_then(|s| s.to_str())
                     == Some("build")
                 {
                     return false;

@@ -158,7 +158,9 @@ pub(in crate::daemon::server) fn compute_sibling_floor(
         }
     }
     if max_mtime > my_mtime {
-        Ok(Some(kernal_api::platform::fs::FileTime::from_system_time(max_mtime)))
+        Ok(Some(kernal_api::platform::fs::FileTime::from_system_time(
+            max_mtime,
+        )))
     } else {
         Ok(None)
     }

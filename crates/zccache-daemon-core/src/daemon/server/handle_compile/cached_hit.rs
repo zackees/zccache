@@ -522,7 +522,9 @@ mod tests {
     use super::*;
 
     fn file_time(path: &Path) -> kernal_api::platform::fs::FileTime {
-        kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(path).unwrap())
+        kernal_api::platform::fs::FileTime::from_last_modification_time(
+            &std::fs::metadata(path).unwrap(),
+        )
     }
 
     #[test]

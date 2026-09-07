@@ -542,8 +542,9 @@ mod tests {
         let input = temp.path().join("input.c");
         std::fs::write(&input, b"AAAA").unwrap();
         let before = input_stamp(&input).unwrap();
-        let original_mtime =
-            kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&input).unwrap());
+        let original_mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(
+            &std::fs::metadata(&input).unwrap(),
+        );
 
         std::fs::write(&input, b"BBBB").unwrap();
         std::fs::write(&input, b"AAAA").unwrap();
@@ -575,8 +576,9 @@ mod tests {
         let state = server.test_state_arc();
         let input: NormalizedPath = temp.path().join("input.c").into();
         std::fs::write(&input, b"AAAA").unwrap();
-        let original_mtime =
-            kernal_api::platform::fs::FileTime::from_last_modification_time(&std::fs::metadata(&input).unwrap());
+        let original_mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(
+            &std::fs::metadata(&input).unwrap(),
+        );
         let clock = state.cache_system.current_clock();
         let before_hash = hash_file(&state.cache_system, &input, clock).unwrap();
         let snapshot = InputSnapshot {

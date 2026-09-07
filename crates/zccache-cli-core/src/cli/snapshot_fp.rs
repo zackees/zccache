@@ -515,7 +515,9 @@ pub fn validate(
             let all_unchanged = entry.sources.par_iter().all(|(rel, expected_hex)| {
                 let abs = workspace_root.join(rel);
                 match std::fs::read(&abs) {
-                    Ok(bytes) => kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string() == *expected_hex,
+                    Ok(bytes) => {
+                        kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string() == *expected_hex
+                    }
                     Err(_) => false,
                 }
             });

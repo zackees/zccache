@@ -249,7 +249,10 @@ mod tests {
             // with coarse timestamps.
             kernal_api::platform::fs::set_file_mtime(
                 path.as_path(),
-                kernal_api::platform::fs::FileTime::from_unix_time(1_700_000_000 + i64::from(offset), 0),
+                kernal_api::platform::fs::FileTime::from_unix_time(
+                    1_700_000_000 + i64::from(offset),
+                    0,
+                ),
             )
             .unwrap();
             foreign.push(path);

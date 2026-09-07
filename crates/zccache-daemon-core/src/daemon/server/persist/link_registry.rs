@@ -65,7 +65,10 @@ fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
 
 fn digest_path(blob_path: &Path) -> NormalizedPath {
     let name = blob_path.file_name().unwrap_or_default().to_string_lossy();
-    let sidecar_name = format!(".cowhash-{}", kernal_api::hash::blake3_bytes(name.as_bytes()).to_hex());
+    let sidecar_name = format!(
+        ".cowhash-{}",
+        kernal_api::hash::blake3_bytes(name.as_bytes()).to_hex()
+    );
     blob_path
         .parent()
         .unwrap_or_else(|| Path::new("."))

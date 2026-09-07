@@ -656,7 +656,11 @@ mod staging_tests {
     /// test having to sleep.
     fn backdate(path: &Path, by: Duration) {
         let when = std::time::SystemTime::now() - by;
-        kernal_api::platform::fs::set_file_mtime(path, kernal_api::platform::fs::FileTime::from_system_time(when)).unwrap();
+        kernal_api::platform::fs::set_file_mtime(
+            path,
+            kernal_api::platform::fs::FileTime::from_system_time(when),
+        )
+        .unwrap();
     }
 
     /// #1162 finding 1: `index.bin` is last-writer-wins, so a second writer on

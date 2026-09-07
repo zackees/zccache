@@ -181,7 +181,11 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
     std::fs::write(&cache, b"rlib").unwrap();
     write_authoritative_blob_digest(&cache).unwrap();
     let old_mtime = epoch_plus(1_000_000);
-    kernal_api::platform::fs::set_file_mtime(&cache, kernal_api::platform::fs::FileTime::from_system_time(old_mtime)).unwrap();
+    kernal_api::platform::fs::set_file_mtime(
+        &cache,
+        kernal_api::platform::fs::FileTime::from_system_time(old_mtime),
+    )
+    .unwrap();
 
     let output = dir.path().join("target/debug/deps/libcrate.rlib");
     let targets = vec![output.clone()];

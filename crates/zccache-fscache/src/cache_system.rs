@@ -7,8 +7,8 @@
 
 use super::clock::{ChangeJournal, Clock};
 use super::metadata::{CandidateEvictionResult, EvictionCandidate, MetadataCache};
-use std::sync::{Arc, OnceLock};
 use kernal_api::async_engine::Semaphore;
+use std::sync::{Arc, OnceLock};
 use zccache_core::{NormalizedPath, Result};
 use zccache_hash::ContentHash;
 

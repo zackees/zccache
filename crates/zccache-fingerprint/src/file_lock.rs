@@ -167,8 +167,8 @@ mod tests {
 
         // Both guards are bound: dropping the first inline would make the
         // second succeed trivially, and the point is that they coexist.
-        let _first = kernal_api::platform::fs::try_lock_shared(&file1)
-            .expect("first shared holder");
+        let _first =
+            kernal_api::platform::fs::try_lock_shared(&file1).expect("first shared holder");
         let _second = kernal_api::platform::fs::try_lock_shared(&file2)
             .expect("a second shared holder must be allowed alongside the first");
     }

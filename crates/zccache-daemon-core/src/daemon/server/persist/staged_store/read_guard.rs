@@ -176,8 +176,7 @@ fn acquire_staged_materialization_guard_from(
     wait_started: Instant,
 ) -> io::Result<StagedMaterializationGuard> {
     let root = staged_root(artifact_dir);
-    let store_lock =
-        kernal_api::platform::fs::lock_shared_owned(open_store_lock(&root)?)?;
+    let store_lock = kernal_api::platform::fs::lock_shared_owned(open_store_lock(&root)?)?;
     #[cfg(test)]
     record_test_shared_lock_acquisition(&root);
     let wait_ns = wait_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
@@ -263,8 +262,7 @@ fn acquire_staged_materialization_guard_for_state_from(
     }
 
     let root = staged_root(artifact_dir);
-    let store_lock =
-        kernal_api::platform::fs::lock_shared_owned(open_store_lock(&root)?)?;
+    let store_lock = kernal_api::platform::fs::lock_shared_owned(open_store_lock(&root)?)?;
     #[cfg(test)]
     record_test_shared_lock_acquisition(&root);
     let store_lock = Arc::new(StagedMaterializationLock {
