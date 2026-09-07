@@ -1562,7 +1562,7 @@ dependencies = [
 [[package]]
 name = "kernal-api"
 version = "0.1.0"
-source = "git+https://github.com/zackees/kernal-api?rev=905ca71fb88bd271039aae234e0be509c7155187#905ca71fb88bd271039aae234e0be509c7155187"
+source = "git+https://github.com/zackees/kernal-api?rev=b718da080826d2c2d9c13aa54cb9d04fae2f468e#b718da080826d2c2d9c13aa54cb9d04fae2f468e"
 dependencies = [
  "blake3",
  "crash-handler",

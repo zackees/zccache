@@ -349,7 +349,7 @@ fn install_panic_hook() {
 /// The Rust-level panic hook below is unaffected and still writes this
 /// crate's own dumps to `crash_dump_dir`.
 fn install_signal_handler() -> Option<kernal_api::crash::CrashGuard> {
-    let metadata = kernal_api::crash::spool::CrashMetadata {
+    let metadata = kernal_api::crash::CrashMetadata {
         app_class: "build-cache".to_string(),
         app_name: bin_stem().to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
