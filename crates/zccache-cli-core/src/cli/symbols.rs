@@ -218,8 +218,8 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
     let lockfile = open_lockfile(&lockfile_path)?;
     // Bound for the rest of this function: dropping it would release the
     // install lock while the install is still running.
-    let _lockfile_guard = acquire_exclusive(&lockfile, opts.lock_behavior)?;
-    if _lockfile_guard.is_none() {
+    let lockfile_guard = acquire_exclusive(&lockfile, opts.lock_behavior)?;
+    if lockfile_guard.is_none() {
         return Ok(InstallReport {
             prefix,
             installed: Vec::new(),
@@ -254,7 +254,9 @@ pub async fn install_async(opts: InstallOptions) -> Result<InstallReport, Symbol
         return Err(SymbolsError::EmptyArchive);
     }
 
-    // Lock released on `lockfile` drop here.
+    // The lock now lives on the guard, not on the `File` handle, so this
+    // has to drop the guard: `lockfile` is borrowed until it does.
+    drop(lockfile_guard);
     drop(lockfile);
 
     Ok(InstallReport {
