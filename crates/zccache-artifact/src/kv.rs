@@ -430,7 +430,7 @@ impl KvStore {
         let store = self.clone();
         let namespace = namespace.to_string();
         let key = *key;
-        tokio::task::spawn_blocking(move || store.get(&namespace, &key))
+        kernal_api::async_engine::launch_blocking(move || store.get(&namespace, &key))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -463,7 +463,7 @@ impl KvStore {
         let namespace = namespace.to_string();
         let key = *key;
         let value = value.to_vec();
-        tokio::task::spawn_blocking(move || store.put(&namespace, &key, &value))
+        kernal_api::async_engine::launch_blocking(move || store.put(&namespace, &key, &value))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -485,7 +485,7 @@ impl KvStore {
         let store = self.clone();
         let namespace = namespace.to_string();
         let key = *key;
-        tokio::task::spawn_blocking(move || store.remove(&namespace, &key))
+        kernal_api::async_engine::launch_blocking(move || store.remove(&namespace, &key))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -506,7 +506,7 @@ impl KvStore {
     pub async fn clear_namespace_async(&self, namespace: &str) -> KvResult<()> {
         let store = self.clone();
         let namespace = namespace.to_string();
-        tokio::task::spawn_blocking(move || store.clear_namespace(&namespace))
+        kernal_api::async_engine::launch_blocking(move || store.clear_namespace(&namespace))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -549,7 +549,7 @@ impl KvStore {
     pub async fn list_namespace_async(&self, namespace: &str) -> KvResult<Vec<(Key, u64)>> {
         let store = self.clone();
         let namespace = namespace.to_string();
-        tokio::task::spawn_blocking(move || store.list_namespace(&namespace))
+        kernal_api::async_engine::launch_blocking(move || store.list_namespace(&namespace))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -565,7 +565,7 @@ impl KvStore {
     pub async fn namespace_bytes_async(&self, namespace: &str) -> KvResult<u64> {
         let store = self.clone();
         let namespace = namespace.to_string();
-        tokio::task::spawn_blocking(move || store.namespace_bytes(&namespace))
+        kernal_api::async_engine::launch_blocking(move || store.namespace_bytes(&namespace))
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -606,7 +606,7 @@ impl KvStore {
     /// off Tokio runtime threads.
     pub async fn total_bytes_async(&self) -> KvResult<u64> {
         let store = self.clone();
-        tokio::task::spawn_blocking(move || store.total_bytes())
+        kernal_api::async_engine::launch_blocking(move || store.total_bytes())
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }
@@ -625,7 +625,7 @@ impl KvStore {
     /// Tokio runtime threads.
     pub async fn stats_async(&self) -> KvResult<Vec<(String, u64)>> {
         let store = self.clone();
-        tokio::task::spawn_blocking(move || store.stats())
+        kernal_api::async_engine::launch_blocking(move || store.stats())
             .await
             .map_err(|e| KvError::BlockingJoin(e.to_string()))?
     }

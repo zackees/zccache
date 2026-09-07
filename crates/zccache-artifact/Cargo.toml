@@ -36,8 +36,13 @@ serde_json = { workspace = true }
 tar = { workspace = true, optional = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
 tracing = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Test-only: `#[tokio::test]` needs the runtime in scope. The library
+# itself reaches the runtime through `kernal_api::async_engine`
+# (kernal-api#73).
+tokio = { workspace = true }
