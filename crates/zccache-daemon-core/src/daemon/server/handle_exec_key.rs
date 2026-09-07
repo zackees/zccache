@@ -13,7 +13,7 @@ pub(super) fn compose_primary_key(
     output_files: &[NormalizedPath],
     input_extra: &Arc<Vec<u8>>,
 ) -> ContentHash {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(EXEC_KEY_DOMAIN);
     hasher.update(tool_id.as_bytes());
 
@@ -77,7 +77,7 @@ pub(super) fn compose_full_key(
 ) -> ContentHash {
     let mut sorted = dep_pairs.to_vec();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(b"zccache-exec-full-key-v2");
     hasher.update(primary.as_bytes());
     mix_path_hash_pairs(&mut hasher, b"depfile:", &sorted);
@@ -85,7 +85,7 @@ pub(super) fn compose_full_key(
 }
 
 pub(super) fn mix_path_hash_pairs(
-    hasher: &mut blake3::Hasher,
+    hasher: &mut kernal_api::hash::Blake3Hasher,
     tag: &[u8],
     pairs: &[(String, ContentHash)],
 ) {

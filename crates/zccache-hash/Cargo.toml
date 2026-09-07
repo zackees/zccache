@@ -11,8 +11,7 @@ description = "Hashing utilities and cache key builders for zccache"
 publish = false
 
 [dependencies]
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
+kernal-api = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]

@@ -19,7 +19,7 @@ impl DigestSidecarGuard {
             .unwrap_or_else(|| Path::new("."))
             .join(format!(
                 ".cowhash-{}",
-                blake3::hash(name.as_bytes()).to_hex()
+                kernal_api::hash::blake3_bytes(name.as_bytes()).to_hex()
             ));
         let previous = match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),

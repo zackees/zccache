@@ -59,14 +59,14 @@ download-protocol = ["download", "dep:zccache-download-protocol"]
 gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
-heap-profile = ["dep:kernal-api"]
+heap-profile = ["kernal-api/allocator"]
 # The release binary hosts both daemons behind argv[0] dispatch. The legacy
 # daemon [[bin]] features remain available as source-build/test shims.
-zccache-bin = ["cli", "download-daemon-entry", "dep:kernal-api"]
-daemon-bin = ["daemon-entry", "symbols", "dep:kernal-api"]
-download-bin = ["dep:clap", "dep:kernal-api", "download-client"]
-download-daemon-bin = ["dep:kernal-api", "download-daemon-entry"]
-fingerprint-bin = ["dep:clap", "dep:kernal-api"]
+zccache-bin = ["cli", "download-daemon-entry", "kernal-api/allocator"]
+daemon-bin = ["daemon-entry", "symbols", "kernal-api/allocator"]
+download-bin = ["dep:clap", "kernal-api/allocator", "download-client"]
+download-daemon-bin = ["kernal-api/allocator", "download-daemon-entry"]
+fingerprint-bin = ["dep:clap", "kernal-api/allocator"]
 stamp-bin = ["symbols"]
 ci-bin = ["ci", "dep:md5"]
 crash-tools = ["dep:sadness-generator"]
@@ -101,8 +101,6 @@ serde_json = { workspace = true }
 crash-handler = "0.6"
 
 # hash
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
 
 # gha
 reqwest = { workspace = true, features = ["json"], optional = true }
@@ -205,7 +203,7 @@ tracing-subscriber = { workspace = true, optional = true }
 # only be made by whoever declares the dependency -- which is now kernal-api,
 # and it pins `=0.9.4`. If that pin ever regresses below 0.9.3 the aarch64
 # Windows release lane breaks here, so it is a facade-side constraint now.
-kernal-api = { workspace = true, optional = true }
+kernal-api = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

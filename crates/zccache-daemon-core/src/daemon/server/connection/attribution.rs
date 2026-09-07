@@ -102,7 +102,7 @@ pub(in crate::daemon::server) fn compile_miss_reason(
 }
 
 fn digest_args(args: &[String]) -> String {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     for arg in args {
         hasher.update(&(arg.len() as u64).to_le_bytes());
         hasher.update(arg.as_bytes());

@@ -1552,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "kernal-api"
 version = "0.1.0"
-source = "git+https://github.com/zackees/kernal-api?rev=7bf324035beec541e62564f64c8913f6f238344e#7bf324035beec541e62564f64c8913f6f238344e"
+source = "git+https://github.com/zackees/kernal-api?rev=4805c299f21ad16f3c36b9c9cd87f4d564407aeb#4805c299f21ad16f3c36b9c9cd87f4d564407aeb"
 dependencies = [
  "blake3",
  "libc",
@@ -4188,7 +4188,6 @@ version = "1.13.22"
 dependencies = [
  "arc-swap",
  "bincode",
- "blake3",
  "bytes",
  "clang",
  "clap",
@@ -4207,7 +4206,6 @@ dependencies = [
  "libc",
  "lzma-rs",
  "md5",
- "memmap2",
  "notify",
  "prost",
  "rayon",
@@ -4262,10 +4260,10 @@ name = "zccache-artifact"
 version = "1.13.22"
 dependencies = [
  "bincode",
- "blake3",
  "dashmap",
  "flate2",
  "fs2",
+ "kernal-api",
  "prost",
  "rayon",
  "reflink-copy",
@@ -4306,7 +4304,6 @@ name = "zccache-cli-core"
 version = "1.13.22"
 dependencies = [
  "bincode",
- "blake3",
  "bytes",
  "clap",
  "crash-handler",
@@ -4317,8 +4314,8 @@ dependencies = [
  "futures",
  "interprocess",
  "jwalk",
+ "kernal-api",
  "lzma-rs",
- "memmap2",
  "prost",
  "rayon",
  "regex",
@@ -4395,7 +4392,6 @@ version = "1.13.22"
 dependencies = [
  "arc-swap",
  "bincode",
- "blake3",
  "bytes",
  "clang",
  "clap",
@@ -4406,7 +4402,7 @@ dependencies = [
  "fs2",
  "globset",
  "jwalk",
- "memmap2",
+ "kernal-api",
  "notify",
  "prost",
  "rayon",
@@ -4445,9 +4441,9 @@ name = "zccache-depgraph"
 version = "1.13.22"
 dependencies = [
  "bincode",
- "blake3",
  "dashmap",
  "filetime",
+ "kernal-api",
  "rayon",
  "rkyv",
  "serde",
@@ -4466,8 +4462,8 @@ dependencies = [
 name = "zccache-download"
 version = "1.13.22"
 dependencies = [
- "blake3",
  "futures",
+ "kernal-api",
  "reqwest",
  "serde",
  "tempfile",
@@ -4549,8 +4545,7 @@ dependencies = [
 name = "zccache-hash"
 version = "1.13.22"
 dependencies = [
- "blake3",
- "memmap2",
+ "kernal-api",
  "serde",
  "tempfile",
 ]
@@ -4559,10 +4554,10 @@ dependencies = [
 name = "zccache-ipc"
 version = "1.13.22"
 dependencies = [
- "blake3",
  "bytes",
  "dashmap",
  "interprocess",
+ "kernal-api",
  "prost",
  "running-process",
  "serde",

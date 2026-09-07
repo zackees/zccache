@@ -29,7 +29,7 @@ pub fn host_cpu_identity_salt() -> &'static str {
 /// without mocking global process state or relying on the test machine's CPU.
 #[must_use]
 pub fn host_cpu_identity_salt_from(identity: &str) -> String {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(b"zccache-native-cpu-host-v1\0");
     hasher.update(identity.as_bytes());
     hasher.finalize().to_hex().to_string()

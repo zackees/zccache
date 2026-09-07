@@ -562,9 +562,15 @@ fn current_process_identity_blake3(
 }
 
 fn executable_hash_blake3(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update_mmap_rayon(path)?;
-    Ok(*hasher.finalize().as_bytes())
+    // Was `Hasher::update_mmap_rayon`, which is blake3's own mmap+rayon
+    // convenience. The facade spells the same thing as a read option, and
+    // applies the parallel path above its own threshold (kernal-api#70).
+    kernal_api::hash::blake3_file(
+        path,
+        kernal_api::hash::Blake3ReadOptions::new().memory_map(true),
+    )
+    .map(|digest| *digest.as_bytes())
+    .map_err(std::io::Error::other)
 }
 
 /// Persist the daemon identity used by future `BackendHandle` probes.

@@ -97,7 +97,7 @@ rkyv = "0.8"
 # its own AGENTS.md forbids as a dependency -- so this tracks an exact commit
 # to keep the branch reproducible and CI-buildable. It must become an exact
 # published version before this reaches a release branch.
-kernal-api = { git = "https://github.com/zackees/kernal-api", rev = "7bf324035beec541e62564f64c8913f6f238344e", default-features = false, features = ["allocator"] }
+kernal-api = { git = "https://github.com/zackees/kernal-api", rev = "4805c299f21ad16f3c36b9c9cd87f4d564407aeb", default-features = false }
 running-process = { version = "4.10.5", default-features = false, features = ["client-async"] }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }

@@ -45,6 +45,7 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 
 [dependencies]
+kernal-api = { workspace = true }
 # internal crates
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
@@ -69,8 +70,6 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 crash-handler = "0.6"
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }

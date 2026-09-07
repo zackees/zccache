@@ -21,6 +21,7 @@ test-support = ["dep:tracing-subscriber", "zccache-artifact/test-support"]
 tokio-console = ["dep:console-subscriber"]
 
 [dependencies]
+kernal-api = { workspace = true }
 # internal subsystem crates the daemon uses
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
@@ -42,8 +43,6 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 crash-handler = "0.6"
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }

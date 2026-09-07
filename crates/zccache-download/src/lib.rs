@@ -491,7 +491,7 @@ async fn download_segment(request: SegmentDownload<'_>) -> Result<u64, DownloadE
 
 pub fn stable_download_id(path: &Path) -> String {
     let key = zccache_core::normalize_for_key(path);
-    blake3::hash(key.as_bytes()).to_hex().to_string()
+    kernal_api::hash::blake3_bytes(key.as_bytes()).to_hex().to_string()
 }
 
 pub fn canonical_destination(path: &Path) -> Result<NormalizedPath, std::io::Error> {

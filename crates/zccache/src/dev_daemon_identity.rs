@@ -26,7 +26,7 @@ where
         return Ok(None);
     }
 
-    let hash = blake3::Hash::from_bytes(hash_current_exe()?);
+    let hash = kernal_api::hash::Blake3Digest::from_bytes(hash_current_exe()?);
     let hex = hash.to_hex();
     let hash_prefix = &hex.as_str()[..HASH_PREFIX_BYTES * 2];
     Ok(Some(format!("{}-{hash_prefix}", crate::core::VERSION)))

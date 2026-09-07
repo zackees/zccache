@@ -24,9 +24,9 @@ fn seed_staged_fixture(artifact_dir: &std::path::Path, key_hex: &str, payload: &
     let output = StagedOutputFixture {
         index: 0,
         size: payload.len() as u64,
-        digest_hex: blake3::hash(payload).to_hex().to_string(),
+        digest_hex: kernal_api::hash::blake3_bytes(payload).to_hex().to_string(),
     };
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(key_hex.as_bytes());
     hasher.update(&output.index.to_le_bytes());
     hasher.update(&output.size.to_le_bytes());

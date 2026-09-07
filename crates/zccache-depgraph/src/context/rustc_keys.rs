@@ -30,7 +30,7 @@ pub fn compute_rustc_verdict_key(
     artifact_key_hex: &str,
     dylint_input_hash: Option<&str>,
 ) -> ArtifactKey {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(b"zccache-rustc-verdict-key-v1\0");
     hasher.update(artifact_key_hex.as_bytes());
     hasher.update(b"\0mode\0");
@@ -95,7 +95,7 @@ where
     indexed.sort_by(|a, b| a.0.cmp(&b.0));
     extern_hashes.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(b"zccache-rustc-artifact-key-v1\0");
     hasher.update(context_key.0.as_bytes());
     hasher.update(b"\0");
@@ -148,7 +148,7 @@ pub fn fold_rustc_env_deps_into_artifact_key(
     }
     env_hashes.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(b"zccache-rustc-env-deps-v1\0");
     hasher.update(base.0.as_bytes());
     hasher.update(b"\0");

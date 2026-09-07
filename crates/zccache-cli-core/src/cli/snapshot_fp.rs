@@ -303,7 +303,7 @@ fn hash_d_file_sources(d_file: &Path, workspace_root: &Path) -> Option<BTreeMap<
                 return None;
             }
             let bytes = std::fs::read(&canon).ok()?;
-            let hash = blake3::hash(&bytes).to_hex().to_string();
+            let hash = kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string();
             Some((path_to_unix(rel), hash))
         })
         .collect();
@@ -363,7 +363,7 @@ fn process_run_build_script(
             let Ok(bytes) = std::fs::read(&canon) else {
                 continue;
             };
-            let hash = blake3::hash(&bytes).to_hex().to_string();
+            let hash = kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string();
             sources.insert(path_to_unix(ws_rel), hash);
         }
     }
@@ -514,7 +514,7 @@ pub fn validate(
             let all_unchanged = entry.sources.par_iter().all(|(rel, expected_hex)| {
                 let abs = workspace_root.join(rel);
                 match std::fs::read(&abs) {
-                    Ok(bytes) => blake3::hash(&bytes).to_hex().to_string() == *expected_hex,
+                    Ok(bytes) => kernal_api::hash::blake3_bytes(&bytes).to_hex().to_string() == *expected_hex,
                     Err(_) => false,
                 }
             });

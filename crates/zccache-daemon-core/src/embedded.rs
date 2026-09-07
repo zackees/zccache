@@ -168,9 +168,9 @@ impl HostIdentity {
     /// in a host daemon, but the resulting id is less unique. Callers that
     /// want a stronger guarantee should construct `HostIdentity` directly.
     pub fn default_for_product(product: impl Into<String>) -> Self {
-        use blake3::Hasher;
+        use kernal_api::hash::Blake3Hasher;
         let product = product.into();
-        let mut hasher = Hasher::new();
+        let mut hasher = Blake3Hasher::new();
         hasher.update(product.as_bytes());
         hasher.update(b"\0zccache-host-identity-v1\0");
         if let Ok(exe) = crate::platform::executable::current_image() {

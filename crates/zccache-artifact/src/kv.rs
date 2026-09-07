@@ -91,9 +91,9 @@ const HEADER_LEN: usize = 4 + 4 + 8 + 32;
 pub struct Key(pub [u8; 32]);
 
 impl Key {
-    /// Wrap a [`blake3::Hash`].
+    /// Wrap a [`kernal_api::hash::Blake3Digest`].
     #[must_use]
-    pub fn from_hash(h: blake3::Hash) -> Self {
+    pub fn from_hash(h: kernal_api::hash::Blake3Digest) -> Self {
         Self(*h.as_bytes())
     }
 
@@ -200,7 +200,7 @@ fn encode_header(payload: &[u8]) -> [u8; HEADER_LEN] {
     header[0..4].copy_from_slice(&MAGIC);
     header[4..8].copy_from_slice(&SCHEMA_VERSION.to_le_bytes());
     header[8..16].copy_from_slice(&(payload.len() as u64).to_le_bytes());
-    header[16..48].copy_from_slice(::blake3::hash(payload).as_bytes());
+    header[16..48].copy_from_slice(::kernal_api::hash::blake3_bytes(payload).as_bytes());
     header
 }
 
@@ -242,7 +242,7 @@ fn decode_and_verify(label: &str, raw: &[u8]) -> KvResult<Vec<u8>> {
         ));
     }
     let expected = &raw[16..48];
-    if ::blake3::hash(payload).as_bytes() != expected {
+    if ::kernal_api::hash::blake3_bytes(payload).as_bytes() != expected {
         return Err(KvError::Corrupt(
             label.to_string(),
             "blake3 mismatch".to_string(),
@@ -642,7 +642,7 @@ mod tests {
     }
 
     fn key_from(seed: &[u8]) -> Key {
-        Key::from_hash(::blake3::hash(seed))
+        Key::from_hash(::kernal_api::hash::blake3_bytes(seed))
     }
 
     fn value_file(dir: &tempfile::TempDir, ns: &str, k: &Key) -> std::path::PathBuf {
@@ -847,7 +847,7 @@ mod tests {
     // ---- F10: hex round-trip + bad inputs ----
     #[test]
     fn f10_key_hex_round_trip() {
-        let h = ::blake3::hash(b"hello");
+        let h = ::kernal_api::hash::blake3_bytes(b"hello");
         let k = Key::from_hash(h);
         let hex = k.to_hex();
         assert_eq!(hex.len(), 64);
@@ -995,7 +995,7 @@ mod tests {
     // ---- P3: case-insensitive key parsing means UPPER and lower collide ----
     #[test]
     fn p3_case_insensitive_key_parses_to_same_key() {
-        let k = Key::from_hash(::blake3::hash(b"x"));
+        let k = Key::from_hash(::kernal_api::hash::blake3_bytes(b"x"));
         let lower = k.to_hex();
         let upper = lower.to_ascii_uppercase();
         assert_eq!(

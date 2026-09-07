@@ -361,7 +361,7 @@ fn compute_cache_key(
     extra_input_files: &[String],
     meson_args: &[String],
 ) -> std::io::Result<String> {
-    let mut hasher = blake3::Hasher::new_derive_key(KEY_DOMAIN_TAG);
+    let mut hasher = kernal_api::hash::Blake3Hasher::new_derive_key(KEY_DOMAIN_TAG);
     // Source and build dir absolute paths — same-build-dir restriction.
     hash_str_with_tag(&mut hasher, "source", &source_abs.to_string_lossy());
     hash_str_with_tag(&mut hasher, "build", &build_abs.to_string_lossy());
@@ -412,7 +412,7 @@ fn compute_cache_key(
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn hash_str_with_tag(hasher: &mut blake3::Hasher, tag: &str, value: &str) {
+fn hash_str_with_tag(hasher: &mut kernal_api::hash::Blake3Hasher, tag: &str, value: &str) {
     hasher.update(tag.as_bytes());
     hasher.update(b"=");
     hasher.update(value.as_bytes());

@@ -62,7 +62,7 @@ impl LinkCacheKeyBuilder {
     /// Panics if tool hash is not set or no input hashes are provided.
     #[must_use]
     pub fn build(self) -> ContentHash {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = kernal_api::hash::Blake3Hasher::new();
 
         // Domain separation tag — distinct from compilation keys
         hasher.update(b"zccache-link-key-v1");
