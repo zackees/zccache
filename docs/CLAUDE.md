@@ -30,7 +30,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | Generic tool exec (`zccache exec`, issue #272) | [runtime.md § Generic tool exec](architecture/runtime.md#generic-tool-exec-zccache-exec) — `handle_exec.rs` + `cli/commands/exec.rs` |
 | External tool fetch (`zccache fetch`, issue #1469) | [runtime.md § External tool fetch](architecture/runtime.md#external-tool-fetch-zccache-fetch-issue-1469) — `cli/commands/fetch.rs`, blob + extraction CAS |
 | Platform-specific issues | [portability.md](architecture/portability.md) |
-| Python `exec_cached` caller-owned results | [runtime.md](architecture/runtime.md#python-caller-owned-exec_cached), [ipc.md](architecture/ipc.md#wire-selection-and-compatibility-fallback) |
+| Python `exec_cached` caller-owned results | [runtime.md](architecture/runtime.md#python-caller-owned-exec_cached), [ipc.md](architecture/ipc.md#wire-selection) |
 | Compile journal record shape | [journal-schema.md](journal-schema.md) |
 | `ZCCACHE_CACHE_DIR` contract + `zccache cache-root` | [runtime.md § Cache root invariants](architecture/runtime.md#cache-root-invariants) |
 | zccache vs sccache feature matrix | [FEATURE-MATRIX.md](FEATURE-MATRIX.md) — generated from [feature-matrix.yaml](feature-matrix.yaml) by `ci/render_feature_matrix.py` |
