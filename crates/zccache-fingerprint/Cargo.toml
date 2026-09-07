@@ -21,7 +21,6 @@ kernal-api = { workspace = true, features = ["fs"] }
 zccache-core = { workspace = true }
 zccache-hash = { workspace = true }
 fs2 = { workspace = true }
-globset = "0.4"
 jwalk = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }

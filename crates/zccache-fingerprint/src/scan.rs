@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use kernal_api::platform::fs::{PatternSet, PatternSetBuilder};
 use zccache_core::NormalizedPath;
 
 use super::error::{FingerprintError, Result};
@@ -114,14 +114,14 @@ fn normalize_slashes(rel: &Path) -> String {
     result
 }
 
-fn build_globset(patterns: &[&str]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
+fn build_globset(patterns: &[&str]) -> Result<PatternSet> {
+    // The facade validates the whole set at `build` rather than each pattern
+    // as it is added, so the offending pattern moves from this error's
+    // structured `path` field into its message -- `globset`'s own error
+    // names it, so it is still reported, just not separately addressable.
+    let mut builder = PatternSetBuilder::new();
     for pattern in patterns {
-        let glob = Glob::new(pattern).map_err(|e| FingerprintError::Scan {
-            path: NormalizedPath::from(*pattern),
-            message: format!("invalid glob pattern: {e}"),
-        })?;
-        builder.add(glob);
+        builder = builder.add_pattern(pattern);
     }
     builder.build().map_err(|e| FingerprintError::Scan {
         path: NormalizedPath::new(""),
@@ -131,16 +131,12 @@ fn build_globset(patterns: &[&str]) -> Result<GlobSet> {
 
 /// Extract directory-level patterns from exclude globs for short-circuiting.
 /// E.g., `.git/**` → match directory `.git`; `target/**` → match directory `target`.
-fn build_dir_exclude_set(exclude: &[&str]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
+fn build_dir_exclude_set(exclude: &[&str]) -> Result<PatternSet> {
+    let mut builder = PatternSetBuilder::new();
     for pattern in exclude {
         // If pattern ends with "/**" we can skip the directory entirely.
         if let Some(prefix) = pattern.strip_suffix("/**") {
-            let glob = Glob::new(prefix).map_err(|e| FingerprintError::Scan {
-                path: NormalizedPath::from(*pattern),
-                message: format!("invalid glob pattern: {e}"),
-            })?;
-            builder.add(glob);
+            builder = builder.add_pattern(prefix);
         }
     }
     builder.build().map_err(|e| FingerprintError::Scan {

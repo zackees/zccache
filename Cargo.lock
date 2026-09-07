@@ -1552,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "kernal-api"
 version = "0.1.0"
-source = "git+https://github.com/zackees/kernal-api?rev=f9ad2687e4a5a248be38f4154ce76879d52aabf2#f9ad2687e4a5a248be38f4154ce76879d52aabf2"
+source = "git+https://github.com/zackees/kernal-api?rev=dbd4961b17c129eaa481b468be85d3e99621e5cb#dbd4961b17c129eaa481b468be85d3e99621e5cb"
 dependencies = [
  "blake3",
  "dirs",
@@ -4202,7 +4202,6 @@ dependencies = [
  "flate2",
  "fs2",
  "futures",
- "globset",
  "interprocess",
  "jwalk",
  "kernal-api",
@@ -4399,7 +4398,6 @@ dependencies = [
  "crash-handler",
  "dashmap",
  "fs2",
- "globset",
  "jwalk",
  "kernal-api",
  "notify",
@@ -4488,7 +4486,6 @@ name = "zccache-fingerprint"
 version = "1.13.22"
 dependencies = [
  "fs2",
- "globset",
  "jwalk",
  "kernal-api",
  "rayon",
@@ -4619,8 +4616,8 @@ dependencies = [
 name = "zccache-watcher"
 version = "1.13.22"
 dependencies = [
- "globset",
  "jwalk",
+ "kernal-api",
  "notify",
  "rayon",
  "tempfile",

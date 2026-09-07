@@ -17,9 +17,9 @@ crate-type = ["rlib"]
 default = []
 
 [dependencies]
+kernal-api = { workspace = true, features = ["fs"] }
 zccache-core = { workspace = true }
 zccache-fscache = { workspace = true }
-globset = "0.4"
 jwalk = { workspace = true }
 notify = { workspace = true }
 rayon = { workspace = true }

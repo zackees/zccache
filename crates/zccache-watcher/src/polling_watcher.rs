@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use kernal_api::platform::fs::{PatternSet, PatternSetBuilder};
 use zccache_core::NormalizedPath;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,8 +17,8 @@ struct FileState {
 struct ScanConfig {
     root: NormalizedPath,
     include_folders: Vec<NormalizedPath>,
-    include_globs: GlobSet,
-    exclude_globs: GlobSet,
+    include_globs: PatternSet,
+    exclude_globs: PatternSet,
     excluded_names: HashSet<String>,
 }
 
@@ -448,12 +448,13 @@ fn build_config(
     })
 }
 
-fn build_globset(patterns: &[String]) -> std::io::Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
+fn build_globset(patterns: &[String]) -> std::io::Result<PatternSet> {
+    // The facade validates the whole set at `build`, not each pattern as it
+    // is added, so there is one error site instead of two. `globset`'s own
+    // error names the offending pattern, so it is still identifiable.
+    let mut builder = PatternSetBuilder::new();
     for pattern in patterns {
-        builder.add(
-            Glob::new(pattern).map_err(|e| std::io::Error::other(format!("invalid glob: {e}")))?,
-        );
+        builder = builder.add_pattern(pattern);
     }
     builder
         .build()
