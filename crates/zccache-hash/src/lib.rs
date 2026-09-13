@@ -4,6 +4,7 @@
 
 pub mod cache_key;
 pub mod link_cache_key;
+pub mod request_fingerprint;
 
 use std::io::Read;
 use std::path::Path;

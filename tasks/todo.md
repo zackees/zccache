@@ -6,6 +6,21 @@
 - [ ] Run compiler tests, strict Clippy, review, and open a coordinated PR.
 - [ ] Follow with portable dependency/path seams and actual kernel-hosted Wasm proof; this change alone does not make the compiler crate portable.
 
+# kernal-api#13 shared request-fingerprint encoding
+
+- [x] Capture literal-byte compatibility fixtures against the existing daemon encoder.
+- [x] RED: expose a fallible, allocation-free byte emitter in the existing hash crate.
+- [x] Make the native daemon consume the same encoder with lazy normalization.
+- [x] Validate callback failure, raw depfile salts, existing normalization tests, Clippy, and review.
+- [ ] Open a coordinated PR; portable host/path policy and actual kernel guest effects remain follow-up work.
+
+Validation: original-encoder literal baseline passed; missing-emitter RED E0432;
+hash 23 passed; daemon fingerprint/path-policy 29 passed; full daemon 837 passed,
+28 existing ignored (139.73s). Strict selected-crate all-target Clippy with
+`--no-deps` passed (92.86s), rustfmt/diff checks and Astra review clean. Broader
+dependency Clippy fails on three existing `double_must_use` diagnostics in
+untouched `zccache-protocol/src/wire_prost/api.rs` (173, 185, 192).
+
 # #1555 exclusive compiler admission includes pre-hashing
 
 - [x] Trace soldr CI's signal-terminated exclusive `soldr_cli --test` compile to zccache's post-admission Rayon pre-hash overlap.

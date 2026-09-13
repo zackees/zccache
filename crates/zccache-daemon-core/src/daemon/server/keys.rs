@@ -540,7 +540,7 @@ pub(super) fn msvc_show_includes_key_flags(
 /// Compute a fast fingerprint of a compile request for the request-level cache.
 ///
 /// Streams bytes directly into blake3 without intermediate buffer allocation.
-/// Zero-alloc: ~100ns for 10 args, ~500ns for 300 args.
+/// Path normalization and environment selection remain native caller policy.
 /// Callers should pass the fully expanded argv so response-file content
 /// changes also invalidate the request-level fast path.
 pub(super) fn request_fingerprint(
@@ -551,69 +551,38 @@ pub(super) fn request_fingerprint(
     client_env: Option<&[(String, String)]>,
 ) -> ContentHash {
     let mut h = crate::hash::StreamHasher::new();
-    h.update(b"zccache-request-v2\0");
     let compiler = crate::core::path::normalize_for_key(compiler);
-    h.update(compiler.as_bytes());
-    h.update(&[0]);
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == "--remap-path-prefix" {
-            h.update(arg.as_bytes());
-            h.update(&[0]);
-            if let Some(value) = args.get(i + 1) {
-                let value = normalize_rust_remap_path_prefix_value_for_key(value, key_root)
-                    .unwrap_or_else(|| value.clone());
-                h.update(value.as_bytes());
-                h.update(&[0]);
-            }
-            i += 2;
-            continue;
+    let mut remap_value = false;
+    let normalized_args = args.iter().map(|arg| {
+        if remap_value {
+            remap_value = false;
+            std::borrow::Cow::Owned(
+                normalize_rust_remap_path_prefix_value_for_key(arg, key_root)
+                    .unwrap_or_else(|| arg.clone()),
+            )
+        } else if arg == "--remap-path-prefix" {
+            remap_value = true;
+            std::borrow::Cow::Borrowed(arg.as_str())
+        } else {
+            std::borrow::Cow::Owned(normalize_request_arg(arg, key_root))
         }
-        let arg = normalize_request_arg(arg, key_root);
-        h.update(arg.as_bytes());
-        h.update(&[0]);
-        i += 1;
-    }
-    update_user_depfile_raw_fingerprint(&mut h, args);
+    });
     let cwd = normalize_path_for_request_key(cwd, key_root);
-    h.update(cwd.as_bytes());
-    h.update(&[0]);
-    for (key, value) in request_env_fingerprint_vars(client_env) {
-        h.update(key.as_bytes());
-        h.update(b"=");
-        h.update(value.as_bytes());
-        h.update(&[0]);
+    let env = request_env_fingerprint_vars(client_env);
+    if let Err(never) = crate::hash::request_fingerprint::emit_request_fingerprint(
+        &compiler,
+        normalized_args,
+        args,
+        &cwd,
+        &env,
+        |bytes| {
+            h.update(bytes);
+            Ok::<(), std::convert::Infallible>(())
+        },
+    ) {
+        match never {}
     }
     h.finalize()
-}
-
-fn update_user_depfile_raw_fingerprint(hasher: &mut crate::hash::StreamHasher, args: &[String]) {
-    if !args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD"))
-    {
-        return;
-    }
-    hasher.update(b"user-depfile-raw-argv\0");
-    let mut index = 0;
-    while index < args.len() {
-        let arg = &args[index];
-        if arg == "-MF" {
-            if args.get(index + 1).is_some_and(|value| value == "-") {
-                hasher.update(b"-MF-stdout\0");
-            }
-            index += 2;
-            continue;
-        }
-        if arg == "-MF-" {
-            hasher.update(b"-MF-stdout\0");
-        } else if !arg.starts_with("-MF") {
-            hasher.update(arg.as_bytes());
-            hasher.update(&[0]);
-        }
-        index += 1;
-    }
 }
 
 pub(super) fn request_cache_input_paths(
