@@ -7,6 +7,14 @@ use std::sync::{Mutex, OnceLock};
 pub(in crate::daemon::server) const DISABLE_REFLINK_ENV: &str = "ZCCACHE_DISABLE_REFLINK";
 pub(in crate::daemon::server) const COW_READONLY_ENV: &str = "ZCCACHE_COW_READONLY";
 const CAPS_CACHE_LIMIT: usize = 4096;
+/// zccache's conservative cache-materialization policy. This is not a claim
+/// about every filesystem's native maximum: at this threshold zccache copies
+/// rather than risking a cache payload link count that a target rejects.
+#[cfg(windows)]
+const ZCCACHE_HARDLINK_LIMIT: u64 = 1023;
+/// zccache's conservative cache-materialization policy on Unix hosts.
+#[cfg(not(windows))]
+const ZCCACHE_HARDLINK_LIMIT: u64 = 65_000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::daemon::server) enum FileIdWidth {
@@ -198,7 +206,7 @@ fn probe_caps(src: &Path, dst: &Path) -> VolumeCaps {
         } else {
             FileIdWidth::Bits64
         },
-        hardlink_limit: crate::platform::fs::volume::hard_link_limit(),
+        hardlink_limit: ZCCACHE_HARDLINK_LIMIT,
     }
 }
 
@@ -215,6 +223,14 @@ fn existing_path(path: &Path) -> Option<NormalizedPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardlink_ceiling_is_zccache_product_policy() {
+        #[cfg(windows)]
+        assert_eq!(ZCCACHE_HARDLINK_LIMIT, 1023);
+        #[cfg(not(windows))]
+        assert_eq!(ZCCACHE_HARDLINK_LIMIT, 65_000);
+    }
 
     #[test]
     fn volume_pair_normalizes_equivalent_probe_paths() {

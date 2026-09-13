@@ -229,14 +229,14 @@ pub(super) fn save_dep_graph_to_disk(server: &DaemonServer, path: &Path) {
 /// the entry, but the on-disk index never does. Mirrors `run.rs`'s startup
 /// snippet exactly so a synthetic restart in this harness sees what a real
 /// restart would see.
-pub(super) fn spawn_index_writer(server: &mut DaemonServer) -> tokio::task::JoinHandle<()> {
+pub(super) fn spawn_index_writer(server: &mut DaemonServer) -> kernal_api::async_engine::Task<()> {
     let rx = server
         .index_writer_rx
         .take()
         .expect("index_writer_rx must not already be taken");
     let store = std::sync::Arc::clone(&server.state.artifact_store);
     let shutdown = std::sync::Arc::clone(&server.state.index_writer_shutdown);
-    tokio::spawn(run_index_writer(rx, store, shutdown))
+    kernal_api::async_engine::launch(run_index_writer(rx, store, shutdown))
 }
 
 /// Graceful-shutdown equivalent for this harness: run the EXACT production
@@ -254,7 +254,7 @@ pub(super) fn spawn_index_writer(server: &mut DaemonServer) -> tokio::task::Join
 /// CI timing on the Linux runner (#1161).
 pub(super) async fn quiesce_and_persist(
     server: &DaemonServer,
-    index_writer_handle: tokio::task::JoinHandle<()>,
+    index_writer_handle: kernal_api::async_engine::Task<()>,
     depgraph_path: &Path,
 ) {
     let _publication_guard =

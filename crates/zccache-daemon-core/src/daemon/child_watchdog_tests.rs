@@ -102,7 +102,7 @@ async fn streaming_sink_preserves_output_and_orphan_watchdog() {
         let mut cmd = tokio::process::Command::new("sh");
         cmd.args(["-c", "sleep 30 & printf 'live\\n'"]);
         let child = piped(cmd).spawn().expect("spawn");
-        let (sender, mut receiver) = mpsc::channel(8);
+        let (sender, mut receiver) = kernal_api::async_engine::channel(8);
         let wait = watchdog_inner_impl(
             child,
             "stream-orphan",
@@ -308,7 +308,7 @@ async fn alive_hung_no_progress_child_is_killed() {
 async fn streaming_sink_preserves_alive_hung_watchdog() {
     crate::test_support::test_timeout(async {
         let child = piped(sleeper_cmd()).spawn().expect("spawn");
-        let (sender, mut receiver) = mpsc::channel(8);
+        let (sender, mut receiver) = kernal_api::async_engine::channel(8);
         let wait = watchdog_inner_impl(
             child,
             "stream-sleeper",

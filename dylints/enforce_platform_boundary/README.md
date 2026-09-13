@@ -1,14 +1,15 @@
 # enforce_platform_boundary
 
 This Dylint enforces zccache#1365: host-platform selection and native OS APIs
-may only appear inside the `zccache-platform` leaf crate.
+may only appear in the narrow zccache product adapters around kernal-api.
 
 Allowed locations:
 
-- `crates/zccache-platform/src/lib.rs`: exactly one `cfg_select!` host selector.
-- `platform_win`, `platform_linux`, and `platform_macos` concrete trees: host
-  cfg and native APIs.
-- Neutral facade files may bridge through private `crate::platform_imp`.
+- `crates/zccache-ipc/src/platform.rs`: endpoint spelling, peer admission, and
+  protected socket/pipe adaptation.
+- `crates/zccache-daemon-core/src/platform.rs`: daemon exit/materialization
+  policy around canonical process and filesystem operations.
+- `crates/zccache-cli-core/src/platform.rs`: CLI stack and presentation policy.
 
 Every other production Rust source denies host cfg predicates, direct
 `std::os::{windows,unix}` / `libc` / `windows_sys` paths, and references to

@@ -15,7 +15,6 @@ members = [
     "crates/zccache-gha",
     "crates/zccache-hash",
     "crates/zccache-ipc",
-    "crates/zccache-platform",
     "crates/zccache-protocol",
     "crates/zccache-symbols",
     "crates/zccache-test-support",
@@ -85,13 +84,12 @@ rkyv = "0.8"
 # migration slice at a time, so this stays `default-features = false` and each
 # slice adds only the feature it needs.
 #
-# MIGRATION PIN, not a release pin. `kernal-api` has no usable registry
-# release yet -- crates.io carries only the yanked `0.0.0` reservation, which
-# its own AGENTS.md forbids as a dependency -- so this tracks an exact commit
-# to keep the branch reproducible and CI-buildable. It must become an exact
-# published version before this reaches a release branch.
-kernal-api = { git = "https://github.com/zackees/kernal-api", rev = "b718da080826d2c2d9c13aa54cb9d04fae2f468e", default-features = false }
-running-process = { version = "4.10.5", default-features = false, features = ["client-async"] }
+# TEMPORARY INTEGRATION PATCH (kernal-api#5): this nested producer checkout is
+# the only permitted path dependency while its canonical APIs are unpublished.
+# Before a release branch, replace it with the exact published version, remove
+# `_vender/kernal-api`, regenerate the lockfile, and validate normally; see
+# `CLAUDE.md` → Temporary dependent subgit integration.
+kernal-api = { path = "_vender/kernal-api", version = "=0.1.0", default-features = false }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
@@ -107,7 +105,6 @@ zccache-fscache = { path = "crates/zccache-fscache" }
 zccache-gha = { path = "crates/zccache-gha" }
 zccache-hash = { path = "crates/zccache-hash" }
 zccache-ipc = { path = "crates/zccache-ipc" }
-zccache-platform = { path = "crates/zccache-platform" }
 zccache-protocol = { path = "crates/zccache-protocol" }
 zccache-symbols = { path = "crates/zccache-symbols" }
 zccache-test-support = { path = "crates/zccache-test-support" }

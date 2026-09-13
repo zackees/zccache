@@ -41,7 +41,7 @@
 // When client_v2 + the v2 broker scaffold are production-ready the
 // implementation under this namespace flips to v2-native; the
 // consumer side stays unchanged.
-use running_process::broker::protocol_v2::client_compat::{
+use kernal_api::broker::protocol_v2::client_compat::{
     AdoptError, BackendConnectionRoute, RefusalKind,
 };
 // The raw-socket reachability probe used by the `RUNNING_PROCESS_FAKE_BACKEND`
@@ -254,11 +254,9 @@ impl BrokerRefusal {
     /// top-level field on `BrokerV2Error::Refused` (added upstream by
     /// running-process#518). Callers can honor it directly via
     /// `Duration::from_millis(retry_after_ms)`.
-    pub fn from_brokerv2_error(
-        err: &running_process::broker::client_v2::BrokerV2Error,
-    ) -> Option<Self> {
-        use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::ErrorCode;
+    pub fn from_brokerv2_error(err: &kernal_api::broker::client_v2::BrokerV2Error) -> Option<Self> {
+        use kernal_api::broker::client_v2::BrokerV2Error;
+        use kernal_api::broker::protocol::ErrorCode;
         match err {
             BrokerV2Error::Refused {
                 details,
@@ -292,7 +290,7 @@ impl BrokerRefusal {
 /// the function returns `None` regardless.
 #[must_use]
 pub fn classify_adopt_error(err: &AdoptError) -> Option<BrokerRefusal> {
-    use running_process::broker::protocol_v2::client_compat::BrokerClientError;
+    use kernal_api::broker::protocol_v2::client_compat::BrokerClientError;
     match err {
         AdoptError::Connect(connect_err) => connect_err.refusal_kind().map(|kind| {
             let retry_after_ms = match connect_err {
@@ -578,8 +576,8 @@ mod tests {
 
     #[test]
     fn classify_adopt_error_maps_typed_refusals() {
-        use running_process::broker::protocol::ErrorCode;
-        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
+        use kernal_api::broker::protocol::ErrorCode;
+        use kernal_api::broker::protocol_v2::client_compat::BrokerClientError;
 
         let refusal = |code: ErrorCode| {
             AdoptError::Connect(BrokerClientError::Refused {
@@ -639,8 +637,8 @@ mod tests {
     /// land on `Other`. Transport-layer errors return `None`.
     #[test]
     fn from_brokerv2_error_classifies_refused_codes() {
-        use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::{ErrorCode, Refused};
+        use kernal_api::broker::client_v2::BrokerV2Error;
+        use kernal_api::broker::protocol::{ErrorCode, Refused};
 
         let refused_with_code = |code: ErrorCode| BrokerV2Error::Refused {
             reason: "test".to_string(),
@@ -697,8 +695,8 @@ mod tests {
     /// Catches the half-done fix where the typed surface drops the hint.
     #[test]
     fn classify_adopt_error_propagates_retry_after_ms_on_v1_rate_limited() {
-        use running_process::broker::protocol::ErrorCode;
-        use running_process::broker::protocol_v2::client_compat::BrokerClientError;
+        use kernal_api::broker::protocol::ErrorCode;
+        use kernal_api::broker::protocol_v2::client_compat::BrokerClientError;
 
         let err = AdoptError::Connect(BrokerClientError::Refused {
             code: ErrorCode::ErrorRateLimited,
@@ -718,8 +716,8 @@ mod tests {
     /// `BrokerRefusal::RateLimited` unchanged.
     #[test]
     fn from_brokerv2_error_propagates_retry_after_ms_on_v2_rate_limited() {
-        use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::{ErrorCode, Refused};
+        use kernal_api::broker::client_v2::BrokerV2Error;
+        use kernal_api::broker::protocol::{ErrorCode, Refused};
 
         let err = BrokerV2Error::Refused {
             reason: "slow down".to_string(),
@@ -743,8 +741,8 @@ mod tests {
     /// Other`, never panic. Locks the forward-compat invariant.
     #[test]
     fn from_brokerv2_error_maps_unknown_code_to_other() {
-        use running_process::broker::client_v2::BrokerV2Error;
-        use running_process::broker::protocol::Refused;
+        use kernal_api::broker::client_v2::BrokerV2Error;
+        use kernal_api::broker::protocol::Refused;
 
         let err = BrokerV2Error::Refused {
             reason: "future broker code".to_string(),
@@ -769,7 +767,7 @@ mod tests {
     /// treated as transport.
     #[test]
     fn from_brokerv2_error_classifies_transport_variants_as_none() {
-        use running_process::broker::client_v2::BrokerV2Error;
+        use kernal_api::broker::client_v2::BrokerV2Error;
 
         let dial = BrokerV2Error::Dial {
             socket_path: "/nowhere".to_string(),

@@ -17,8 +17,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use kernal_api::async_engine::Notify;
 use tempfile::TempDir;
-use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use zccache::core::NormalizedPath;

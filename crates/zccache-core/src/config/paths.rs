@@ -62,14 +62,14 @@ use crate::NormalizedPath;
 /// read-back. This used to be a no-op, which left the daemon deploy directory
 /// — a directory the CLI *executes* a binary out of — unguarded.
 ///
-/// Both host arms are implemented in the `zccache-platform` facade
-/// (`crate::platform::fs::permissions`).
+/// Both host arms are implemented by kernal-api's canonical filesystem
+/// capability.
 pub fn ensure_dir_private(path: &std::path::Path) -> std::io::Result<bool> {
-    crate::platform::fs::permissions::ensure_dir_private(path)
+    kernal_api::platform::fs::ensure_dir_private(path)
 }
 
 pub fn create_dir_all_private(path: &std::path::Path) -> std::io::Result<()> {
-    crate::platform::fs::permissions::create_dir_all_private(path)
+    kernal_api::platform::fs::create_dir_all_private(path)
 }
 
 /// Returns the directory for content-addressed compiled outputs.

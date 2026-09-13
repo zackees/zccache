@@ -21,7 +21,7 @@ test-support = ["dep:tracing-subscriber", "zccache-artifact/test-support"]
 tokio-console = ["dep:console-subscriber"]
 
 [dependencies]
-kernal-api = { workspace = true, features = ["fs"] }
+kernal-api = { workspace = true, features = ["fs", "broker", "async-process-client"] }
 # internal subsystem crates the daemon uses
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
@@ -33,7 +33,7 @@ zccache-fingerprint = { workspace = true }
 zccache-fscache = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-ipc = { workspace = true }
-zccache-platform = { workspace = true }
+
 zccache-protocol = { workspace = true }
 zccache-watcher = { workspace = true }
 
@@ -46,8 +46,6 @@ bincode = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
-tokio-util = { workspace = true }
-running-process = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
 dashmap = { workspace = true }
 arc-swap = { workspace = true }

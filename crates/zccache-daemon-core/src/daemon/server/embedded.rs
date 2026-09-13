@@ -25,12 +25,32 @@ fn next_inner_compile_id() -> String {
 const EMBEDDED_PUBLICATION_BARRIER_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
 
+/// Place blocking embedded work on the host-selected runtime when one exists.
+///
+/// The ambient path preserves the historical behavior for hosts that do not
+/// provide a runtime hook. Keeping this at the daemon boundary prevents a
+/// startup or flush operation from silently escaping the host's chosen
+/// blocking lane while its async siblings honor it.
+fn launch_embedded_blocking<F, R>(
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+    operation: F,
+) -> kernal_api::async_engine::Task<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match runtime_handle {
+        Some(handle) => handle.launch_blocking(operation),
+        None => kernal_api::async_engine::launch_blocking(operation),
+    }
+}
+
 impl EmbeddedDaemon {
     #[cfg(test)]
     pub(crate) async fn start(
         endpoint: String,
         cache_dir: crate::core::NormalizedPath,
-        runtime_handle: Option<tokio::runtime::Handle>,
+        runtime_handle: Option<kernal_api::async_engine::RuntimeHandle>,
         maintenance_policy: MaintenancePolicy,
     ) -> Result<Self, crate::ipc::IpcError> {
         Self::start_with_maintenance(
@@ -49,7 +69,7 @@ impl EmbeddedDaemon {
         endpoint: String,
         cache_dir: crate::core::NormalizedPath,
         staging_root: Option<&crate::core::NormalizedPath>,
-        runtime_handle: Option<tokio::runtime::Handle>,
+        runtime_handle: Option<kernal_api::async_engine::RuntimeHandle>,
         maintenance_policy: MaintenancePolicy,
         automatic_maintenance: bool,
         host_admission_classifier: Option<
@@ -83,6 +103,7 @@ impl EmbeddedDaemon {
         let mut daemon = Self {
             state,
             maintenance_policy,
+            runtime_handle: runtime_handle.clone(),
             index_writer_rx: Some(index_writer_rx),
             index_writer_handle: Mutex::new(None),
             maintenance_handle: Mutex::new(None),
@@ -96,27 +117,27 @@ impl EmbeddedDaemon {
 
     async fn start_background_tasks(
         &mut self,
-        runtime_handle: Option<tokio::runtime::Handle>,
+        runtime_handle: Option<kernal_api::async_engine::RuntimeHandle>,
         automatic_maintenance: bool,
     ) {
         if let Some(rx) = self.index_writer_rx.take() {
             let store = Arc::clone(&self.state.artifact_store);
             let shutdown = Arc::clone(&self.state.index_writer_shutdown);
             let task = run_index_writer(rx, store, shutdown);
-            // zccache#922: when the embedded host supplied a Tokio Handle,
+            // zccache#922: when the embedded host supplied a canonical handle,
             // route the persistent index-writer spawn through it. Otherwise
             // fall back to the ambient runtime (the calling runtime is the
             // only one available when `runtime_handle.is_none()`, and the
             // ambient resolves to it).
             let handle = match &runtime_handle {
-                Some(h) => h.spawn(task),
-                None => tokio::spawn(task),
+                Some(h) => h.launch(task),
+                None => kernal_api::async_engine::launch(task),
             };
             *self.index_writer_handle.lock().await = Some(handle);
         }
 
         let state = Arc::clone(&self.state);
-        let artifact_load = tokio::task::spawn_blocking(move || {
+        let artifact_load = launch_embedded_blocking(runtime_handle.as_ref(), move || {
             if let Err(error) = state.staging.cleanup_abandoned() {
                 tracing::debug!(%error, "abandoned private staging cleanup skipped");
             }
@@ -153,7 +174,7 @@ impl EmbeddedDaemon {
 
         let metadata_state = Arc::clone(&self.state);
         let metadata_path = self.state.metadata_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
             match crate::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
                 Ok(loaded) => metadata_state.cache_system.metadata().merge_from(loaded),
                 Err(e) => tracing::warn!(
@@ -169,7 +190,7 @@ impl EmbeddedDaemon {
 
         let compiler_state = Arc::clone(&self.state);
         let compiler_hash_cache_path = self.state.compiler_hash_cache_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
             match CompilerHashCache::load_from_disk(compiler_hash_cache_path.as_path()) {
                 Ok(loaded) => compiler_state.compiler_hash_cache.merge_from(loaded),
                 Err(e) => tracing::warn!(
@@ -185,7 +206,7 @@ impl EmbeddedDaemon {
 
         let includes_state = Arc::clone(&self.state);
         let system_includes_cache_path = self.state.system_includes_cache_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
             match crate::depgraph::SystemIncludeCache::load_from_disk(
                 system_includes_cache_path.as_path(),
             ) {
@@ -206,7 +227,7 @@ impl EmbeddedDaemon {
 
         let depgraph_path = embedded_depgraph_file_path(&self.state);
         let state = Arc::clone(&self.state);
-        let _ = tokio::task::spawn_blocking(move || {
+        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
             let outcome = crate::depgraph::classify_load(depgraph_path.as_path());
             let warning = outcome.warning(depgraph_path.as_path());
             if let Some(graph) = outcome.into_graph() {
@@ -375,13 +396,25 @@ impl EmbeddedDaemon {
         &self,
         kind: MaintenanceKind,
     ) -> std::io::Result<DiskMaintenanceReport> {
-        maintain_state_disk(Arc::clone(&self.state), self.maintenance_policy, kind).await
+        maintain_state_disk(
+            Arc::clone(&self.state),
+            self.maintenance_policy,
+            kind,
+            self.runtime_handle.as_ref(),
+        )
+        .await
     }
 
     pub(crate) async fn flush(&self) -> EmbeddedFlushReport {
         let _maintenance_guard = self.state.disk_maintenance.lock().await;
         let mut index_writer_handle = self.index_writer_handle.lock().await;
-        flush_embedded_state(&self.state, &mut index_writer_handle, false).await
+        flush_embedded_state(
+            &self.state,
+            self.runtime_handle.as_ref(),
+            &mut index_writer_handle,
+            false,
+        )
+        .await
     }
 
     pub(crate) async fn shutdown(&self) -> EmbeddedFlushReport {
@@ -392,7 +425,13 @@ impl EmbeddedDaemon {
         // the latched shutdown flag after acquiring this mutex.
         let _maintenance_guard = self.state.disk_maintenance.lock().await;
         let mut index_writer_handle = self.index_writer_handle.lock().await;
-        let mut report = flush_embedded_state(&self.state, &mut index_writer_handle, true).await;
+        let mut report = flush_embedded_state(
+            &self.state,
+            self.runtime_handle.as_ref(),
+            &mut index_writer_handle,
+            true,
+        )
+        .await;
         report.steps.insert(0, maintenance_step);
         let _ = std::fs::remove_dir_all(&self.state.depfile_tmpdir);
         // #1162: the final flush is done, so this service has stopped writing
@@ -419,7 +458,7 @@ impl EmbeddedDaemon {
     }
 }
 
-async fn join_task(task: tokio::task::JoinHandle<()>, task_name: &str) -> FlushStepOutcome {
+async fn join_task(task: kernal_api::async_engine::Task<()>, task_name: &str) -> FlushStepOutcome {
     match task.await {
         Ok(()) => FlushStepOutcome::Completed,
         Err(error) => FlushStepOutcome::Failed(format!("{task_name} task failed: {error}")),
@@ -427,8 +466,8 @@ async fn join_task(task: tokio::task::JoinHandle<()>, task_name: &str) -> FlushS
 }
 
 async fn stop_index_writer_task(
-    shutdown: &tokio::sync::Notify,
-    handle: Option<tokio::task::JoinHandle<()>>,
+    shutdown: &kernal_api::async_engine::Notify,
+    handle: Option<kernal_api::async_engine::Task<()>>,
 ) -> Option<EmbeddedFlushStepReport> {
     // `notify_one` retains a permit when the writer is between polls. Using
     // `notify_waiters` here can lose the signal in the small window after the
@@ -616,7 +655,8 @@ impl Drop for EmbeddedDaemon {
 
 async fn flush_embedded_state(
     state: &Arc<SharedState>,
-    index_writer_handle: &mut Option<tokio::task::JoinHandle<()>>,
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+    index_writer_handle: &mut Option<kernal_api::async_engine::Task<()>>,
     shutdown_writer: bool,
 ) -> EmbeddedFlushReport {
     let pending_writes_drained = pending_writes::await_all(
@@ -634,7 +674,7 @@ async fn flush_embedded_state(
     let publication_guard = if shutdown_writer {
         Some(state.artifact_publication.write().await)
     } else {
-        tokio::time::timeout(
+        kernal_api::async_engine::timeout(
             EMBEDDED_PUBLICATION_BARRIER_TIMEOUT,
             state.artifact_publication.write(),
         )
@@ -688,7 +728,7 @@ async fn flush_embedded_state(
     let depgraph_state = Arc::clone(state);
     steps.push(
         flush_step("depgraph", async move {
-            tokio::task::spawn_blocking(move || {
+            launch_embedded_blocking(runtime_handle, move || {
                 if let Some(parent) = depgraph_path.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                 }
@@ -711,7 +751,7 @@ async fn flush_embedded_state(
         let metadata_path = state.metadata_path.clone();
         steps.push(
             flush_step("metadata", async move {
-                tokio::task::spawn_blocking(move || {
+                launch_embedded_blocking(runtime_handle, move || {
                     metadata_state
                         .cache_system
                         .metadata()
@@ -730,7 +770,7 @@ async fn flush_embedded_state(
         let compiler_hash_cache_path = state.compiler_hash_cache_path.clone();
         steps.push(
             flush_step("compiler_hash", async move {
-                tokio::task::spawn_blocking(move || {
+                launch_embedded_blocking(runtime_handle, move || {
                     compiler_state
                         .compiler_hash_cache
                         .save_to_disk(compiler_hash_cache_path.as_path())
@@ -751,7 +791,7 @@ async fn flush_embedded_state(
         let system_includes_cache_path = state.system_includes_cache_path.clone();
         steps.push(
             flush_step("system_includes", async move {
-                tokio::task::spawn_blocking(move || {
+                launch_embedded_blocking(runtime_handle, move || {
                     includes
                         .save_to_disk(system_includes_cache_path.as_path())
                         .map_err(|error| error.to_string())
@@ -806,8 +846,8 @@ mod flush_ownership_tests {
 
     #[tokio::test]
     async fn task_shutdown_waits_for_owned_work() {
-        let task = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        let task = kernal_api::async_engine::launch(async {
+            kernal_api::async_engine::sleep(Duration::from_millis(20)).await;
         });
         assert_eq!(
             join_task(task, "test task").await,
@@ -817,10 +857,10 @@ mod flush_ownership_tests {
 
     #[tokio::test]
     async fn index_writer_shutdown_signal_survives_between_waits() {
-        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown = Arc::new(kernal_api::async_engine::Notify::new());
         let writer_shutdown = Arc::clone(&shutdown);
-        let task = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        let task = kernal_api::async_engine::launch(async move {
+            kernal_api::async_engine::sleep(Duration::from_millis(20)).await;
             writer_shutdown.notified().await;
         });
 

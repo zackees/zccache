@@ -313,7 +313,7 @@ fn resolve_dependency_graph_path(
         candidates.push(candidate);
     }
     if !path.is_absolute() {
-        if let Some(candidate) = crate::platform::fs::path::system_root_candidate(path)
+        if let Some(candidate) = zccache_core::path::system_root_candidate(path)
             .and_then(|rooted| parser.resolve_path(&rooted))
         {
             if !candidates.contains(&candidate) {
@@ -442,10 +442,12 @@ mod tests {
     fn distinct_non_utf8_header_paths_fail_closed_without_lossy_deduplication() {
         let temp = tempfile::TempDir::new().unwrap();
         let source = temp.path().join("main.c");
-        let Some(first_name) = crate::platform::fs::path::from_raw_bytes(b"header-\xff.h") else {
+        let Some(first_name) = kernal_api::platform::fs::path_from_raw_bytes(b"header-\xff.h")
+        else {
             return;
         };
-        let Some(second_name) = crate::platform::fs::path::from_raw_bytes(b"header-\xfe.h") else {
+        let Some(second_name) = kernal_api::platform::fs::path_from_raw_bytes(b"header-\xfe.h")
+        else {
             return;
         };
         let first = temp.path().join(first_name);
@@ -537,8 +539,7 @@ mod tests {
             .to_string_lossy()
             .trim_start_matches(['/', '\\'])
             .to_string();
-        let Some(candidate) =
-            crate::platform::fs::path::system_root_candidate(Path::new(&rootless))
+        let Some(candidate) = zccache_core::path::system_root_candidate(Path::new(&rootless))
         else {
             return;
         };
@@ -576,8 +577,7 @@ mod tests {
             .to_string_lossy()
             .trim_start_matches(['/', '\\'])
             .to_string();
-        let Some(candidate) =
-            crate::platform::fs::path::system_root_candidate(Path::new(&rootless))
+        let Some(candidate) = zccache_core::path::system_root_candidate(Path::new(&rootless))
         else {
             return;
         };

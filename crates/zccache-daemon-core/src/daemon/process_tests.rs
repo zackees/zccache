@@ -1,5 +1,10 @@
 use super::*;
 
+use super::session::{
+    async_process_error_to_io, forward_compiler_session_event, kernel_process_priority,
+    kernel_session_kill_when_owner_dies, session_cpu_time_advanced, CompilerSessionEvent,
+};
+
 #[test]
 fn daemon_owned_children_are_bound_to_both_future_and_process_lifetimes() {
     let options = owned_child_spawn_options();
@@ -41,14 +46,15 @@ fn daemon_owned_child_dies_when_helper_owner_is_killed() {
     const PID_FILE_ENV: &str = "ZCCACHE_OWNER_DEATH_TEST_PID_FILE";
 
     if std::env::var_os(HELPER_ENV).is_some() {
-        let mut command = owner_death_test_child_command(PID_FILE_ENV);
+        let builder = owner_death_test_child_builder(PID_FILE_ENV);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("owner-death helper runtime");
-        let result = runtime.block_on(tokio_leaf_command_output_with_priority(
-            &mut command,
+        let result = runtime.block_on(async_builder_output_with_priority_and_post_exit_grace(
+            builder,
             CompilePriority::Normal,
+            None,
         ));
         panic!("owner-death test child returned before its owner was killed: {result:?}");
     }
@@ -108,27 +114,25 @@ fn daemon_owned_child_dies_when_helper_owner_is_killed() {
     );
 }
 
-fn owner_death_test_child_command(pid_file_env: &str) -> tokio::process::Command {
+fn owner_death_test_child_builder(
+    pid_file_env: &str,
+) -> kernal_api::async_process::AsyncProcessBuilder {
     #[cfg(windows)]
     {
-        let mut command = tokio::process::Command::new("powershell");
-        command.args([
+        kernal_api::async_process::AsyncProcessBuilder::new("powershell").args([
             "-NoProfile",
             "-Command",
             &format!(
                 "$PID | Set-Content -LiteralPath $env:{pid_file_env}; Start-Sleep -Seconds 30"
             ),
-        ]);
-        command
+        ])
     }
     #[cfg(unix)]
     {
-        let mut command = tokio::process::Command::new("sh");
-        command.args([
+        kernal_api::async_process::AsyncProcessBuilder::new("sh").args([
             "-c",
             &format!("printf '%s\\n' \"$$\" > \"${pid_file_env}\"; exec sleep 30"),
-        ]);
-        command
+        ])
     }
 }
 
@@ -563,7 +567,7 @@ fn invalid_link_priority_env_falls_back_to_low() {
 
 #[test]
 fn platform_priority_mapping_is_explicit() {
-    use zccache_platform::process::priority::Priority;
+    use crate::platform::process::priority::Priority;
 
     assert_eq!(CompilePriority::Auto.platform_priority(), Priority::Normal);
     assert_eq!(
@@ -573,6 +577,309 @@ fn platform_priority_mapping_is_explicit() {
     assert_eq!(CompilePriority::Low.platform_priority(), Priority::Low);
     assert_eq!(CompilePriority::Idle.platform_priority(), Priority::Idle);
     assert_eq!(CompilePriority::High.platform_priority(), Priority::High);
+}
+
+#[test]
+fn kernel_session_owner_death_is_enabled_on_every_host() {
+    // Windows needs this just as much as Unix: the canonical builder turns it
+    // into its Job Object containment during native spawn.
+    assert!(kernel_session_kill_when_owner_dies());
+}
+
+#[test]
+fn async_session_errors_preserve_native_io_category_and_code() {
+    let code = 12345;
+    let error = async_process_error_to_io(kernal_api::async_process::AsyncProcessError::Spawn(
+        std::io::Error::from_raw_os_error(code),
+    ));
+    assert_eq!(error.raw_os_error(), Some(code));
+}
+
+#[test]
+fn kernel_process_priority_preserves_zccache_scheduling_intent() {
+    use kernal_api::async_process::ProcessPriority;
+
+    assert_eq!(
+        kernel_process_priority(CompilePriority::Normal),
+        ProcessPriority::Normal
+    );
+    assert_eq!(
+        kernel_process_priority(CompilePriority::Low),
+        ProcessPriority::Low
+    );
+    assert_eq!(
+        kernel_process_priority(CompilePriority::Idle),
+        ProcessPriority::Idle
+    );
+    assert_eq!(
+        kernel_process_priority(CompilePriority::High),
+        ProcessPriority::High
+    );
+}
+
+#[tokio::test]
+async fn semantic_best_effort_priority_does_not_prevent_child_start() {
+    #[cfg(unix)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new("sh").args(["-c", "exit 0"]);
+    #[cfg(windows)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new(
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
+            .join("System32")
+            .join("cmd.exe"),
+    )
+    .args(["/D", "/C", "exit 0"]);
+
+    let mut session = builder
+        // An unprivileged Unix caller ordinarily cannot raise its nice level;
+        // that denial used to be logged after spawn, not fail a compile.
+        .priority_best_effort(kernal_api::async_process::ProcessPriority::High)
+        .session(Default::default());
+    session
+        .start()
+        .await
+        .expect("best-effort priority denial must not prevent child start");
+    let (control, _) = session.into_parts().expect("started session has controls");
+    assert!(control
+        .wait()
+        .await
+        .expect("child remains waitable after best-effort priority")
+        .success());
+}
+
+#[test]
+fn semantic_session_start_future_is_send_without_a_caller_held_lock() {
+    fn assert_send<T: Send>(_: T) {}
+
+    assert_send(async_builder_output_with_priority(
+        kernal_api::async_process::AsyncProcessBuilder::new("zccache-session-send-fixture"),
+        CompilePriority::Normal,
+    ));
+}
+
+#[tokio::test]
+async fn semantic_streaming_session_forwards_chunks_without_duplicate_capture() {
+    #[cfg(unix)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new("sh")
+        .args(["-c", "printf stdout; printf stderr >&2"]);
+    #[cfg(windows)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new(
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
+            .join("System32")
+            .join("cmd.exe"),
+    )
+    .args(["/D", "/C", "<nul set /p =stdout & <nul set /p =stderr 1>&2"]);
+
+    let (sender, mut receiver) = kernal_api::async_engine::channel(8);
+    let (output, decision) = async_builder_output_streaming_with_priority_decision(
+        builder,
+        CompilePriority::Normal,
+        sender,
+        "streaming-fixture".to_owned(),
+    )
+    .await;
+    let output = output.expect("streaming fixture must succeed");
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(decision.effective, CompilePriority::Normal);
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    while let Some(chunk) = receiver.recv().await {
+        match chunk {
+            crate::daemon::compile_output::RawOutputChunk::Stdout(bytes) => stdout.extend(bytes),
+            crate::daemon::compile_output::RawOutputChunk::Stderr(bytes) => stderr.extend(bytes),
+        }
+    }
+    assert_eq!(stdout, b"stdout");
+    assert_eq!(stderr, b"stderr");
+}
+
+#[tokio::test]
+async fn semantic_compiler_capture_uses_the_same_session_watchdog_loop() {
+    #[cfg(unix)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new("sh")
+        .args(["-c", "printf stdout; printf stderr >&2"]);
+    #[cfg(windows)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new(
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
+            .join("System32")
+            .join("cmd.exe"),
+    )
+    .args(["/D", "/C", "<nul set /p =stdout & <nul set /p =stderr 1>&2"]);
+
+    let (output, decision) = async_builder_output_with_priority_decision(
+        builder,
+        CompilePriority::Normal,
+        "captured-compiler-fixture".to_owned(),
+    )
+    .await;
+    let output = output.expect("captured compiler fixture must succeed");
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"stdout");
+    assert_eq!(output.stderr, b"stderr");
+    assert_eq!(decision.effective, CompilePriority::Normal);
+}
+
+#[test]
+fn semantic_session_stall_monitor_requires_observable_flat_cpu() {
+    use std::time::Duration;
+
+    assert!(session_cpu_time_advanced(None, None));
+    assert!(session_cpu_time_advanced(
+        Some(Duration::from_secs(1)),
+        None
+    ));
+    assert!(session_cpu_time_advanced(
+        None,
+        Some(Duration::from_secs(1))
+    ));
+    assert!(session_cpu_time_advanced(
+        Some(Duration::from_secs(1)),
+        Some(Duration::from_secs(2)),
+    ));
+    assert!(!session_cpu_time_advanced(
+        Some(Duration::from_secs(2)),
+        Some(Duration::from_secs(2)),
+    ));
+    assert_eq!(
+        crate::daemon::child_watchdog::stall_tick(),
+        Duration::from_secs(5),
+        "the canonical session monitor must retain the former sampling cadence",
+    );
+}
+
+#[tokio::test]
+async fn semantic_compiler_pipe_fault_is_retained_for_post_exit_diagnostics() {
+    use kernal_api::async_process::{AsyncProcessSessionEvent, StreamKind};
+
+    let (sender, _receiver) = kernal_api::async_engine::channel(1);
+    let mut stdout_bytes = 0;
+    let mut stderr_bytes = 0;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let outcome = forward_compiler_session_event(
+        AsyncProcessSessionEvent::StreamError {
+            stream: StreamKind::Stderr,
+            kind: std::io::ErrorKind::Other,
+            message: "fixture pipe fault".to_owned(),
+            raw_os_error: Some(12345),
+        },
+        &Some(sender),
+        &mut stdout_bytes,
+        &mut stderr_bytes,
+        &mut stdout,
+        &mut stderr,
+    )
+    .await;
+    let CompilerSessionEvent::PipeReadError { stream, error } = outcome else {
+        panic!("pipe faults must remain lifecycle events, not immediate child kills");
+    };
+    assert_eq!(stream, StreamKind::Stderr);
+    assert_eq!(error.raw_os_error(), Some(12345));
+}
+
+#[tokio::test]
+async fn semantic_compiler_consumer_disconnect_remains_a_kill_reap_failure() {
+    use kernal_api::async_process::{
+        AsyncProcessSessionChunk, AsyncProcessSessionEvent, StreamKind,
+    };
+
+    let (sender, receiver) = kernal_api::async_engine::channel(1);
+    drop(receiver);
+    let mut stdout_bytes = 0;
+    let mut stderr_bytes = 0;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let outcome = forward_compiler_session_event(
+        AsyncProcessSessionEvent::Chunk(AsyncProcessSessionChunk {
+            stream: StreamKind::Stdout,
+            bytes: b"fixture".to_vec(),
+        }),
+        &Some(sender),
+        &mut stdout_bytes,
+        &mut stderr_bytes,
+        &mut stdout,
+        &mut stderr,
+    )
+    .await;
+    let CompilerSessionEvent::ConsumerDisconnected(error) = outcome else {
+        panic!("disconnected consumers must be distinguishable from pipe faults");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+}
+
+#[tokio::test]
+async fn semantic_session_admission_denial_prevents_spawn() {
+    let admission = kernal_api::async_process::SpawnAdmission::new(|| {
+        Err::<(), _>(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "materialization admission denied",
+        ))
+    });
+    let mut session =
+        kernal_api::async_process::AsyncProcessBuilder::new("zccache-admission-denial-fixture")
+            .spawn_admission(admission)
+            .session(Default::default());
+
+    let error = session
+        .start()
+        .await
+        .expect_err("denied admission must not spawn");
+    match error {
+        kernal_api::async_process::AsyncProcessError::Spawn(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        }
+        other => panic!("admission failure must be a spawn error, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn semantic_session_admission_holds_materialization_lock_through_native_spawn() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[cfg(unix)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new("sh").args(["-c", "exit 0"]);
+    #[cfg(windows)]
+    let builder = kernal_api::async_process::AsyncProcessBuilder::new(
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
+            .join("System32")
+            .join("cmd.exe"),
+    )
+    .args(["/D", "/C", "exit 0"]);
+
+    let materialization = crate::daemon::spawn_exclusion::materialize_exclusive();
+    let admission_entered = Arc::new(AtomicBool::new(false));
+    let entered = admission_entered.clone();
+    let admission = kernal_api::async_process::SpawnAdmission::new(move || {
+        entered.store(true, Ordering::SeqCst);
+        Ok::<_, std::io::Error>(crate::daemon::spawn_exclusion::spawn_shared())
+    });
+    let start = kernal_api::async_engine::launch(async move {
+        let mut session = builder
+            .spawn_admission(admission)
+            .session(Default::default());
+        session.start().await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !admission_entered.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("actor must attempt admission");
+    assert!(
+        !start.is_finished(),
+        "native spawn must wait while materialization owns the exclusive lock"
+    );
+
+    drop(materialization);
+    start
+        .await
+        .expect("start task must not be cancelled")
+        .expect("session must start after materialization releases its lock");
 }
 
 // ── Console-window suppression (Windows only) ───────────────────────
@@ -588,5 +895,5 @@ fn platform_priority_mapping_is_explicit() {
 #[cfg(windows)]
 #[test]
 fn running_process_tokio_policy_is_consoleless() {
-    assert!(!running_process::TokioSpawnOptions::default().show_console);
+    assert!(!kernal_api::async_process::TokioSpawnOptions::default().show_console);
 }

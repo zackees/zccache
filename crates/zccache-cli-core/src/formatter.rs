@@ -19,15 +19,22 @@ pub fn run_rustfmt_cached(
     cwd: &Path,
     cache_root: Option<&Path>,
 ) -> ExitCode {
-    match run_rustfmt_cached_with_runner(rustfmt_path, args, cwd, cache_root, |cmd| {
-        Ok(cmd.status()?.code().unwrap_or(1))
-    }) {
+    match run_rustfmt_cached_with_runner(rustfmt_path, args, cwd, cache_root, run_inherited_command)
+    {
         Ok(code) => exit_code_from_i32(code),
         Err(error) => {
             eprintln!("zccache: failed to run rustfmt: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Execute a foreground tool without changing its inherited process group or
+/// extra descriptors (including Cargo's jobserver). The explicit canonical
+/// foreground boundary preserves caller configuration without adding
+/// containment, detachment, or descriptor sanitization.
+pub(crate) fn run_inherited_command(cmd: &mut std::process::Command) -> std::io::Result<i32> {
+    Ok(kernal_api::foreground::status(cmd)?.code().unwrap_or(1))
 }
 
 /// Run rustfmt with format caching while delegating child execution to `runner`.
@@ -219,6 +226,98 @@ fn config_skip_children_assignment(config: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn foreground_runner_preserves_arguments_cwd_and_failure_status() {
+        let dir = tempfile::tempdir().expect("foreground fixture directory");
+        let marker = dir.path().join("literal output");
+        let mut command = std::process::Command::new("/bin/sh");
+        command.current_dir(dir.path()).args([
+            "-c",
+            "[ \"$#\" = 2 ] || exit 8; printf '%s\\n%s' \"$1\" \"$2\" > 'literal output'; exit 7",
+            "fixture",
+            "$literal; not a command",
+            "",
+        ]);
+        assert_eq!(
+            super::run_inherited_command(&mut command).expect("foreground spawn"),
+            7
+        );
+        assert_eq!(
+            std::fs::read(marker).expect("relative child output"),
+            b"$literal; not a command\n"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn foreground_runner_preserves_explicitly_inheritable_descriptor() {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        unsafe extern "C" {
+            fn fcntl(fd: i32, command: i32, ...) -> i32;
+        }
+        let dir = tempfile::tempdir().expect("descriptor fixture directory");
+        let source = dir.path().join("source");
+        let result = dir.path().join("result");
+        std::fs::write(&source, b"inherited-resource").expect("fixture data");
+        let file = std::fs::File::open(source).expect("fixture source");
+        // Linux F_DUPFD=0 returns a new descriptor with CLOEXEC clear. Reserve
+        // a high number without replacing any existing descriptor. This
+        // test-only descriptor contains no credentials and is closed by RAII.
+        let raw = unsafe { fcntl(file.as_raw_fd(), 0, 64) };
+        assert!(
+            raw >= 64,
+            "duplicate fixture descriptor: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: successful F_DUPFD returned a new descriptor owned here.
+        let inherited = unsafe { OwnedFd::from_raw_fd(raw) };
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "cat \"/proc/self/fd/$1\" > \"$2\"", "fixture"])
+            .arg(inherited.as_raw_fd().to_string())
+            .arg(&result);
+        assert_eq!(
+            super::run_inherited_command(&mut command).expect("foreground spawn"),
+            0
+        );
+        assert_eq!(
+            std::fs::read(result).expect("child descriptor output"),
+            b"inherited-resource"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn foreground_runner_preserves_process_group_and_session() {
+        fn group_and_session(stat: &str) -> (u32, u32) {
+            // comm can contain spaces and parentheses; fields after its final
+            // ')' start with state, ppid, pgrp, session.
+            let (_, fields) = stat.rsplit_once(')').expect("proc stat comm");
+            let fields: Vec<_> = fields.split_whitespace().collect();
+            (
+                fields[2].parse().expect("pgrp"),
+                fields[3].parse().expect("session"),
+            )
+        }
+        let expected = group_and_session(
+            &std::fs::read_to_string("/proc/self/stat").expect("parent proc stat"),
+        );
+        let dir = tempfile::tempdir().expect("foreground fixture directory");
+        let marker = dir.path().join("child-stat");
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "cat /proc/$$/stat > \"$1\"", "fixture"])
+            .arg(&marker);
+        assert_eq!(
+            super::run_inherited_command(&mut command).expect("foreground spawn"),
+            0
+        );
+        let observed =
+            group_and_session(&std::fs::read_to_string(marker).expect("child proc stat"));
+        assert_eq!(
+            observed, expected,
+            "foreground spawn must not create a group or session"
+        );
+    }
     use super::*;
 
     static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

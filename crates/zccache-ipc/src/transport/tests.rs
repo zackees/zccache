@@ -187,13 +187,14 @@ async fn backend_handle_probe_succeeds_on_direct_endpoint() {
     });
 
     let (service_name, handle_endpoint) = tokio::task::spawn_blocking(move || {
-        let handle = running_process::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
-            "zccache",
-            zccache_core::VERSION,
-            &probe_endpoint,
-            &expected_daemon,
-        )
-        .unwrap();
+        let handle =
+            kernal_api::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
+                "zccache",
+                zccache_core::VERSION,
+                &probe_endpoint,
+                &expected_daemon,
+            )
+            .unwrap();
         (
             handle.service_name.clone(),
             handle.daemon_process.ipc_endpoint.path.clone(),

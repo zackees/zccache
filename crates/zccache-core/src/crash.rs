@@ -188,8 +188,8 @@ pub fn drain_native_crash_spool() {
              fault; see the spooled record for raw frames>\n",
             bin = report.metadata.app_name,
             version = report.metadata.app_version,
-            os = crate::platform::host::os(),
-            arch = crate::platform::host::arch(),
+            os = crate::host::os(),
+            arch = crate::host::arch(),
             pid = report.pid,
             code = report.fault_code,
             address = report.fault_address,
@@ -408,8 +408,8 @@ fn write_panic_dump(panic_info: &str, backtrace: &str) -> Option<NormalizedPath>
          {backtrace}\n",
         bin = bin_stem(),
         version = env!("CARGO_PKG_VERSION"),
-        os = crate::platform::host::os(),
-        arch = crate::platform::host::arch(),
+        os = crate::host::os(),
+        arch = crate::host::arch(),
         pid = std::process::id(),
     );
 

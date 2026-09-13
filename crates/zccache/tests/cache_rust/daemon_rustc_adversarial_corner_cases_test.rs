@@ -37,7 +37,7 @@ type ClientConn = zccache::ipc::IpcClientConnection;
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<kernal_api::async_engine::Notify>,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
@@ -115,7 +115,7 @@ struct TestHarness {
     #[expect(dead_code)]
     endpoint: String,
     server_handle: tokio::task::JoinHandle<()>,
-    shutdown: std::sync::Arc<tokio::sync::Notify>,
+    shutdown: std::sync::Arc<kernal_api::async_engine::Notify>,
     client: ClientConn,
     session_id: String,
 }

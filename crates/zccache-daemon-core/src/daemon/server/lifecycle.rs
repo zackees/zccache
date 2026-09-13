@@ -96,7 +96,7 @@ pub(super) fn cache_root_error(
 /// Report a daemon-identity failure with the endpoint it was resolved for.
 pub(super) fn daemon_identity_error(
     endpoint: &str,
-    error: &running_process::broker::protocol_v2::backend_handle::IdentityError,
+    error: &kernal_api::broker::protocol_v2::backend_handle::IdentityError,
 ) -> crate::ipc::IpcError {
     crate::ipc::IpcError::Endpoint(format!("daemon identity for {endpoint}: {error}"))
 }
@@ -112,13 +112,13 @@ pub(super) fn new_shared_state(
     endpoint: &str,
     cache_dir: &crate::core::NormalizedPath,
     staging_root: Option<&crate::core::NormalizedPath>,
-    backend_identity: running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    backend_identity: kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
     host_admission_classifier: Option<Arc<dyn compile_resource_gate::HostAdmissionClassifier>>,
 ) -> std::io::Result<(
     Arc<SharedState>,
-    tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>,
+    kernal_api::async_engine::UnboundedReceiver<IndexWriterCommand>,
 )> {
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = Arc::new(kernal_api::async_engine::Notify::new());
     let now = now_secs();
     let instance = SERVER_INSTANCE.fetch_add(1, Ordering::Relaxed);
     // #1162: claim the root before touching any of its state files, so a
@@ -149,7 +149,7 @@ pub(super) fn new_shared_state(
     let artifact_store = Arc::new(ArtifactStore::open_empty(&index_path));
 
     let (index_writer_tx, index_writer_rx) =
-        tokio::sync::mpsc::unbounded_channel::<IndexWriterCommand>();
+        kernal_api::async_engine::unbounded_channel::<IndexWriterCommand>();
     let index_writer_shutdown = Arc::new(Notify::new());
 
     // Try to restore the metadata cache from disk. A wrong-version /
@@ -293,7 +293,7 @@ pub(super) fn new_shared_state(
             journal: CompileJournal::new(crate::core::config::log_dir_from_cache_dir(cache_dir)),
             in_flight_bytes: AtomicUsize::new(0),
             disk_maintenance: Mutex::new(()),
-            artifact_publication: Arc::new(tokio::sync::RwLock::new(())),
+            artifact_publication: Arc::new(kernal_api::async_engine::RwLock::new(())),
             staged_materialization_lock: Arc::new(StdMutex::new(std::sync::Weak::new())),
             persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
             compile_concurrency,
@@ -330,7 +330,7 @@ pub(super) fn new_shared_state(
 impl DaemonServer {
     /// Get a handle to signal shutdown.
     #[must_use]
-    pub fn shutdown_handle(&self) -> Arc<Notify> {
+    pub fn shutdown_handle(&self) -> Arc<kernal_api::async_engine::Notify> {
         Arc::clone(&self.shutdown)
     }
 
@@ -341,7 +341,7 @@ impl DaemonServer {
     #[must_use]
     pub fn backend_identity(
         &self,
-    ) -> running_process::broker::protocol_v2::backend_handle::DaemonProcess {
+    ) -> kernal_api::broker::protocol_v2::backend_handle::DaemonProcess {
         self.state.backend_identity.clone()
     }
 
@@ -387,7 +387,7 @@ impl DaemonServer {
     /// stale or corrupt `depgraph.bin` is visible to operators. Issue #320.
     ///
     /// **Post-#640**: takes `&self` and uses the field's existing
-    /// `tokio::sync::Mutex` via `blocking_lock` — safe to call from a
+    /// canonical async `Mutex` via `blocking_lock` — safe to call from a
     /// `tokio::task::spawn_blocking` after `run()` has started so the
     /// daemon can move the depgraph load off the bind critical path.
     pub fn set_depgraph_load_warning(&self, warning: String) {

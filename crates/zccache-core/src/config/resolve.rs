@@ -362,7 +362,7 @@ pub(super) fn volume_root(path: &Path) -> Option<std::path::PathBuf> {
 pub(super) fn same_volume_root(a: &Path, b: &Path) -> bool {
     let a_str = a.to_string_lossy();
     let b_str = b.to_string_lossy();
-    if crate::platform::host::is_windows() {
+    if crate::host::is_windows() {
         a_str.eq_ignore_ascii_case(&b_str)
     } else {
         a_str == b_str
@@ -404,7 +404,7 @@ pub fn staging_dir_override() -> Option<NormalizedPath> {
 }
 
 fn dirs_fallback() -> NormalizedPath {
-    crate::platform::host::home_dir()
+    crate::host::home_dir()
         .map(NormalizedPath::from)
         .unwrap_or_else(|| ".".into())
 }

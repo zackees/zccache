@@ -15,9 +15,11 @@
 //! the codecs to typed prost messages. See zackees/zccache#718.
 
 use bytes::BytesMut;
+use kernal_api::broker::{
+    encode_framed, try_decode_framed, Frame, FrameKind, FramingError, PayloadEncoding,
+    ENVELOPE_VERSION,
+};
 use prost::Message;
-use running_process::broker::protocol::frame_ext::{encode_framed, try_decode_framed};
-use running_process::register_payload_protocol;
 
 use super::{ProtocolError, PROST_PROTOCOL_VERSION};
 
@@ -26,18 +28,10 @@ use super::{ProtocolError, PROST_PROTOCOL_VERSION};
 // frame with a low length byte of `1` from being mistaken for FrameV1.
 const RETIRED_BINCODE_PROTOCOL_VERSION: u32 = 25;
 
-register_payload_protocol! {
-    /// `payload_protocol` registry value for zccache requests/responses carried
-    /// inside running-process broker `Frame` envelopes.
-    ///
-    /// `0x7A63` is ASCII `"zc"` (`0x7A` = 'z', `0x63` = 'c'). The
-    /// [`register_payload_protocol!`] macro emits compile-time asserts that
-    /// this value does not collide with any first-party running-process
-    /// payload protocol and lies inside the registered-consumer range
-    /// (`0x7000..=0x7EFF`). The authoritative registration mirrors
-    /// `running_process::broker::protocol::registry::ZCCACHE_PAYLOAD_PROTOCOL`.
-    pub const ZCCACHE_FRAME_PAYLOAD_PROTOCOL: u32 = 0x7A63;
-}
+/// `payload_protocol` registry value for zccache requests/responses carried
+/// inside the canonical kernel broker `Frame` envelope. `0x7A63` is ASCII
+/// `"zc"`; frozen frame tests pin this product-owned value and outer bytes.
+pub const ZCCACHE_FRAME_PAYLOAD_PROTOCOL: u32 = 0x7A63;
 
 /// Decoded zccache message extracted from a running-process `Frame`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,8 +52,6 @@ pub fn encode_frame_v1_request<M: Message>(
     msg: &M,
     request_id: u64,
 ) -> Result<BytesMut, ProtocolError> {
-    use running_process::broker::protocol::Frame;
-
     let payload = encode_payload(msg)?;
     let frame = Frame::request(ZCCACHE_FRAME_PAYLOAD_PROTOCOL, payload).with_request_id(request_id);
     encode_framed_bytes(&frame)
@@ -78,8 +70,6 @@ pub fn encode_frame_v1_response<M: Message>(
     msg: &M,
     request_id: u64,
 ) -> Result<BytesMut, ProtocolError> {
-    use running_process::broker::protocol::Frame;
-
     // Use a one-shot request as the template so `response_to` can echo the
     // request_id + payload_protocol exactly the way the SDK builds it on the
     // server side. `Frame::request` is a pure constructor (no I/O), and the
@@ -98,10 +88,7 @@ fn encode_payload<M: Message>(msg: &M) -> Result<Vec<u8>, ProtocolError> {
     Ok(payload)
 }
 
-fn encode_framed_bytes(
-    frame: &running_process::broker::protocol::Frame,
-) -> Result<BytesMut, ProtocolError> {
-    use running_process::broker::protocol::FramingError;
+fn encode_framed_bytes(frame: &Frame) -> Result<BytesMut, ProtocolError> {
     let bytes = encode_framed(frame).map_err(|e| match e {
         FramingError::FrameTooLarge { body_length, .. } => {
             ProtocolError::MessageTooLarge(body_length)
@@ -126,7 +113,7 @@ pub fn buffer_starts_running_process_frame(buf: &[u8]) -> Option<bool> {
     if buf.is_empty() {
         return None;
     }
-    if buf[0] != running_process::broker::protocol::ENVELOPE_VERSION {
+    if buf[0] != ENVELOPE_VERSION {
         return Some(false);
     }
     if buf.len() < 8 {
@@ -160,8 +147,6 @@ pub fn decode_frame_v1_message<M: Message + Default>(
     buf: &mut BytesMut,
 ) -> Result<Option<FrameV1Decoded<M>>, ProtocolError> {
     use bytes::Buf;
-    use running_process::broker::protocol::{FrameKind, FramingError, PayloadEncoding};
-
     let decoded = match try_decode_framed(buf.as_ref()) {
         Ok(Some(d)) => d,
         Ok(None) => return Ok(None),
@@ -295,8 +280,8 @@ mod tests {
     /// payload is decoded.
     #[test]
     fn frame_v1_rejects_foreign_payload_protocol() {
+        use kernal_api::broker::{Frame, FrameKind, PayloadEncoding, ENVELOPE_VERSION};
         use prost::Message as _;
-        use running_process::broker::protocol::{Frame, FrameKind, PayloadEncoding};
 
         let frame = Frame {
             envelope_version: 1,
@@ -311,7 +296,7 @@ mod tests {
         };
         let body = frame.encode_to_vec();
         let mut buf = BytesMut::new();
-        buf.put_u8(running_process::broker::protocol::ENVELOPE_VERSION);
+        buf.put_u8(ENVELOPE_VERSION);
         buf.put_u32_le(u32::try_from(body.len()).unwrap());
         buf.extend_from_slice(&body);
 

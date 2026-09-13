@@ -135,13 +135,14 @@ pub(super) async fn run_compiler_direct_with_family(
         sessions.get(sid).map(|s| s.client_pid),
         Some(sid.to_string()),
     );
-    let mut cmd = tokio::process::Command::new(compiler);
+    let mut builder =
+        kernal_api::async_process::AsyncProcessBuilder::new(compiler.as_path()).current_dir(cwd);
     if let Some(ref rsp) = _rsp_guard {
-        cmd.arg(rsp.at_arg()).current_dir(cwd);
+        builder = builder.arg(rsp.at_arg());
     } else {
-        cmd.args(args).current_dir(cwd);
+        builder = builder.args(args);
     }
-    apply_client_env(&mut cmd, client_env, &lineage);
+    let builder = apply_client_env_builder(builder, client_env, &lineage);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let stdin = if stdin_bytes.is_empty() {
         None
@@ -177,12 +178,13 @@ pub(super) async fn run_compiler_direct_with_family(
     }
     let (result, streamed_output) = if let Some(context) = crate::daemon::compile_output::current()
     {
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-        let process = super::super::process::tokio_command_output_streaming_with_priority_stdin(
-            &mut cmd,
+        let (sender, receiver) = kernal_api::async_engine::channel(8);
+        let process = super::super::process::async_builder_output_with_priority_stdin(
+            builder,
             compiler_priority,
             stdin,
-            sender,
+            Some(sender),
+            compiler.display().to_string(),
         );
         let consume = crate::daemon::compile_output::consume(
             receiver,
@@ -193,10 +195,12 @@ pub(super) async fn run_compiler_direct_with_family(
         (process_result, Some(capture_result))
     } else {
         (
-            super::super::process::tokio_command_output_with_priority_stdin(
-                &mut cmd,
+            super::super::process::async_builder_output_with_priority_stdin(
+                builder,
                 compiler_priority,
                 stdin,
+                None,
+                compiler.display().to_string(),
             )
             .await,
             None,

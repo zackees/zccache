@@ -35,6 +35,20 @@ const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const FULL_MARKER: &str = ".disk-maintenance-last-full-v1";
 
+fn launch_maintenance_blocking<F, R>(
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+    operation: F,
+) -> kernal_api::async_engine::Task<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match runtime_handle {
+        Some(handle) => handle.launch_blocking(operation),
+        None => kernal_api::async_engine::launch_blocking(operation),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MaintenanceKind {
     Pressure,
@@ -513,7 +527,7 @@ struct MaintenancePass<'a> {
     artifact_dir: &'a Path,
     artifacts: &'a DashMap<String, CachedArtifact>,
     artifact_store: &'a ArtifactStore,
-    index_writer_tx: Option<&'a tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>>,
+    index_writer_tx: Option<&'a kernal_api::async_engine::UnboundedSender<IndexWriterCommand>>,
     dep_graph: &'a DepGraph,
     pending_write_bytes: u64,
     policy: MaintenancePolicy,
@@ -563,7 +577,7 @@ fn remove_planned_artifacts(
     plan: &MaintenancePlan,
     artifacts: &DashMap<String, CachedArtifact>,
     artifact_store: &ArtifactStore,
-    index_writer_tx: Option<&tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>>,
+    index_writer_tx: Option<&kernal_api::async_engine::UnboundedSender<IndexWriterCommand>>,
     dep_graph: &DepGraph,
 ) -> io::Result<Vec<String>> {
     let planned: HashSet<&str> = plan.selected.iter().map(String::as_str).collect();
@@ -627,7 +641,7 @@ fn maintain_disk_artifacts(pass: MaintenancePass<'_>) -> io::Result<DiskMaintena
 
 fn maintain_disk_artifacts_with_barrier(
     pass: MaintenancePass<'_>,
-    publication_barrier: Option<&Arc<tokio::sync::RwLock<()>>>,
+    publication_barrier: Option<&Arc<kernal_api::async_engine::RwLock<()>>>,
 ) -> io::Result<DiskMaintenanceReport> {
     let MaintenancePass {
         artifact_dir,
@@ -779,6 +793,7 @@ pub(super) async fn maintain_state_disk(
     state: Arc<SharedState>,
     policy: MaintenancePolicy,
     kind: MaintenanceKind,
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
 ) -> io::Result<DiskMaintenanceReport> {
     let _maintenance_guard = state.disk_maintenance.lock().await;
     if state.shutdown_requested.load(Ordering::Acquire) {
@@ -792,7 +807,7 @@ pub(super) async fn maintain_state_disk(
     let maintenance_index_writer_tx = index_writer_tx.clone();
     let pending_write_bytes = state.in_flight_bytes.load(Ordering::Relaxed) as u64;
     let maintenance_state = Arc::clone(&state);
-    let report = tokio::task::spawn_blocking(move || {
+    let report = launch_maintenance_blocking(runtime_handle, move || {
         let dep_graph = maintenance_state.dep_graph.load_full();
         maintain_disk_artifacts_with_barrier(
             MaintenancePass {
@@ -849,7 +864,7 @@ async fn wait_for_artifact_load(state: &SharedState) -> bool {
         {
             return true;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        kernal_api::async_engine::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -880,16 +895,16 @@ async fn wait_for_next_pass_or_shutdown(
     interval: Duration,
     poll_interval: Duration,
 ) -> bool {
-    let deadline = tokio::time::Instant::now() + interval;
+    let deadline = kernal_api::async_engine::Deadline::after(interval);
     loop {
         if shutdown_requested.load(Ordering::Acquire) {
             return true;
         }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let remaining = deadline.remaining();
         if remaining.is_zero() {
             return false;
         }
-        tokio::time::sleep(remaining.min(poll_interval)).await;
+        kernal_api::async_engine::sleep(remaining.min(poll_interval)).await;
     }
 }
 
@@ -985,8 +1000,10 @@ fn reap_finished_sessions_with_grace(
 ///
 /// The scan stats every candidate directory and may `remove_dir_all`, so it
 /// runs on the blocking pool rather than an executor worker.
-async fn sweep_stale_depfile_dirs() {
-    let cleaned = tokio::task::spawn_blocking(|| {
+async fn sweep_stale_depfile_dirs(
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+) {
+    let cleaned = launch_maintenance_blocking(runtime_handle, || {
         crate::core::config::cleanup_stale_depfile_dirs(crate::ipc::is_process_alive)
     })
     .await;
@@ -1044,8 +1061,10 @@ fn reap_ended_session_tombstones_at(
 pub(super) fn spawn_disk_maintenance(
     state: Arc<SharedState>,
     policy: MaintenancePolicy,
-    runtime_handle: Option<&tokio::runtime::Handle>,
-) -> tokio::task::JoinHandle<()> {
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+) -> kernal_api::async_engine::Task<()> {
+    let spawn_handle = runtime_handle.cloned();
+    let runtime_handle = runtime_handle.cloned();
     let task = async move {
         if !wait_for_artifact_load(&state).await {
             return;
@@ -1066,7 +1085,7 @@ pub(super) fn spawn_disk_maintenance(
                 MaintenanceKind::Pressure
             };
             if kind == MaintenanceKind::Full {
-                sweep_stale_depfile_dirs().await;
+                sweep_stale_depfile_dirs(runtime_handle.as_ref()).await;
             }
             if kind == MaintenanceKind::Pressure {
                 match pressure_scan_needed(&state, policy) {
@@ -1090,7 +1109,9 @@ pub(super) fn spawn_disk_maintenance(
                     Err(error) => tracing::warn!(%error, "disk maintenance preflight failed"),
                 }
             }
-            if let Err(error) = maintain_state_disk(Arc::clone(&state), policy, kind).await {
+            if let Err(error) =
+                maintain_state_disk(Arc::clone(&state), policy, kind, runtime_handle.as_ref()).await
+            {
                 tracing::warn!(
                     %error,
                     maintenance_kind = ?kind,
@@ -1112,9 +1133,9 @@ pub(super) fn spawn_disk_maintenance(
             }
         }
     };
-    match runtime_handle {
-        Some(handle) => handle.spawn(task),
-        None => tokio::spawn(task),
+    match spawn_handle {
+        Some(handle) => handle.launch(task),
+        None => kernal_api::async_engine::launch(task),
     }
 }
 

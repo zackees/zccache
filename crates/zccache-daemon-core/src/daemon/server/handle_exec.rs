@@ -29,6 +29,7 @@ use crate::depgraph::scanner::scan_recursive;
 use crate::depgraph::search_paths::IncludeSearchPaths;
 use crate::protocol::{ExecCachePolicy, ExecOutputStreams};
 use dashmap::mapref::entry::Entry;
+use kernal_api::async_engine::Notify;
 
 static EXEC_STAGE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -639,7 +640,7 @@ enum CoalesceOutcome {
 
 /// Wait for the in-flight owner of `key` to finish, bounded by `budget`.
 ///
-/// Closes the two `tokio::sync::Notify` single-flight hazards behind #971:
+/// Closes the two canonical `Notify` single-flight hazards behind #971:
 /// - **Lost wakeup (mode 1):** `Notified` only arms a waiter once polled, so we
 ///   `enable()` the future BEFORE re-checking the map. An owner that runs
 ///   `remove()` + `notify_waiters()` between the caller cloning the `Arc` and
@@ -659,7 +660,7 @@ async fn coalesce_wait(
     budget: std::time::Duration,
 ) -> CoalesceOutcome {
     let notified = notify_arc.notified();
-    tokio::pin!(notified);
+    let mut notified = std::pin::pin!(notified);
     notified.as_mut().enable();
 
     let still_ours = in_flight
@@ -669,9 +670,11 @@ async fn coalesce_wait(
         return CoalesceOutcome::SlotResolved;
     }
 
-    tokio::select! {
-        () = notified.as_mut() => CoalesceOutcome::Woken,
-        () = tokio::time::sleep(budget) => CoalesceOutcome::TimedOut,
+    let deadline = kernal_api::async_engine::sleep(budget);
+    let mut deadline = std::pin::pin!(deadline);
+    match kernal_api::fair_race!((notified.as_mut()), (deadline.as_mut())).await {
+        kernal_api::async_engine::FairRace2::First(()) => CoalesceOutcome::Woken,
+        kernal_api::async_engine::FairRace2::Second(()) => CoalesceOutcome::TimedOut,
     }
 }
 
@@ -698,22 +701,23 @@ async fn spawn_tool(
     cwd: &Path,
     env: &[(String, String)],
 ) -> std::io::Result<std::process::Output> {
-    let mut cmd = tokio::process::Command::new(tool);
-    cmd.args(args).current_dir(cwd);
+    let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(tool)
+        .args(args.iter().cloned())
+        .current_dir(cwd)
+        .clear_env(true);
     // Clear env and apply only the declared subset so the run is reproducible
     // across hosts that may have unrelated env differences. PATH is
     // intentionally NOT auto-injected — callers that need it must declare
     // `--input-env PATH` so it participates in the key.
-    cmd.env_clear();
     for (k, v) in env {
-        cmd.env(k, v);
+        builder = builder.env(k, v);
     }
     // Route through the async priority helper so the tool wait flows through
     // the orphan-pipe watchdog (issue #962): a tool that leaves a pipe-holding
     // grandchild can no longer wedge the exec owner forever — which in turn
     // stops that wedge from stranding every coalesced waiter on this key
     // (issue #971 mode 3, the wedged-owner path).
-    crate::daemon::process::tokio_command_output_with_priority(&mut cmd, CompilePriority::Normal)
+    crate::daemon::process::async_builder_output_with_priority(builder, CompilePriority::Normal)
         .await
 }
 
@@ -977,7 +981,7 @@ async fn store_exec_artifact_inner(
         let publication_guard_for_task =
             publication_guard.expect("direct exec publication acquired an owned guard");
         let index_writer_tx = state.index_writer_tx.clone();
-        tokio::spawn(async move {
+        kernal_api::async_engine::launch(async move {
             #[expect(
                 clippy::expect_used,
                 reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
@@ -986,13 +990,14 @@ async fn store_exec_artifact_inner(
                 .acquire()
                 .await
                 .expect("persist_semaphore is owned by ServerState and never closed");
-            let written = tokio::task::spawn_blocking(move || {
+            let written = kernal_api::async_engine::launch_blocking(move || {
                 let _publication_guard = publication_guard_for_task;
                 if persist_artifact_payloads(&artifact_dir, &key_for_persist, &payloads).is_ok() {
                     let _ = index_writer_tx
                         .send(IndexWriterCommand::Insert(key_for_persist, persist_meta));
                 }
             })
+            .detach_on_drop()
             .await;
             if let Err(error) = written {
                 tracing::warn!(%error, "exec artifact persistence task failed to join");
@@ -1000,7 +1005,7 @@ async fn store_exec_artifact_inner(
             if let Some(gate) = completion_gate {
                 gate.persisted.notify_one();
             }
-        });
+        }).detach();
     }
     Ok(None)
 }

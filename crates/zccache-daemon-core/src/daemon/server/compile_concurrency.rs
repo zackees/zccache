@@ -49,7 +49,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
+use kernal_api::async_engine::Semaphore;
 
 const MAX_PARALLEL_ENV: &str = "ZCCACHE_MAX_PARALLEL_COMPILES";
 

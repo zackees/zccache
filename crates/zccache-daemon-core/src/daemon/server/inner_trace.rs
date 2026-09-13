@@ -21,14 +21,14 @@
 //! IPC path (which does not open a scope) stays silent by construction.
 //!
 //! The foreground seams all run in the same task as the [`scope`] wrapper — the
-//! only `tokio::spawn` in the compile path is the *background* artifact persist,
+//! only background launch in the compile path is the artifact persist,
 //! which is enqueued after `cache_store` timing is already recorded — so the
 //! task-local is always in scope where [`record_ns`] is called.
 
-tokio::task_local! {
+kernal_api::task_local! {
     /// The current embedded compile's trace id. Present only inside a
     /// [`scope`] future; absent (and every [`record_ns`] a no-op) otherwise.
-    pub(crate) static INNER_COMPILE_ID: String;
+    pub(crate) static INNER_COMPILE_ID: String = INNER_COMPILE_ID_TLS;
 }
 
 /// Record a sub-phase duration (in **nanoseconds**, converted to the trace's

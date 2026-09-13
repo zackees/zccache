@@ -112,7 +112,7 @@ const GOLDEN_RESPONSE_FRAME: &[u8] = &[
 
 #[test]
 fn payload_protocol_value_is_frozen_and_collision_free() {
-    use running_process::broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
+    use kernal_api::broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
 
     assert_eq!(ZCCACHE_FRAME_PAYLOAD_PROTOCOL, 0x7A63, "ASCII \"zc\"");
     // The frozen running-process broker registry: 0x00 control (Hello),
@@ -190,7 +190,7 @@ fn start_daemon(
 ) -> (
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<kernal_api::async_engine::Notify>,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
     let cache_dir: zccache::core::NormalizedPath = temp.path().into();
@@ -319,14 +319,13 @@ async fn mixed_wires_and_backend_probe_coexist_on_one_endpoint() {
             let expected = zccache::ipc::current_backend_identity(&endpoint).unwrap();
             let probe_endpoint = expected.ipc_endpoint.clone();
             let service_name = tokio::task::spawn_blocking(move || {
-                let handle =
-                    running_process::broker::backend_handle::BackendHandle::probe_with_service(
-                        "zccache",
-                        zccache::core::VERSION,
-                        &probe_endpoint,
-                        &expected,
-                    )
-                    .unwrap();
+                let handle = kernal_api::broker::backend_handle::BackendHandle::probe_with_service(
+                    "zccache",
+                    zccache::core::VERSION,
+                    &probe_endpoint,
+                    &expected,
+                )
+                .unwrap();
                 handle.service_name.clone()
             })
             .await

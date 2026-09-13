@@ -103,9 +103,10 @@ pub mod heap_profile {
 }
 pub use zccache_hash as hash;
 pub use zccache_ipc as ipc;
-/// zccache#1365 — the host-platform leaf (one cfg_select! selector, five
-/// neutral facades). Internal machinery: published as a private module.
-pub use zccache_platform as platform;
+// Product-owned CI policy that must distinguish the Windows `taskkill` tree
+// fallback from kernal-api's Unix process-group capability.
+#[cfg(feature = "ci")]
+pub(crate) mod platform;
 pub use zccache_protocol as protocol;
 #[cfg(feature = "symbols")]
 pub use zccache_symbols as symbols;

@@ -6,7 +6,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-pub(crate) use zccache_platform as platform;
+pub(crate) mod platform;
 
 pub mod broker;
 pub mod error;
@@ -444,7 +444,7 @@ pub fn retire_endpoint(endpoint: &str) -> std::io::Result<()> {
 }
 
 /// Path where the daemon records the identity consumed by
-/// [`running_process::broker::protocol_v2::backend_handle::BackendHandle`].
+/// [`kernal_api::broker::protocol_v2::backend_handle::BackendHandle`].
 #[must_use]
 pub fn backend_identity_path() -> NormalizedPath {
     let namespace = zccache_core::config::daemon_namespace();
@@ -485,8 +485,8 @@ fn backend_identity_file_name(namespace: Option<&str>) -> String {
 #[must_use]
 pub fn running_process_endpoint(
     endpoint: &str,
-) -> running_process::broker::protocol_v2::backend_handle::Endpoint {
-    running_process::broker::protocol_v2::backend_handle::Endpoint {
+) -> kernal_api::broker::protocol_v2::backend_handle::Endpoint {
+    kernal_api::broker::protocol_v2::backend_handle::Endpoint {
         namespace_id: zccache_core::config::daemon_namespace_label(),
         path: running_process_endpoint_path(endpoint),
     }
@@ -511,14 +511,14 @@ fn running_process_endpoint_path(endpoint: &str) -> String {
 pub fn current_backend_identity(
     endpoint: &str,
 ) -> Result<
-    running_process::broker::protocol_v2::backend_handle::DaemonProcess,
-    running_process::broker::protocol_v2::backend_handle::IdentityError,
+    kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
+    kernal_api::broker::protocol_v2::backend_handle::IdentityError,
 > {
     use std::sync::LazyLock;
     static IDENTITY_CACHE: LazyLock<
         dashmap::DashMap<
             String,
-            std::sync::Arc<running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
+            std::sync::Arc<kernal_api::broker::protocol_v2::backend_handle::DaemonProcess>,
         >,
     > = LazyLock::new(dashmap::DashMap::new);
 
@@ -532,12 +532,12 @@ pub fn current_backend_identity(
 }
 
 fn current_process_identity_blake3(
-    ipc_endpoint: running_process::broker::protocol::Endpoint,
+    ipc_endpoint: kernal_api::broker::protocol::Endpoint,
 ) -> Result<
-    running_process::broker::protocol_v2::backend_handle::DaemonProcess,
-    running_process::broker::protocol_v2::backend_handle::IdentityError,
+    kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
+    kernal_api::broker::protocol_v2::backend_handle::IdentityError,
 > {
-    use running_process::broker::protocol_v2::backend_handle::{DaemonProcess, IdentityError};
+    use kernal_api::broker::protocol_v2::backend_handle::{DaemonProcess, IdentityError};
 
     let exe_path = std::env::current_exe().map_err(IdentityError::CurrentExe)?;
     let exe_hash = executable_hash_blake3(&exe_path)?;
@@ -554,7 +554,7 @@ fn current_process_identity_blake3(
         // BLAKE3. Keep the required legacy wire slot empty rather than paying
         // for a second digest used only by pre-BLAKE3 brokers.
         legacy_exe_sha256: [0; 32],
-        boot_id: running_process::broker::host_identity::current().boot_id,
+        boot_id: kernal_api::broker::host_identity::current().boot_id,
         ipc_endpoint,
         started_at_unix_ms,
         idle_timeout_secs: None,
@@ -578,7 +578,7 @@ fn executable_hash_blake3(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
 /// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
 /// namespace.
 pub fn write_backend_identity(
-    daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    daemon: &kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> Result<(), std::io::Error> {
     let path = backend_identity_path();
     if let Some(parent) = path.parent() {
@@ -608,7 +608,7 @@ pub fn write_backend_identity(
 /// "matches anything". See [`daemon_identity_matches`].
 #[must_use]
 pub fn read_backend_identity(
-) -> Option<running_process::broker::protocol_v2::backend_handle::DaemonProcess> {
+) -> Option<kernal_api::broker::protocol_v2::backend_handle::DaemonProcess> {
     std::fs::read(backend_identity_path())
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -629,7 +629,7 @@ pub fn read_backend_identity(
 /// exe path* on platforms that cannot — not about authorising a kill.
 #[must_use]
 pub fn daemon_identity_matches(
-    expected: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    expected: &kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
 ) -> bool {
     let Some(current) = read_backend_identity() else {
         return false;
@@ -646,10 +646,10 @@ pub fn daemon_identity_matches(
 #[must_use]
 pub fn probe_backend_handle(
     endpoint: &str,
-) -> Option<running_process::broker::protocol_v2::backend_handle::BackendHandle> {
+) -> Option<kernal_api::broker::protocol_v2::backend_handle::BackendHandle> {
     let daemon = read_backend_identity()?;
     let endpoint = running_process_endpoint(endpoint);
-    running_process::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
+    kernal_api::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
         "zccache",
         zccache_core::VERSION,
         &endpoint,
@@ -670,8 +670,29 @@ pub fn running_process_disabled() -> bool {
 ///
 /// This is intended as a last-resort escape hatch when the daemon is no longer
 /// reachable over IPC, so graceful shutdown is not possible.
-pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
-    crate::platform::process::terminate::force(pid)
+pub fn force_kill_process(pid: u32) -> Result<(), kernal_api::broker::verify_pid::VerifyPidError> {
+    kernal_api::broker::verify_pid::force_kill_pid(pid)
+}
+
+/// Force-kill the persisted daemon instance through one retained verified
+/// native control handle. `Ok(None)` means no persisted identity is available:
+/// callers must preserve the live legacy/direct IPC endpoint rather than
+/// reopening a PID and risking a recycled process.
+pub fn force_kill_verified_daemon(
+    pid: u32,
+) -> Result<
+    Option<kernal_api::broker::verify_pid::ProcessHandle>,
+    kernal_api::broker::verify_pid::VerifyPidError,
+> {
+    let Some(identity) = read_backend_identity() else {
+        return Ok(None);
+    };
+    if identity.pid != pid {
+        return Ok(None);
+    }
+    let handle = kernal_api::broker::verify_pid::verify_daemon_process_for_control(&identity)?;
+    kernal_api::broker::verify_pid::force_kill_handle(&handle)?;
+    Ok(Some(handle))
 }
 
 /// Check if a process with the given PID is actually running.
@@ -693,15 +714,16 @@ pub fn force_kill_process(pid: u32) -> Result<(), std::io::Error> {
 /// one that is still running.
 #[must_use]
 pub fn is_process_alive(pid: u32) -> bool {
-    crate::platform::process::inspect::is_alive(pid)
+    kernal_api::broker::verify_pid::process_is_alive(pid)
 }
 
 /// Probe whether a daemon is **already serving** at `endpoint`. Returns
 /// `true` iff **all** of the following hold:
 ///
 /// 1. The lock file records a PID.
-/// 2. That PID is alive AND its executable is `zccache-daemon` (defends
-///    against recycled PIDs — see [`verify_daemon_pid`]).
+/// 2. That PID has a persisted canonical identity which verifies as the live
+///    `zccache-daemon` (defends against recycled PIDs — see
+///    [`verify_daemon_pid`]).
 /// 3. We can complete an IPC connect to `endpoint` within `timeout`.
 ///
 /// **Why this exists** (issue #640): on Windows, parallel `ninja -jN`
@@ -758,12 +780,20 @@ pub async fn probe_existing_daemon(endpoint: &str, timeout: std::time::Duration)
 /// daemon. Defends against stale `daemon.lock` files where the recorded PID has
 /// been recycled by an unrelated process — typical when a CI runner restores a
 /// cache directory containing a lock file from a prior, abruptly-terminated
-/// run. Without this check, [`check_running_daemon`] would mis-identify the
-/// recycled PID as our daemon and callers like `zccache stop` would
-/// `force_kill_process` an arbitrary system process. See issue #132.
+/// run. Identity verification authorizes a daemon-specific kill; discovery
+/// retains a live PID with unavailable identity so legacy/direct IPC can still
+/// prove ownership without destructively retiring its endpoint. See issue
+/// #132.
 #[must_use]
 pub fn verify_daemon_pid(pid: u32) -> bool {
-    verify_pid_exe_stem(pid, "zccache-daemon")
+    let Some(identity) = read_backend_identity() else {
+        return false;
+    };
+    if identity.pid != pid {
+        return false;
+    }
+    kernal_api::broker::verify_pid::verify_daemon_process(&identity)
+        .is_ok_and(|handle| handle.is_alive())
 }
 
 /// Generic version of [`verify_daemon_pid`]: confirms `pid` is alive and its
@@ -796,11 +826,16 @@ fn exe_stem_matches(path: &std::path::Path, expected_stem: &str) -> bool {
 #[must_use]
 pub fn check_running_daemon() -> Option<u32> {
     let pid = read_lock_file_pid()?;
-    if verify_daemon_pid(pid) {
+    // A missing or unverifiable backend identity is not proof that a live
+    // daemon is stale: RUNNING_PROCESS_DISABLE and legacy direct IPC both
+    // intentionally retain that compatibility path. Only a confirmed-dead
+    // PID may retire the endpoint or remove its lock; otherwise the caller
+    // still gets a chance to probe/directly shut down the serving daemon.
+    if is_process_alive(pid) {
         Some(pid)
     } else {
-        // Stale lock file — clean up. The PID may be dead, or may belong to
-        // an unrelated process that recycled the lock file's PID (issue #132).
+        // Confirmed-dead lock file — clean up without disturbing a live but
+        // unverified legacy/direct daemon.
         remove_lock_file();
         let endpoint = crate::platform::ipc::Endpoint::from_native(default_endpoint());
         let _ = endpoint.retire();

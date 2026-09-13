@@ -188,12 +188,12 @@ fn print_status(args: &Args) {
         clippy::expect_used,
         reason = "current-thread runtime construction with enable_all only fails on OS resource exhaustion; daemon-status query cannot proceed without it"
     )]
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = kernal_api::async_engine::RuntimeBuilder::current_thread()
         .enable_all()
         .build()
-        .expect("failed to create tokio runtime");
+        .expect("failed to create async runtime");
 
-    match rt.block_on(query_daemon_status(&endpoint)) {
+    match rt.run(query_daemon_status(&endpoint)) {
         Ok(status) => {
             println!("  status:     running");
             println!("  daemon ns:  {}", status.daemon_namespace);
@@ -268,7 +268,7 @@ fn run_server(args: Args) {
     // over 3 hours, spaced anywhere from 11 ms to ~10 s apart) this
     // is most of the herd.
     //
-    // A short-lived tokio runtime hosts the async probe so we don't
+    // A short-lived async runtime hosts the probe so we don't
     // need to bring up the full multi-thread runtime before deciding
     // whether to defer.
     {
@@ -276,11 +276,11 @@ fn run_server(args: Args) {
             clippy::expect_used,
             reason = "current-thread probe runtime construction with enable_all only fails on OS resource exhaustion; daemon-defer probe cannot proceed without it"
         )]
-        let probe_rt = tokio::runtime::Builder::new_current_thread()
+        let probe_rt = kernal_api::async_engine::RuntimeBuilder::current_thread()
             .enable_all()
             .build()
-            .expect("failed to create probe runtime");
-        let existing_daemon = probe_rt.block_on(crate::ipc::probe_existing_daemon(
+            .expect("failed to create async probe runtime");
+        let existing_daemon = probe_rt.run(crate::ipc::probe_existing_daemon(
             &endpoint,
             std::time::Duration::from_millis(500),
         ));
@@ -310,17 +310,17 @@ fn run_server(args: Args) {
         clippy::expect_used,
         reason = "multi-thread runtime construction with enable_all only fails on OS resource exhaustion; daemon cannot proceed without it"
     )]
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = kernal_api::async_engine::RuntimeBuilder::multi_thread()
         .enable_all()
         .max_blocking_threads(daemon_max_blocking_threads())
         .build()
-        .expect("failed to create tokio runtime");
+        .expect("failed to create async runtime");
 
     let no_depgraph_cache = args.no_depgraph_cache;
     // Cache root for the v1 CacheManifest published after a successful bind
     // (zackees/running-process#435); cloned so it survives the async move.
     let manifest_cache_root = cache_root.clone();
-    rt.block_on(async move {
+    rt.run(async move {
         // ── Issue #640: bind FIRST, then load depgraph in background ─────
         //
         // The prior flow loaded the depgraph (3+ s on a populated cache)
@@ -341,9 +341,11 @@ fn run_server(args: Args) {
 
         // ── Issue #637/#639: discriminate loser-of-race from real bind failure ──
         let bind_endpoint = endpoint.clone();
-        let bind_result =
-            tokio::task::spawn_blocking(move || crate::daemon::DaemonServer::bind(&bind_endpoint))
-                .await;
+        let bind_result = kernal_api::async_engine::launch_blocking(move || {
+            crate::daemon::DaemonServer::bind(&bind_endpoint)
+        })
+        .detach_on_drop()
+        .await;
         let server = match bind_result {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
@@ -433,7 +435,7 @@ fn run_server(args: Args) {
         server.mark_dep_graph_load_pending();
         let setter = server.dep_graph_setter();
         let depgraph_path = server.depgraph_file_path();
-        let load_handle = tokio::task::spawn_blocking(move || {
+        let load_handle = kernal_api::async_engine::launch_blocking(move || {
             if no_depgraph_cache {
                 let _ = std::fs::remove_file(&depgraph_path);
                 tracing::info!("depgraph cache disabled — starting with empty graph");
@@ -463,9 +465,10 @@ fn run_server(args: Args) {
         // on-disk snapshot is preserved (see `server::run`'s shutdown
         // arm).
         let compiler_hash_loader = server.compiler_hash_cache_loader();
-        tokio::task::spawn_blocking(move || {
+        kernal_api::async_engine::launch_blocking(move || {
             compiler_hash_loader.load_and_install();
-        });
+        })
+        .detach();
 
         // Issue #784 phase 2b: same shape for the on-disk `metadata.bin`
         // snapshot. This is the biggest of the four #784 deferrals —
@@ -475,9 +478,10 @@ fn run_server(args: Args) {
         // loader: `metadata_cache_loaded` flag tells `server::run`'s
         // shutdown arm whether the in-memory state is canonical.
         let metadata_loader = server.metadata_cache_loader();
-        tokio::task::spawn_blocking(move || {
+        kernal_api::async_engine::launch_blocking(move || {
             metadata_loader.load_and_install();
-        });
+        })
+        .detach();
 
         // Issue #784 phase 2c: same shape for the on-disk
         // system-includes snapshot. The loader briefly acquires the
@@ -487,9 +491,10 @@ fn run_server(args: Args) {
         // `system_includes_loaded` tells `server::run`'s shutdown arm
         // whether the in-memory state is canonical.
         let system_includes_loader = server.system_includes_loader();
-        tokio::task::spawn_blocking(move || {
+        kernal_api::async_engine::launch_blocking(move || {
             system_includes_loader.load_and_install();
-        });
+        })
+        .detach();
 
         // Issue #784 phase 2d: same shape for the on-disk artifact
         // index blob. The store was constructed empty in
@@ -502,18 +507,20 @@ fn run_server(args: Args) {
         // produces converged state. The `artifact_store_loaded` flag
         // prevents redundant disk reads.
         let artifact_store_loader = server.artifact_store_loader();
-        tokio::task::spawn_blocking(move || {
+        kernal_api::async_engine::launch_blocking(move || {
             artifact_store_loader.load_and_install();
-        });
+        })
+        .detach();
 
         // Wire up Ctrl+C to trigger graceful shutdown
         let shutdown = server.shutdown_handle();
-        tokio::spawn(async move {
-            if let Ok(()) = tokio::signal::ctrl_c().await {
+        kernal_api::async_engine::launch(async move {
+            if let Ok(()) = kernal_api::async_engine::wait_for_interrupt().await {
                 tracing::info!("received Ctrl+C — shutting down");
                 shutdown.notify_waiters();
             }
-        });
+        })
+        .detach();
 
         // zackees/soldr#2436 D6: SIGTERM takes the same graceful drain as
         // Ctrl+C. Supervisors (soldr's displacement policy, systemd, CI
@@ -523,21 +530,20 @@ fn run_server(args: Args) {
         #[cfg(unix)]
         {
             let shutdown = server.shutdown_handle();
-            tokio::spawn(async move {
-                let mut sigterm =
-                    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    {
-                        Ok(stream) => stream,
-                        Err(error) => {
-                            tracing::warn!("could not install SIGTERM handler: {error}");
-                            return;
-                        }
-                    };
+            kernal_api::async_engine::launch(async move {
+                let mut sigterm = match kernal_api::async_engine::TerminationSignal::new() {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::warn!("could not install SIGTERM handler: {error}");
+                        return;
+                    }
+                };
                 if sigterm.recv().await.is_some() {
                     tracing::info!("received SIGTERM — shutting down");
                     shutdown.notify_waiters();
                 }
-            });
+            })
+            .detach();
         }
 
         tracing::info!(%endpoint, "listening for connections");
@@ -549,7 +555,7 @@ fn run_server(args: Args) {
             crate::ipc::remove_lock_file();
             // Best-effort: abort the background load if it hasn't
             // landed yet. If it has, the swap is harmless.
-            load_handle.abort();
+            load_handle.cancel();
             std::process::exit(1);
         }
 
@@ -557,7 +563,7 @@ fn run_server(args: Args) {
         crate::ipc::remove_lock_file();
         // The load may still be running if shutdown came in <3 s after
         // start; abort is safe (nothing for the swap to corrupt).
-        load_handle.abort();
+        load_handle.cancel();
     });
 }
 

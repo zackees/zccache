@@ -27,7 +27,7 @@ pub struct WatchSet {
 }
 
 fn normalize_watch_filename(name: &std::ffi::OsStr) -> String {
-    if crate::platform::host::is_windows() {
+    if kernal_api::platform::host::target_is_windows() {
         name.to_string_lossy().to_ascii_lowercase()
     } else {
         name.to_string_lossy().into_owned()
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn watch_set_is_tracked_ignores_filename_case_on_windows() {
-        if !crate::platform::host::is_windows() {
+        if !kernal_api::platform::host::target_is_windows() {
             return;
         }
         let ws = WatchSet::from_paths([NormalizedPath::from(r"C:\inc\Config.h")]);

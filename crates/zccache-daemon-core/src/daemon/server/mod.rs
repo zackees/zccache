@@ -25,12 +25,12 @@ use crate::ipc::{IpcConnection, IpcListener};
 use crate::protocol::{ArtifactData, ArtifactOutput, ArtifactPayload, Request, Response};
 use crate::watcher::{NotifyWatcher, SettleBuffer, SettledEvent};
 use dashmap::DashMap;
+use kernal_api::async_engine::{Mutex, Notify};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Notify};
 
 /// Cached result of a verified cache hit, enabling zero-hash fast path.
 ///
@@ -71,10 +71,10 @@ pub use loaders::DepGraphSetter;
 /// The daemon server that listens for IPC connections.
 pub struct DaemonServer {
     listener: IpcListener,
-    shutdown: Arc<Notify>,
+    shutdown: Arc<kernal_api::async_engine::Notify>,
     state: Arc<SharedState>,
     /// Receiver for the background index-writer task. Taken in `run()`.
-    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>>,
+    index_writer_rx: Option<kernal_api::async_engine::UnboundedReceiver<IndexWriterCommand>>,
 }
 
 /// In-process daemon engine used by the public embedded API.
@@ -84,9 +84,12 @@ pub struct DaemonServer {
 pub(crate) struct EmbeddedDaemon {
     state: Arc<SharedState>,
     maintenance_policy: MaintenancePolicy,
-    index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>>,
-    index_writer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    maintenance_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The host-selected execution context. Every embedded background and
+    /// blocking persistence operation uses this when one was supplied.
+    runtime_handle: Option<kernal_api::async_engine::RuntimeHandle>,
+    index_writer_rx: Option<kernal_api::async_engine::UnboundedReceiver<IndexWriterCommand>>,
+    index_writer_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
+    maintenance_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     /// Periodic tasks this service started, as reported by
     /// [`maintenance_schedule::MaintenanceSchedule::start`] (#1160). Retained
     /// so the parity guard can assert against a real embedded service rather

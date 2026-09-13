@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use kernal_api::async_engine::{Receiver, Sender};
 
 const DEFAULT_CAPTURE_LIMIT: usize = 1024 * 1024;
 const CAPTURE_LIMIT_ENV: &str = "ZCCACHE_STREAM_CAPTURE_LIMIT_BYTES";
@@ -26,13 +26,13 @@ pub(crate) enum RawOutputChunk {
 
 #[derive(Clone)]
 pub(crate) struct OutputContext {
-    sender: mpsc::Sender<OutputChunk>,
+    sender: Sender<OutputChunk>,
     capture_limit: usize,
     live_compiler: Arc<AtomicBool>,
 }
 
 impl OutputContext {
-    pub(crate) fn new(sender: mpsc::Sender<OutputChunk>) -> Self {
+    pub(crate) fn new(sender: Sender<OutputChunk>) -> Self {
         Self {
             sender,
             capture_limit: capture_limit(),
@@ -49,8 +49,8 @@ impl OutputContext {
     }
 }
 
-tokio::task_local! {
-    static OUTPUT_CONTEXT: OutputContext;
+kernal_api::task_local! {
+    static OUTPUT_CONTEXT: OutputContext = OUTPUT_CONTEXT_TLS;
 }
 
 pub(crate) async fn scope<F: Future>(context: OutputContext, future: F) -> F::Output {
@@ -131,7 +131,7 @@ impl DependencyParser {
 }
 
 pub(crate) async fn consume(
-    mut receiver: mpsc::Receiver<RawOutputChunk>,
+    mut receiver: Receiver<RawOutputChunk>,
     context: OutputContext,
     output_filter: OutputFilter<'_>,
 ) -> io::Result<CapturedOutput> {
@@ -249,7 +249,7 @@ pub(crate) async fn consume(
     })
 }
 
-async fn send(sender: &mpsc::Sender<OutputChunk>, chunk: OutputChunk) -> io::Result<()> {
+async fn send(sender: &Sender<OutputChunk>, chunk: OutputChunk) -> io::Result<()> {
     sender.send(chunk).await.map_err(|_| {
         io::Error::new(
             io::ErrorKind::BrokenPipe,
@@ -343,6 +343,7 @@ fn capture_limit() -> usize {
 mod tests {
     use super::*;
     use crate::daemon::process::CompilePriority;
+    use kernal_api::async_engine;
 
     #[test]
     fn bounded_capture_emits_and_stores_the_same_truncation_marker() {
@@ -365,13 +366,13 @@ mod tests {
 
     #[tokio::test]
     async fn synthetic_large_diagnostic_is_bounded_and_replay_identical() {
-        let (sender, mut chunks) = mpsc::channel(8);
+        let (sender, mut chunks) = async_engine::channel(8);
         let context = OutputContext {
             sender,
             capture_limit: 1024,
             live_compiler: Arc::new(AtomicBool::new(false)),
         };
-        let (raw_sender, raw_receiver) = mpsc::channel(8);
+        let (raw_sender, raw_receiver) = async_engine::channel(8);
         raw_sender
             .send(RawOutputChunk::Stderr(vec![b'x'; 2 * 1024 * 1024]))
             .await
@@ -402,9 +403,9 @@ mod tests {
         std::fs::write(&source, "").expect("source");
         std::fs::write(&header, "").expect("header");
         let trace = format!(". {}\nwarning: retained\n", header.display());
-        let (sender, mut chunks) = mpsc::channel(8);
+        let (sender, mut chunks) = async_engine::channel(8);
         let context = OutputContext::new(sender);
-        let (raw_sender, raw_receiver) = mpsc::channel(128);
+        let (raw_sender, raw_receiver) = async_engine::channel(128);
         for bytes in trace.as_bytes().chunks(5) {
             raw_sender
                 .send(RawOutputChunk::Stderr(bytes.to_vec()))
@@ -454,9 +455,9 @@ mod tests {
         cwd: &Path,
         transcript: &str,
     ) -> (Option<crate::depgraph::ScanResult>, Vec<u8>, Vec<u8>) {
-        let (sender, _chunks) = mpsc::channel(256);
+        let (sender, _chunks) = async_engine::channel(256);
         let context = OutputContext::new(sender);
-        let (raw_sender, raw_receiver) = mpsc::channel(256);
+        let (raw_sender, raw_receiver) = async_engine::channel(256);
         // Chunk it finely so the line splitter has to reassemble across
         // boundaries, the way a real pipe delivers it.
         for bytes in transcript.as_bytes().chunks(7) {
@@ -539,9 +540,9 @@ mod tests {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let source = temp.path().join("main.c");
         std::fs::write(&source, "").expect("source");
-        let (sender, _chunks) = mpsc::channel(64);
+        let (sender, _chunks) = async_engine::channel(64);
         let context = OutputContext::new(sender);
-        let (raw_sender, raw_receiver) = mpsc::channel(64);
+        let (raw_sender, raw_receiver) = async_engine::channel(64);
         raw_sender
             .send(RawOutputChunk::Stderr(
                 b"main.c(1): warning C4101: unreferenced\r\n".to_vec(),
@@ -571,20 +572,20 @@ mod tests {
         if crate::platform::host::is_windows() {
             return;
         }
-        let (sender, mut chunks) = mpsc::channel(8);
+        let (sender, mut chunks) = async_engine::channel(8);
         let context = OutputContext::new(sender);
-        let (raw_sender, raw_receiver) = mpsc::channel(8);
-        let mut command = tokio::process::Command::new("sh");
-        command.args([
+        let (raw_sender, raw_receiver) = async_engine::channel(8);
+        let command = kernal_api::async_process::AsyncProcessBuilder::new("sh").args([
             "-c",
             "printf 'first\\n' >&2; sleep 1; printf 'second\\n' >&2",
         ]);
 
-        let process = crate::daemon::process::tokio_command_output_streaming_with_priority_stdin(
-            &mut command,
+        let process = crate::daemon::process::async_builder_output_with_priority_stdin(
+            command,
             CompilePriority::Normal,
             None,
-            raw_sender,
+            Some(raw_sender),
+            "streaming fixture".to_string(),
         );
         let consume = super::consume(raw_receiver, context, OutputFilter::None);
         let operation = async {
@@ -621,19 +622,19 @@ mod tests {
             "echo $$ > '{}'; printf 'started\\n' >&2; exec sleep 30",
             pid_path.display()
         );
-        let (sender, mut chunks) = mpsc::channel(8);
+        let (sender, mut chunks) = async_engine::channel(8);
         let context = OutputContext::new(sender);
         let operation = async move {
-            let (raw_sender, raw_receiver) = mpsc::channel(8);
-            let mut command = tokio::process::Command::new("sh");
-            command.args(["-c", &script]);
-            let process =
-                crate::daemon::process::tokio_command_output_streaming_with_priority_stdin(
-                    &mut command,
-                    CompilePriority::Normal,
-                    None,
-                    raw_sender,
-                );
+            let (raw_sender, raw_receiver) = async_engine::channel(8);
+            let command =
+                kernal_api::async_process::AsyncProcessBuilder::new("sh").args(["-c", &script]);
+            let process = crate::daemon::process::async_builder_output_with_priority_stdin(
+                command,
+                CompilePriority::Normal,
+                None,
+                Some(raw_sender),
+                "stream cancellation fixture".to_string(),
+            );
             let consume = super::consume(raw_receiver, context, OutputFilter::None);
             tokio::join!(process, consume)
         };

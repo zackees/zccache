@@ -838,15 +838,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
-name = "fdeflate"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
-dependencies = [
- "simd-adler32",
-]
-
-[[package]]
 name = "filetime"
 version = "0.2.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1019,16 +1010,6 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
-]
-
-[[package]]
-name = "gethostname"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
-dependencies = [
- "rustix",
- "windows-link",
 ]
 
 [[package]]
@@ -1562,7 +1543,6 @@ dependencies = [
 [[package]]
 name = "kernal-api"
 version = "0.1.0"
-source = "git+https://github.com/zackees/kernal-api?rev=b718da080826d2c2d9c13aa54cb9d04fae2f468e#b718da080826d2c2d9c13aa54cb9d04fae2f468e"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -1581,6 +1561,7 @@ dependencies = [
  "reflink-copy",
  "running-process",
  "sysinfo",
+ "tempfile",
  "thiserror",
  "tokio",
  "toml",
@@ -2103,19 +2084,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
-]
-
-[[package]]
-name = "png"
-version = "0.17.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
-dependencies = [
- "bitflags 1.3.2",
- "crc32fast",
- "fdeflate",
- "flate2",
- "miniz_oxide",
 ]
 
 [[package]]
@@ -2720,9 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d49ccdbfa59730688bbbeca9c9f3f4ee4c8976e38e9e5929fee8128bbd046db"
+version = "4.10.12"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2751,29 +2717,23 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dee9be8d7fb159393e54586b070fec01912fab04444f98f4db54fd3ceebdae59"
+version = "4.10.12"
 dependencies = [
  "blake3",
  "dirs",
  "interprocess",
  "libc",
- "png",
  "sysinfo",
  "thiserror",
  "tokio",
  "widestring",
  "winapi",
  "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]
 name = "running-process-protocol"
-version = "4.10.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ba5d8e09f577f1cf2426e769de1dcbb134af934f3c67bcf47cecf7aee02dc31"
+version = "4.10.12"
 dependencies = [
  "prost",
  "prost-build",
@@ -4051,23 +4011,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
-name = "x11rb"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414"
-dependencies = [
- "gethostname",
- "rustix",
- "x11rb-protocol",
-]
-
-[[package]]
-name = "x11rb-protocol"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
-
-[[package]]
 name = "xattr"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4123,7 +4066,6 @@ dependencies = [
  "regex",
  "reqwest",
  "rkyv",
- "running-process",
  "ruzstd",
  "sadness-generator",
  "serde",
@@ -4134,7 +4076,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -4156,7 +4097,6 @@ dependencies = [
  "zccache-gha",
  "zccache-hash",
  "zccache-ipc",
- "zccache-platform",
  "zccache-protocol",
  "zccache-symbols",
  "zccache-test-support",
@@ -4184,7 +4124,6 @@ dependencies = [
  "zccache-core",
  "zccache-gha",
  "zccache-hash",
- "zccache-platform",
 ]
 
 [[package]]
@@ -4222,7 +4161,6 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest",
- "running-process",
  "ruzstd",
  "serde",
  "serde_json",
@@ -4232,7 +4170,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "zccache-artifact",
@@ -4248,7 +4185,6 @@ dependencies = [
  "zccache-gha",
  "zccache-hash",
  "zccache-ipc",
- "zccache-platform",
  "zccache-protocol",
  "zccache-symbols",
  "zip",
@@ -4266,12 +4202,12 @@ name = "zccache-compiler"
 version = "1.13.22"
 dependencies = [
  "clang",
+ "kernal-api",
  "serde_json",
  "tempfile",
  "thiserror",
  "zccache-core",
  "zccache-hash",
- "zccache-platform",
 ]
 
 [[package]]
@@ -4285,7 +4221,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
- "zccache-platform",
 ]
 
 [[package]]
@@ -4304,13 +4239,11 @@ dependencies = [
  "rayon",
  "regex",
  "rkyv",
- "running-process",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -4324,7 +4257,6 @@ dependencies = [
  "zccache-fscache",
  "zccache-hash",
  "zccache-ipc",
- "zccache-platform",
  "zccache-protocol",
  "zccache-test-support",
  "zccache-watcher",
@@ -4348,7 +4280,6 @@ dependencies = [
  "zccache-compiler",
  "zccache-core",
  "zccache-hash",
- "zccache-platform",
 ]
 
 [[package]]
@@ -4362,7 +4293,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tokio-util",
  "zccache-core",
 ]
 
@@ -4372,11 +4302,11 @@ version = "1.13.22"
 dependencies = [
  "bincode",
  "bytes",
+ "kernal-api",
  "serde",
  "tempfile",
  "zccache-core",
  "zccache-download",
- "zccache-platform",
 ]
 
 [[package]]
@@ -4448,7 +4378,6 @@ dependencies = [
  "dashmap",
  "kernal-api",
  "prost",
- "running-process",
  "serde",
  "serde_json",
  "tempfile",
@@ -4457,19 +4386,7 @@ dependencies = [
  "tracing",
  "zccache-core",
  "zccache-depgraph",
- "zccache-platform",
  "zccache-protocol",
-]
-
-[[package]]
-name = "zccache-platform"
-version = "1.13.22"
-dependencies = [
- "kernal-api",
- "libc",
- "tempfile",
- "tokio",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4477,10 +4394,10 @@ name = "zccache-protocol"
 version = "1.13.22"
 dependencies = [
  "bytes",
+ "kernal-api",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
- "running-process",
  "serde",
  "serde_json",
  "tempfile",

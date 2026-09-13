@@ -32,7 +32,7 @@ struct PublishedMiss {
 
 fn insert_staged_multi_cache_visibility(
     state: &SharedState,
-    _publication_guard: &tokio::sync::OwnedRwLockReadGuard<()>,
+    _publication_guard: &kernal_api::async_engine::OwnedRwLockReadGuard<()>,
     context_key: ContextKey,
     validation_clock: Clock,
     key: String,
@@ -200,14 +200,15 @@ pub(super) async fn try_handle_staged_misses(
                 });
             }
         };
-        let mut command = tokio::process::Command::new(compiler);
+        let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(compiler.as_path())
+            .current_dir(cwd.as_path());
         if let Some(response_file) = &rsp_guard {
-            command.arg(response_file.at_arg()).current_dir(cwd);
+            builder = builder.arg(response_file.at_arg());
         } else {
-            command.args(&compiler_args).current_dir(cwd);
+            builder = builder.args(&compiler_args);
         }
-        apply_client_env(&mut command, client_env, &lineage);
-        command.kill_on_drop(true);
+        let builder = apply_client_env_builder(builder, client_env, &lineage);
+        let command_description = compiler.to_string_lossy().into_owned();
         let admission_state = Arc::clone(state);
         let family = compilations[miss.unit_index].family;
         let built_in_exclusive =
@@ -256,7 +257,13 @@ pub(super) async fn try_handle_staged_misses(
                 );
             }
             let compiler_started = std::time::Instant::now();
-            let output = process::tokio_command_output_with_priority(&mut command, priority).await;
+            let (output, _priority_decision) =
+                process::async_builder_output_with_priority_decision(
+                    builder,
+                    priority,
+                    command_description,
+                )
+                .await;
             let elapsed_ns = compiler_started.elapsed().as_nanos() as u64;
             if admission_state.compile_concurrency.is_some() {
                 let exit_code = output.as_ref().map_or(-1, |value| {

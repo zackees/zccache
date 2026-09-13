@@ -3,12 +3,12 @@
 //! This crate contains shared types, error definitions, path utilities,
 //! and configuration structures used across all zccache crates.
 
-pub(crate) use zccache_platform as platform;
-
 pub mod config;
 pub mod crash;
 pub mod defender;
 pub mod error;
+/// zccache-owned host policy shared by product crates.
+pub mod host;
 pub mod lifecycle;
 pub mod path;
 pub mod version;

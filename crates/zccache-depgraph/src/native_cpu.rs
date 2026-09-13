@@ -48,7 +48,7 @@ pub fn is_rustc_native_cpu_flag(flag: &str) -> bool {
 }
 
 fn host_cpu_identity_material() -> String {
-    crate::platform::host::cpu_identity_material()
+    zccache_core::host::cpu_identity_material()
 }
 
 #[cfg(test)]

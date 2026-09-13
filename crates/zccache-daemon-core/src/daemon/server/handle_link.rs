@@ -161,9 +161,10 @@ pub(super) async fn handle_link_ephemeral(
             let hash_state = Arc::clone(state);
             let hash_tool = tool.to_path_buf();
             let hash_inputs = inputs.clone();
-            let hash_task = tokio::task::spawn_blocking(move || {
+            let hash_task = kernal_api::async_engine::launch_blocking(move || {
                 hash_link_inputs(&hash_state, &hash_tool, &hash_inputs, profile_enabled)
-            });
+            })
+            .detach_on_drop();
             let process_started = std::time::Instant::now();
             let archive = async {
                 let result = run_archive_tool_passthrough(
@@ -919,7 +920,7 @@ pub(super) async fn handle_link_ephemeral(
                         .take()
                         .expect("link publication acquired an owned guard");
                     let index_writer_tx = state.index_writer_tx.clone();
-                    tokio::spawn(async move {
+                    kernal_api::async_engine::launch(async move {
                         #[expect(
                             clippy::expect_used,
                             reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
@@ -928,7 +929,7 @@ pub(super) async fn handle_link_ephemeral(
                             .acquire()
                             .await
                             .expect("persist_semaphore is owned by ServerState and never closed");
-                        let written = tokio::task::spawn_blocking(move || {
+                        let written = kernal_api::async_engine::launch_blocking(move || {
                             let _guard = guard;
                             let _publication_guard = publication_guard_for_task;
                             if persist_artifact_payloads(&artifact_dir, &kh, &payloads).is_ok() {
@@ -936,11 +937,12 @@ pub(super) async fn handle_link_ephemeral(
                                     .send(IndexWriterCommand::Insert(kh, persist_meta));
                             }
                         })
+                        .detach_on_drop()
                         .await;
                         if let Err(error) = written {
                             tracing::warn!(%error, "link artifact persistence task failed to join");
                         }
-                    });
+                    }).detach();
                     true
                 }
             };

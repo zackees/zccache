@@ -55,8 +55,8 @@ mod long_path {
     /// The dir must already exist; callers in this crate `create_dir_all`
     /// first.
     pub(super) fn ensure_long_path(dir: &Path) -> std::io::Result<NormalizedPath> {
-        if crate::platform::host::is_windows() {
-            crate::platform::fs::path::verbatim_path(dir).map(NormalizedPath::new)
+        if kernal_api::platform::host::target_is_windows() {
+            kernal_api::platform::fs::native_call_path(dir).map(NormalizedPath::new)
         } else {
             Ok(NormalizedPath::new(dir))
         }
@@ -326,7 +326,7 @@ fn persist_atomically(mut tmp: tempfile::NamedTempFile, dest: &Path) -> KvResult
 /// On Unix `rename(2)` over an open file succeeds, so this is always false and
 /// the retry loop never engages.
 fn is_transient_share_error(error: &std::io::Error) -> bool {
-    crate::platform::fs::replace::is_transient_share_error(error)
+    kernal_api::platform::fs::replacement::is_transient_share_error(error)
 }
 
 /// Payload length recorded in a value file's header, without reading the body.

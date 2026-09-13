@@ -28,7 +28,7 @@ fn apply_cli_spawn_lineage(cmd: &mut std::process::Command) {
 /// Every `ZCCACHE_*` variable in the CLI's environment, to be replayed onto
 /// the daemon it spawns.
 ///
-/// `running_process::spawn_daemon` rebuilds the environment block rather than
+/// `kernal_api::process::spawn_daemon` rebuilds the environment block rather than
 /// inheriting it — that is the point of the sanitized spawn, which exists to
 /// keep *foreign* state (notably grandparent pipe handles) out of a
 /// long-lived daemon. But it also dropped zccache's own configuration, so the
@@ -435,7 +435,7 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     let log_path = allocate_daemon_spawn_log_path();
     let log_arg = log_path.to_string_lossy().into_owned();
 
-    // Delegate the actual spawn to `running_process::spawn_daemon`
+    // Delegate the actual spawn to `kernal_api::process::spawn_daemon`
     // (renamed from `sanitized::spawn` in the 3.2 → 3.3 reshape — same
     // semantics, lives in the `spawn` module now and is re-exported at
     // the crate root). That helper handles both platform-specific quirks
@@ -472,7 +472,7 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
         cmd.env(key, value);
     }
     apply_cli_spawn_lineage(&mut cmd);
-    running_process::spawn_daemon(&mut cmd)
+    kernal_api::process::spawn_daemon(&mut cmd)
         .map(|_child| ())
         .map_err(|e| format!("failed to spawn daemon (sanitized): {e}"))
 }
@@ -488,7 +488,7 @@ mod spawn_env_tests {
     }
 
     /// The daemon is zccache, so its own configuration namespace has to reach
-    /// it. `running_process::spawn_daemon` rebuilds the environment block, so
+    /// it. `kernal_api::process::spawn_daemon` rebuilds the environment block, so
     /// anything not replayed here is silently lost and the daemon runs on
     /// defaults — which is exactly how `ZCCACHE_CACHE_DIR` and
     /// `ZCCACHE_IDLE_TIMEOUT_SECS` were being dropped.

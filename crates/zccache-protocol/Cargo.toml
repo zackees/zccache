@@ -11,12 +11,12 @@ readme = "README.md"
 description = "Internal daemon protocol types and wire codecs for zccache"
 
 [dependencies]
+kernal-api = { workspace = true, features = ["broker"] }
 zccache-core = { workspace = true }
 zccache-depgraph = { workspace = true }
 
 bytes = { workspace = true }
 prost = { workspace = true }
-running-process = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

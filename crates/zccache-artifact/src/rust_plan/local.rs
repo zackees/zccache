@@ -634,7 +634,22 @@ fn restore_bundle_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 fn make_bundle_file_writable(path: &Path) -> std::io::Result<()> {
-    crate::platform::fs::permissions::make_writable(path)
+    // Preserve the staged-artifact compatibility rule: a dangling link is
+    // removable without changing a referent, while an actually absent path
+    // remains an error except for Windows' historical no-op behavior.
+    match kernal_api::platform::fs::set_readonly(path, false) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && (kernal_api::platform::host::target_is_windows()
+                    || std::fs::symlink_metadata(path)
+                        .map(|metadata| metadata.file_type().is_symlink())
+                        .unwrap_or(false)) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn remove_bundle_dir(path: &Path) -> std::io::Result<()> {
@@ -654,7 +669,7 @@ fn clear_readonly(path: &Path) -> std::io::Result<()> {
         if entry.file_type()?.is_dir() {
             clear_readonly(&child)?;
         } else {
-            let _ = crate::platform::fs::permissions::make_writable(&child);
+            let _ = make_bundle_file_writable(&child);
         }
     }
     Ok(())

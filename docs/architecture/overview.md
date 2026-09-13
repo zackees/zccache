@@ -86,7 +86,7 @@ zccache intercepts C/C++ compiler invocations, computes a deterministic cache ke
 
 **Responsibility:** Platform-abstracted bidirectional byte-stream transport between CLI and daemon.
 
-**Key interfaces (`zccache-platform::ipc`):**
+**Key interfaces (`zccache-ipc::platform` backed by `kernal-api`):**
 ```rust
 let endpoint = Endpoint::select(unix_path, windows_pipe_name);
 let mut listener = Listener::bind(&endpoint)?;
@@ -95,10 +95,11 @@ let (stream, peer): (Stream, PeerIdentity) = listener.accept().await?;
 ```
 
 **Internal structure:**
-- `zccache-platform` selects private Linux, macOS, or Windows concrete leaves once.
-- Linux/macOS leaves wrap Tokio Unix listeners/streams and kernel peer credentials.
-- Windows leaves wrap Tokio named pipes, owner-only DACLs, accept pooling, and busy backoff.
-- `zccache-ipc` layers framing, product naming, timeouts, and diagnostics over the facade.
+- `kernal-api` owns the native Unix/Windows transport implementation and host selection.
+- The small private `zccache-ipc::platform` adapter owns product endpoint spelling,
+  timeouts, and diagnostics while delegating transport primitives to `kernal-api`.
+- Unix uses Tokio local sockets and kernel peer credentials; Windows uses owner-only
+  named pipes, accept pooling, and busy backoff through the canonical facade.
 
 ### 2.4 Protocol
 

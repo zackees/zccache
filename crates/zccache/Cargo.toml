@@ -88,7 +88,6 @@ zccache-fscache = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
 zccache-ipc = { workspace = true }
-zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-symbols = { workspace = true, optional = true }
 zccache-watcher = { workspace = true }
@@ -147,7 +146,6 @@ regex = { workspace = true }
 # download stack. These remain declared here because the crates.io release
 # amalgamates zccache-cli-core into this public crate.
 futures = { workspace = true, optional = true }
-tokio-util = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true, optional = true }
@@ -156,11 +154,10 @@ lzma-rs = { workspace = true, optional = true }
 sevenz-rust = { workspace = true, optional = true }
 
 # daemon
-running-process = { workspace = true }
 # Slice 11 of #782: promote `interprocess` from dev-dependencies to a
 # regular dependency so `ipc::broker_v2::probe_local_socket` can use
 # the local-socket Stream::connect primitive without pulling
-# `running_process::broker::client::connect_local_socket` (the v1 path).
+# `kernal_api::broker::client::connect_local_socket` (the v1 path).
 # The version is already locked transitively via running-process; making
 # it explicit in [dependencies] does not add a new resolved crate.
 sadness-generator = { version = "0.6", optional = true }
@@ -194,7 +191,7 @@ tracing-subscriber = { workspace = true, optional = true }
 # only be made by whoever declares the dependency -- which is now kernal-api,
 # and it pins `=0.9.4`. If that pin ever regresses below 0.9.3 the aarch64
 # Windows release lane breaks here, so it is a facade-side constraint now.
-kernal-api = { workspace = true, features = ["fs", "ipc"] }
+kernal-api = { workspace = true, features = ["fs", "ipc", "broker", "async-process-client"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

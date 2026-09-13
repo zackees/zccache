@@ -288,8 +288,7 @@ pub(super) struct SharedState {
     /// daemon endpoint for the minimal broker-adoption path. Slice 24
     /// of zccache#782: migrated to the `protocol_v2::backend_handle`
     /// namespace (upstream re-export of the cross-version-stable type).
-    pub(super) backend_identity:
-        running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    pub(super) backend_identity: kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
     /// Active daemon/socket namespace label.
     pub(super) daemon_namespace: String,
     /// Cache root this daemon was created with.
@@ -337,7 +336,7 @@ pub(super) struct SharedState {
     /// Directories currently being watched (avoid duplicate watches).
     pub(super) watched_dirs: Mutex<HashSet<NormalizedPath>>,
     /// Shutdown signal — shared so request handlers can trigger shutdown.
-    pub(super) shutdown: Arc<Notify>,
+    pub(super) shutdown: Arc<kernal_api::async_engine::Notify>,
     /// Epoch seconds of last client activity (for idle timeout).
     pub(super) last_activity: AtomicU64,
     /// Metadata-cache consumers active from request entry through hit
@@ -440,7 +439,7 @@ pub(super) struct SharedState {
     pub(super) disk_maintenance: Mutex<()>,
     /// Shared by publishers and exclusively owned by maintenance/Clear from
     /// cache-file mutation through index/live-map mutation.
-    pub(super) artifact_publication: Arc<tokio::sync::RwLock<()>>,
+    pub(super) artifact_publication: Arc<kernal_api::async_engine::RwLock<()>>,
     /// Reuses one shared OS staged-store lock for all active staged deliveries
     /// in this daemon and cache root. The final lease drop releases it, letting
     /// cross-process maintenance acquire the exclusive lock.
@@ -456,7 +455,7 @@ pub(super) struct SharedState {
     /// `num_cpus` on CI, overridable via `ZCCACHE_MAX_PARALLEL_COMPILES`.
     /// `None` when the override is `0` (or `unlimited`) — preserves the
     /// historical uncapped behavior for users who want it.
-    pub(super) compile_concurrency: Option<Arc<tokio::sync::Semaphore>>,
+    pub(super) compile_concurrency: Option<Arc<kernal_api::async_engine::Semaphore>>,
     /// Shared admission for ordinary compiler children and exclusive
     /// admission for unusually memory-intensive C/Rust amalgamations.
     pub(super) compile_resource_gate: super::compile_resource_gate::CompileResourceGate,
@@ -487,12 +486,12 @@ pub(super) struct SharedState {
     /// writes) from the periodic index snapshot, so a slow flush no longer
     /// holds a persist permit while other artifacts wait. See
     /// `tests/persist_pool_bench.rs` for the data motivating this split.
-    pub(super) index_writer_tx: tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    pub(super) index_writer_tx: kernal_api::async_engine::UnboundedSender<IndexWriterCommand>,
     /// Notify the index-writer to drain its WAL and exit on graceful shutdown.
     /// Without this, the writer would only see the channel close after every
     /// `Arc<SharedState>` ref (including those held by spawned persist tasks)
     /// drops — which can race with runtime abort and lose unflushed entries.
-    pub(super) index_writer_shutdown: Arc<Notify>,
+    pub(super) index_writer_shutdown: Arc<kernal_api::async_engine::Notify>,
     /// Whether the background artifact loading has completed.
     pub(super) artifacts_loaded: AtomicBool,
     /// Whether the background compiler-hash-cache load has completed.
@@ -581,7 +580,7 @@ pub(super) struct SharedState {
     /// the first caller spawns the tool and inserts; subsequent callers wait
     /// on the same `Notify` and re-attempt the cache lookup once it fires,
     /// guaranteeing the tool runs exactly once for the herd.
-    pub(super) in_flight_exec: DashMap<String, Arc<Notify>>,
+    pub(super) in_flight_exec: DashMap<String, Arc<kernal_api::async_engine::Notify>>,
     /// Pending cache-write registry (issue #610, DD-025 condition 1).
     ///
     /// Keyed by `artifact_key_hex` — every cold-miss path that defers its

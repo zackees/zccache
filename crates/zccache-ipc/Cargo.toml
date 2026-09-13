@@ -11,15 +11,13 @@ description = "Internal IPC transport and daemon connection helpers for zccache"
 publish = false
 
 [dependencies]
-kernal-api = { workspace = true, features = ["ipc"] }
+kernal-api = { workspace = true, features = ["ipc", "ipc-async", "daemon-registration", "broker", "async-process-client"] }
 zccache-core = { workspace = true }
-zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 
 bytes = { workspace = true }
 dashmap = { workspace = true }
 prost = { workspace = true }
-running-process = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

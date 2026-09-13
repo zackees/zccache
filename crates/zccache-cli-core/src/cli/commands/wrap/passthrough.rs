@@ -26,13 +26,15 @@ pub(super) fn release_cwd_for_command(cmd: &mut std::process::Command, child_cwd
     let _ = std::env::set_current_dir(std::env::temp_dir());
 }
 
-fn run_with_released_cwd(
-    cmd: &mut std::process::Command,
-) -> std::io::Result<std::process::ExitStatus> {
+fn run_with_released_cwd(cmd: &mut std::process::Command) -> std::io::Result<i32> {
     if let Ok(cwd) = std::env::current_dir() {
         release_cwd_for_command(cmd, &cwd);
     }
-    cmd.status()
+    // Wrapper passthrough is foreground execution: preserve Cargo jobserver
+    // descriptors and the caller's process group, with no daemon containment
+    // or descriptor sanitization. Keep this boundary local rather than
+    // borrowing formatter policy for an unrelated compiler invocation.
+    Ok(kernal_api::foreground::status(cmd)?.code().unwrap_or(1))
 }
 
 /// Run the compiler/tool directly without caching.
@@ -62,7 +64,7 @@ pub(super) fn run_passthrough(args: &[String], reason: Option<&str>) -> ExitCode
     let mut cmd = std::process::Command::new(&resolved);
     cmd.args(tool_args);
     match run_with_released_cwd(&mut cmd) {
-        Ok(status) => exit_code_from_i32(status.code().unwrap_or(1)),
+        Ok(code) => exit_code_from_i32(code),
         Err(e) => {
             eprintln!("zccache: failed to run {}: {e}", resolved.display());
             ExitCode::FAILURE

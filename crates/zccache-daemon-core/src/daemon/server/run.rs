@@ -36,11 +36,13 @@ impl DaemonServer {
 
         // Background index-writer task: in-memory WAL with timer-driven
         // flushing. See `run_index_writer` for the design rationale.
-        let mut index_writer_handle: Option<tokio::task::JoinHandle<()>> = None;
+        let mut index_writer_handle: Option<kernal_api::async_engine::Task<()>> = None;
         if let Some(rx) = self.index_writer_rx.take() {
             let store = Arc::clone(&self.state.artifact_store);
             let shutdown = Arc::clone(&self.state.index_writer_shutdown);
-            index_writer_handle = Some(tokio::spawn(run_index_writer(rx, store, shutdown)));
+            let runtime = kernal_api::async_engine::RuntimeHandle::current()
+                .expect("daemon run requires an async runtime");
+            index_writer_handle = Some(runtime.launch(run_index_writer(rx, store, shutdown)));
         }
 
         let cache_dir = self.state.cache_dir.clone();
@@ -57,7 +59,7 @@ impl DaemonServer {
             let cache_dir = cache_dir.clone();
             let artifact_dir = self.state.artifact_dir.clone();
             let state = Arc::clone(&self.state);
-            tokio::spawn(async move {
+            kernal_api::async_engine::launch(async move {
                 if let Err(error) = state.staging.cleanup_abandoned() {
                     tracing::debug!(%error, "abandoned private staging cleanup skipped");
                 }
@@ -68,7 +70,7 @@ impl DaemonServer {
                 }
 
                 let migration_root = artifact_dir;
-                let result = tokio::task::spawn_blocking(move || {
+                let result = kernal_api::async_engine::launch_blocking(move || {
                     let migrated = migrate_legacy_blob_digests(&migration_root)?;
                     use std::io::Write;
                     let mut marker_file = std::fs::OpenOptions::new()
@@ -93,7 +95,7 @@ impl DaemonServer {
                         tracing::warn!("legacy blob digest migration task failed: {error}")
                     }
                 }
-            });
+            }).detach();
         }
 
         // Clean up legacy log backup directory (Bug 7).
@@ -130,7 +132,9 @@ impl DaemonServer {
         // Start background artifact loading (non-blocking so daemon responds
         // immediately — Bug 6 fix).
         {
-            std::mem::drop(spawn_artifact_loader(Arc::clone(&self.state), None).await);
+            spawn_artifact_loader(Arc::clone(&self.state), None)
+                .await
+                .detach();
         }
 
         // Every periodic loop this daemon owns starts here, from the single
@@ -153,8 +157,18 @@ impl DaemonServer {
         let mut maintenance_handle = started.disk_maintenance;
 
         loop {
-            tokio::select! {
-                result = self.listener.accept() => {
+            let winner = {
+                let accept = self.listener.accept();
+                let watchdog = kernal_api::async_engine::sleep(ACCEPT_STALL_WATCHDOG_INTERVAL);
+                let shutdown = self.shutdown.notified();
+                let mut accept = std::pin::pin!(accept);
+                let mut watchdog = std::pin::pin!(watchdog);
+                let mut shutdown = std::pin::pin!(shutdown);
+                kernal_api::fair_race!((accept.as_mut()), (watchdog.as_mut()), (shutdown.as_mut()),)
+                    .await
+            };
+            match winner {
+                kernal_api::async_engine::FairRace3::First(result) => {
                     let conn = match result {
                         Ok(c) => c,
                         Err(e) => {
@@ -163,19 +177,20 @@ impl DaemonServer {
                         }
                     };
                     let state = Arc::clone(&self.state);
-                    tokio::spawn(async move {
+                    kernal_api::async_engine::launch(async move {
                         if let Err(e) = handle_connection(conn, state).await {
                             tracing::warn!("connection error: {e}");
                         }
-                    });
+                    })
+                    .detach();
                 }
-                () = tokio::time::sleep(ACCEPT_STALL_WATCHDOG_INTERVAL) => {
+                kernal_api::async_engine::FairRace3::Second(()) => {
                     tracing::warn!(
                         stall_secs = ACCEPT_STALL_WATCHDOG_INTERVAL.as_secs(),
                         "daemon accept loop has not accepted a connection within watchdog interval"
                     );
                 }
-                () = self.shutdown.notified() => {
+                kernal_api::async_engine::FairRace3::Third(()) => {
                     self.state.shutdown_requested.store(true, Ordering::Release);
                     // `shutdown_handle()` exposes the raw Notify for legacy
                     // tests and Ctrl+C handlers, many of which still call
@@ -189,7 +204,7 @@ impl DaemonServer {
                     // Drop the watcher to stop the OS thread and close channels.
                     // The settle buffer and consumer tasks will exit when their
                     // input channels close.
-                    match tokio::time::timeout(
+                    match kernal_api::async_engine::timeout(
                         Duration::from_secs(5),
                         self.state.watcher.lock(),
                     )
@@ -216,11 +231,9 @@ impl DaemonServer {
                     // returned publication write guard stays held so no
                     // publisher can mutate the cache while the depgraph and
                     // metadata snapshots below are taken.
-                    let _publication_guard = drain_durable_state_for_shutdown(
-                        &self.state,
-                        index_writer_handle.take(),
-                    )
-                    .await;
+                    let _publication_guard =
+                        drain_durable_state_for_shutdown(&self.state, index_writer_handle.take())
+                            .await;
 
                     // Save depgraph to disk before exiting. The serializer and
                     // atomic write path are synchronous, so run them off the
@@ -228,7 +241,7 @@ impl DaemonServer {
                     let start = std::time::Instant::now();
                     let path = depgraph_file_path_for_cache_dir(&self.state.cache_dir);
                     let dg = self.state.dep_graph.load_full();
-                    let depgraph_save = tokio::task::spawn_blocking(move || {
+                    let depgraph_save = kernal_api::async_engine::launch_blocking(move || {
                         if let Some(parent) = path.parent() {
                             std::fs::create_dir_all(parent).ok();
                         }
@@ -278,16 +291,12 @@ impl DaemonServer {
                     // snapshot — the entries that DID land in-memory
                     // came from in-process compiles whose verified state
                     // is still on disk in the prior snapshot.
-                    if self
-                        .state
-                        .metadata_cache_loaded
-                        .load(Ordering::Acquire)
-                    {
+                    if self.state.metadata_cache_loaded.load(Ordering::Acquire) {
                         let meta_start = std::time::Instant::now();
                         let metadata_entries = self.state.cache_system.metadata().len();
                         let state = Arc::clone(&self.state);
                         let metadata_path = self.state.metadata_path.clone();
-                        let res = tokio::task::spawn_blocking(move || {
+                        let res = kernal_api::async_engine::launch_blocking(move || {
                             state
                                 .cache_system
                                 .metadata()
@@ -340,7 +349,7 @@ impl DaemonServer {
                     {
                         let state = Arc::clone(&self.state);
                         let compiler_hash_cache_path = self.state.compiler_hash_cache_path.clone();
-                        let res = tokio::task::spawn_blocking(move || {
+                        let res = kernal_api::async_engine::launch_blocking(move || {
                             state
                                 .compiler_hash_cache
                                 .save_to_disk(compiler_hash_cache_path.as_path())
@@ -381,18 +390,14 @@ impl DaemonServer {
                     // existing snapshot — entries that DID land
                     // in-memory came from in-process compiles whose
                     // re-probe is cheap.
-                    if self
-                        .state
-                        .system_includes_loaded
-                        .load(Ordering::Acquire)
-                    {
+                    if self.state.system_includes_loaded.load(Ordering::Acquire) {
                         let includes = {
                             let includes = self.state.system_includes.lock().await;
                             includes.clone()
                         };
                         let system_includes_cache_path =
                             self.state.system_includes_cache_path.clone();
-                        let res = tokio::task::spawn_blocking(move || {
+                        let res = kernal_api::async_engine::launch_blocking(move || {
                             includes.save_to_disk(system_includes_cache_path.as_path())
                         })
                         .await;
@@ -446,13 +451,20 @@ impl DaemonServer {
         // exhaustion, a momentarily contended watcher lock) are transient, so
         // retry on a capped backoff until the daemon shuts down (issue #1156).
         let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
+        kernal_api::async_engine::launch(async move {
             let mut delay = WATCHER_REARM_INITIAL_DELAY;
             let mut attempt = 0_u32;
             while !state.shutdown_requested.load(Ordering::Acquire) {
-                tokio::select! {
-                    () = tokio::time::sleep(delay) => {}
-                    () = state.shutdown.notified() => {
+                let winner = {
+                    let sleep = kernal_api::async_engine::sleep(delay);
+                    let shutdown = state.shutdown.notified();
+                    let mut sleep = std::pin::pin!(sleep);
+                    let mut shutdown = std::pin::pin!(shutdown);
+                    kernal_api::fair_race!((sleep.as_mut()), (shutdown.as_mut())).await
+                };
+                match winner {
+                    kernal_api::async_engine::FairRace2::First(()) => {}
+                    kernal_api::async_engine::FairRace2::Second(()) => {
                         state.shutdown_requested.store(true, Ordering::Release);
                         state.shutdown.notify_waiters();
                         return;
@@ -476,7 +488,8 @@ impl DaemonServer {
                 }
                 delay = (delay * 2).min(WATCHER_REARM_MAX_DELAY);
             }
-        });
+        })
+        .detach();
     }
 }
 
@@ -494,7 +507,7 @@ pub(super) async fn arm_watcher_pipeline(state: &Arc<SharedState>) -> bool {
         }
     };
 
-    match tokio::time::timeout(WATCHER_LOCK_TIMEOUT, state.watcher.lock()).await {
+    match kernal_api::async_engine::timeout(WATCHER_LOCK_TIMEOUT, state.watcher.lock()).await {
         Ok(mut watcher_guard) => {
             *watcher_guard = Some(watcher);
         }
@@ -543,29 +556,37 @@ pub(super) fn start_watcher_tasks(
         // Settle buffer: coalesces raw events into batches after a quiet period.
         let (settled_tx, mut settled_rx) = kernal_api::async_engine::unbounded_channel();
         let settle = SettleBuffer::default_window();
-        tokio::spawn(async move {
+        kernal_api::async_engine::launch(async move {
             settle.run(raw_rx, settled_tx).await;
-        });
+        })
+        .detach();
 
         // Consumer: feeds settled events into CacheSystem for metadata invalidation.
         let supervised = Arc::clone(state);
         let state = Arc::clone(state);
-        let consumer = tokio::spawn(async move {
+        let consumer = kernal_api::async_engine::launch(async move {
             while !state.shutdown_requested.load(Ordering::Acquire) {
                 // Race the settled-event recv against the shutdown signal
                 // (issue #974). Without this the loop only re-checks
                 // `shutdown_requested` AFTER `recv()` returns, so if the settle
                 // task neither sends nor drops its sender the consumer parks
                 // forever and ignores shutdown — a shutdown-cleanliness gap.
-                let event = tokio::select! {
-                    e = settled_rx.recv() => e,
-                    () = state.shutdown.notified() => {
+                let winner = {
+                    let event = settled_rx.recv();
+                    let shutdown = state.shutdown.notified();
+                    let mut event = std::pin::pin!(event);
+                    let mut shutdown = std::pin::pin!(shutdown);
+                    kernal_api::fair_race!((event.as_mut()), (shutdown.as_mut())).await
+                };
+                let event = match winner {
+                    kernal_api::async_engine::FairRace2::First(event) => event,
+                    kernal_api::async_engine::FairRace2::Second(()) => {
                         state.shutdown_requested.store(true, Ordering::Release);
                         // See the accept-loop shutdown branch: consuming a
                         // single Notify edge here must still wake the loop.
                         state.shutdown.notify_waiters();
                         None
-                    },
+                    }
                 };
                 let Some(event) = event else { break };
                 match event {
@@ -650,7 +671,7 @@ pub(super) fn start_watcher_tasks(
         // so. That converts a silent correctness bug into the documented
         // degradation the rest of the daemon already handles — slower, but
         // never wrong.
-        tokio::spawn(async move {
+        kernal_api::async_engine::launch(async move {
             let outcome = consumer.await;
             if supervised.shutdown_requested.load(Ordering::Acquire) {
                 return;
@@ -675,7 +696,8 @@ pub(super) fn start_watcher_tasks(
                     "degradations": ["fast_hit_tiers_disabled", "metadata_invalidation_stopped"],
                 }),
             );
-        });
+        })
+        .detach();
     }
 }
 
@@ -802,11 +824,18 @@ pub(super) async fn run_memory_eviction_pass(
         }
 
         if started.elapsed() < MEMORY_GC_IDLE_GRACE {
-            tokio::select! {
-                () = state.cache_requests_idle.notified() => {}
-                () = tokio::time::sleep(
-                    MEMORY_GC_IDLE_GRACE.saturating_sub(started.elapsed())
-                ) => {}
+            let winner = {
+                let idle = state.cache_requests_idle.notified();
+                let delay = kernal_api::async_engine::sleep(
+                    MEMORY_GC_IDLE_GRACE.saturating_sub(started.elapsed()),
+                );
+                let mut idle = std::pin::pin!(idle);
+                let mut delay = std::pin::pin!(delay);
+                kernal_api::fair_race!((idle.as_mut()), (delay.as_mut())).await
+            };
+            match winner {
+                kernal_api::async_engine::FairRace2::First(())
+                | kernal_api::async_engine::FairRace2::Second(()) => {}
             }
             continue;
         }
@@ -842,9 +871,16 @@ pub(super) async fn run_memory_eviction_pass(
                 || candidate_offset >= plan.metadata_candidate_count();
         }
 
-        tokio::select! {
-            () = state.cache_requests_idle.notified() => {}
-            () = tokio::time::sleep(MEMORY_GC_GENTLE_RETRY) => {}
+        let winner = {
+            let idle = state.cache_requests_idle.notified();
+            let delay = kernal_api::async_engine::sleep(MEMORY_GC_GENTLE_RETRY);
+            let mut idle = std::pin::pin!(idle);
+            let mut delay = std::pin::pin!(delay);
+            kernal_api::fair_race!((idle.as_mut()), (delay.as_mut())).await
+        };
+        match winner {
+            kernal_api::async_engine::FairRace2::First(())
+            | kernal_api::async_engine::FairRace2::Second(()) => {}
         }
     }
 }
@@ -862,18 +898,18 @@ fn forced_completion_stalled(
 pub(super) async fn spawn_artifact_loader(
     state: Arc<SharedState>,
     start_gate: Option<Arc<Notify>>,
-) -> tokio::task::JoinHandle<()> {
+) -> kernal_api::async_engine::Task<()> {
     // Acquire before spawning so Clear cannot overtake the startup loader and
     // then have pre-Clear entries inserted afterward.
     let publication_guard = Arc::clone(&state.artifact_publication).read_owned().await;
-    tokio::spawn(async move {
-        let _publication_guard = publication_guard;
+    kernal_api::async_engine::launch(async move {
         if let Some(gate) = start_gate {
             gate.notified().await;
         }
         let artifact_dir = state.artifact_dir.clone();
         let state_ref = Arc::clone(&state);
-        let loaded = tokio::task::spawn_blocking(move || {
+        let loaded = kernal_api::async_engine::launch_blocking(move || {
+            let _publication_guard = publication_guard;
             // Load the in-memory index that `ArtifactStore::open` already
             // hydrated from the on-disk blob.
             let entries = state_ref.artifact_store.load_all();

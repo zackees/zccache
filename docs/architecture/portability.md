@@ -113,34 +113,24 @@ stderr and keep being stripped unconditionally — they are only ever injected.
 
 ---
 
-## Host-Platform Boundary (`zccache-platform`)
+## Host-Platform Boundary (`kernal-api`)
 
-Host mechanics are selected in exactly one place: `crates/zccache-platform/src/lib.rs`,
-through `std::cfg_select!` (Rust 1.95.0). Every other production crate consumes the
-neutral facades re-exported there and aliases the leaf as:
-
-```rust
-pub(crate) use zccache_platform as platform;
-```
-
-```
-crates/zccache-platform/src/lib.rs        the one host selector (no fallback arm)
-crates/zccache-platform/src/platform.rs   neutral facade root
-crates/zccache-platform/src/platform/     process | fs | ipc | executable | host
-crates/zccache-platform/src/platform_win.rs    private concrete Windows tree
-crates/zccache-platform/src/platform_linux.rs  private concrete Linux tree
-crates/zccache-platform/src/platform_macos.rs  private concrete macOS tree
-```
+`kernal-api` owns native host selection and the canonical process, filesystem,
+IPC, executable, and host capabilities. zccache product crates call those
+capabilities directly where no product policy is needed. The small private
+`platform.rs` adapters in `zccache-ipc`, `zccache-daemon-core`, and
+`zccache-cli-core` retain only product policy that cannot belong in the shared
+facade (endpoint naming, daemon ownership semantics, and CLI policy).
 
 Rules:
 
-- **One selector, five facades.** Concrete trees are private and cannot be
-  named downstream; unsupported host OSes fail compilation at the selector.
-  Linux and macOS stay separate trees even where they share call sites.
-- **Leaf crate.** zccache-platform never depends on a `zccache-*` crate and
-  never carries product types (`NormalizedPath`, `Config`, protocol messages,
-  audit events, …). Callers translate primitive results into product types
-  and diagnostics.
+- **One canonical native owner.** Concrete native trees remain private to
+  kernal-api; unsupported host OSes fail compilation in that dependency.
+  Product adapters may select only the branches necessary to bind canonical
+  types, not reimplement native mechanisms.
+- **Product policy stays local.** zccache adapters may carry product types
+  (`NormalizedPath`, endpoint naming, daemon lifecycle policy, diagnostics),
+  but all native facts and handles come from kernal-api.
 - **Host is not compiler target.** This crate answers "what OS is this
   zccache process running on?" Compiler/build-target decisions — `rustc
   --target` parsing, MSVC/GNU/Apple linker modes, output extensions from an
@@ -150,15 +140,11 @@ Rules:
 - **Enforcement.** The `enforce_platform_boundary` Dylint inspects
   pre-expansion source (inactive host branches included) and rejects host
   cfg/cfg_attr/cfg!, native imports (`std::os::*`, `libc`, `windows-sys`),
-  and concrete-module references outside this crate. A transitional
-  exact-occurrence baseline grandfathers pre-migration sites and ratchets to
-  zero; new occurrences fail immediately.
-- **Publish.** `ci/publish_amalgamate.py` copies the crate into the published
-  `zccache` crate as a private `platform` module (`zccache_platform::` paths
-  become `crate::platform::`). It is not a public crates.io API.
-
-Phase order: #1366 bootstrap/toolchain/lint → #1367 `fs` → #1368 `ipc` →
-#1369 `process` → executable/host → zero-baseline cleanup.
+  and concrete-module references outside the approved adapters. A
+  transitional exact-occurrence baseline grandfathers pre-migration sites and
+  ratchets to zero; new occurrences fail immediately.
+- **Publish.** The published zccache crate consumes kernal-api directly; no
+  private platform crate is copied into its release artifact.
 
 ## Path Handling
 

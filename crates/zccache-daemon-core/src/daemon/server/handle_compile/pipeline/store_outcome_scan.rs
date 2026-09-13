@@ -27,7 +27,8 @@ pub(super) struct CompileScanCollection {
 pub(super) async fn collect_compile_scan_blocking(
     req: CompileScanRequest,
 ) -> CompileScanCollection {
-    tokio::task::spawn_blocking(move || collect_compile_scan(req))
+    kernal_api::async_engine::launch_blocking(move || collect_compile_scan(req))
+        .detach_on_drop()
         .await
         .unwrap_or_else(|e| CompileScanCollection {
             rustc_env_dep_names: Vec::new(),

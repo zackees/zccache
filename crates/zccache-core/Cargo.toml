@@ -11,12 +11,11 @@ description = "Core shared types and utilities for zccache"
 publish = false
 
 [dependencies]
-kernal-api = { workspace = true, features = ["crash"] }
+kernal-api = { workspace = true, features = ["crash", "fs"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-zccache-platform = { workspace = true }
 
 [dev-dependencies]
 dashmap = { workspace = true }

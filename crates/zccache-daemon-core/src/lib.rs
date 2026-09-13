@@ -19,7 +19,7 @@ pub use zccache_fingerprint as fingerprint;
 pub use zccache_fscache as fscache;
 pub use zccache_hash as hash;
 pub use zccache_ipc as ipc;
-pub(crate) use zccache_platform as platform;
+pub(crate) mod platform;
 pub use zccache_protocol as protocol;
 pub use zccache_watcher as watcher;
 

@@ -266,10 +266,8 @@ fn never_bound_endpoint() -> String {
 }
 
 /// A `DaemonProcess` that cannot possibly be the one recorded on disk.
-fn foreign_identity(
-    pid: u32,
-) -> running_process::broker::protocol_v2::backend_handle::DaemonProcess {
-    running_process::broker::protocol_v2::backend_handle::DaemonProcess {
+fn foreign_identity(pid: u32) -> kernal_api::broker::protocol_v2::backend_handle::DaemonProcess {
+    kernal_api::broker::protocol_v2::backend_handle::DaemonProcess {
         pid,
         exe_path: std::path::PathBuf::from("zccache-daemon"),
         exe_hash: [0u8; 32],

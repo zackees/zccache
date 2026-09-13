@@ -123,18 +123,6 @@ impl Lineage {
         out
     }
 
-    /// Apply the lineage to a `tokio::process::Command` after the caller has
-    /// already populated the child's primary env.
-    pub fn apply_to_tokio(
-        &self,
-        cmd: &mut tokio::process::Command,
-        incoming_env: Option<&[(String, String)]>,
-    ) {
-        for (k, v) in self.env_for_child(incoming_env) {
-            cmd.env(k, v);
-        }
-    }
-
     /// Apply the lineage to a `std::process::Command` after the caller has
     /// already populated the child's primary env.
     pub fn apply_to_sync(
@@ -145,6 +133,17 @@ impl Lineage {
         for (k, v) in self.env_for_child(incoming_env) {
             cmd.env(k, v);
         }
+    }
+
+    /// Apply lineage to a kernel-owned asynchronous process description.
+    pub fn apply_to_async_builder(
+        &self,
+        builder: kernal_api::async_process::AsyncProcessBuilder,
+        incoming_env: Option<&[(String, String)]>,
+    ) -> kernal_api::async_process::AsyncProcessBuilder {
+        self.env_for_child(incoming_env)
+            .into_iter()
+            .fold(builder, |builder, (key, value)| builder.env(key, value))
     }
 }
 
@@ -239,24 +238,13 @@ mod tests {
     }
 
     #[test]
-    fn apply_to_tokio_sets_lineage_env() {
+    fn child_environment_contains_lineage_and_originator() {
         let l = Lineage {
             daemon_pid: 100,
             client_pid: Some(50),
             session_id: None,
         };
-        let mut cmd = tokio::process::Command::new("echo");
-        l.apply_to_tokio(&mut cmd, None);
-        let envs: Vec<(String, String)> = cmd
-            .as_std()
-            .get_envs()
-            .filter_map(|(k, v)| {
-                Some((
-                    k.to_string_lossy().into_owned(),
-                    v?.to_string_lossy().into_owned(),
-                ))
-            })
-            .collect();
+        let envs = l.env_for_child(None);
         assert_eq!(get(&envs, ENV_LINEAGE), Some("50>100"));
         assert_eq!(get(&envs, ENV_ORIGINATOR), Some("zccache:100"));
     }

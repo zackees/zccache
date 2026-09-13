@@ -53,7 +53,7 @@ impl Drop for CacheDirEnvGuard {
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
-    Arc<tokio::sync::Notify>,
+    Arc<kernal_api::async_engine::Notify>,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();

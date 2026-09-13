@@ -20,7 +20,7 @@
 //! ## Host-runtime contract
 //!
 //! Everything here spawns through [`MaintenanceSchedule::runtime_handle`] when
-//! the embedded host supplied one (zccache#922). A bare `tokio::spawn` would
+//! the embedded host supplied one (zccache#922). A bare ambient launch would
 //! land on whichever runtime happened to be current at `start()` time, which is
 //! exactly the contract violation the handle exists to prevent — so
 //! `spawn_supervised` takes the handle too.
@@ -63,6 +63,20 @@ pub(super) fn depgraph_save_due(
 pub(super) const TASK_LEGACY_TEMP_ROOT_CLEANUP: &str = "legacy-temp-root-cleanup";
 pub(super) const TASK_IDLE_WATCHDOG: &str = "idle-watchdog";
 pub(super) const TASK_PRIVATE_DAEMON_OWNERS: &str = "private-daemon-owner-reaper";
+
+fn launch_maintenance_blocking<F, R>(
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+    operation: F,
+) -> kernal_api::async_engine::Task<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match runtime_handle {
+        Some(handle) => handle.launch_blocking(operation),
+        None => kernal_api::async_engine::launch_blocking(operation),
+    }
+}
 
 /// One member of the maintenance schedule.
 pub(super) struct MaintenanceTaskSpec {
@@ -159,7 +173,7 @@ impl Default for MaintenanceIntervals {
 pub(super) struct StartedMaintenance {
     pub(super) started: Vec<&'static str>,
     /// The disk-maintenance loop, which both shutdown paths join.
-    pub(super) disk_maintenance: Option<tokio::task::JoinHandle<()>>,
+    pub(super) disk_maintenance: Option<kernal_api::async_engine::Task<()>>,
 }
 
 pub(super) struct MaintenanceSchedule {
@@ -167,7 +181,7 @@ pub(super) struct MaintenanceSchedule {
     policy: MaintenancePolicy,
     mode: ServiceMode,
     intervals: MaintenanceIntervals,
-    runtime_handle: Option<tokio::runtime::Handle>,
+    runtime_handle: Option<kernal_api::async_engine::RuntimeHandle>,
     /// Standalone idle timeout in seconds; 0 disables the watchdog.
     idle_timeout_secs: u64,
     /// When false the *disk* loop is owned by the host
@@ -194,7 +208,10 @@ impl MaintenanceSchedule {
         }
     }
 
-    pub(super) fn with_runtime_handle(mut self, handle: Option<tokio::runtime::Handle>) -> Self {
+    pub(super) fn with_runtime_handle(
+        mut self,
+        handle: Option<kernal_api::async_engine::RuntimeHandle>,
+    ) -> Self {
         self.runtime_handle = handle;
         self
     }
@@ -215,13 +232,13 @@ impl MaintenanceSchedule {
         self
     }
 
-    fn spawn<Fut>(&self, task: Fut) -> tokio::task::JoinHandle<()>
+    fn spawn<Fut>(&self, task: Fut) -> kernal_api::async_engine::Task<()>
     where
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         match &self.runtime_handle {
-            Some(handle) => handle.spawn(task),
-            None => tokio::spawn(task),
+            Some(handle) => handle.launch(task),
+            None => kernal_api::async_engine::launch(task),
         }
     }
 
@@ -292,8 +309,9 @@ impl MaintenanceSchedule {
     /// only, standalone only" meant *never* (#1160c).
     fn start_staged_temp_sweep(&self) -> &'static str {
         let artifact_dir = self.state.artifact_dir.clone();
-        std::mem::drop(self.spawn(async move {
-            let swept = tokio::task::spawn_blocking(move || {
+        let runtime_handle = self.runtime_handle.clone();
+        self.spawn(async move {
+            let swept = launch_maintenance_blocking(runtime_handle.as_ref(), move || {
                 cleanup_staged_artifact_temps(artifact_dir.as_path())
             })
             .await;
@@ -302,7 +320,8 @@ impl MaintenanceSchedule {
                 Ok(Ok(removed)) => tracing::info!(removed, "swept staged artifact temp files"),
                 Ok(Err(error)) => tracing::debug!(%error, "staged artifact temp cleanup skipped"),
             }
-        }));
+        })
+        .detach();
         TASK_STAGED_TEMP_SWEEP
     }
 
@@ -315,7 +334,7 @@ impl MaintenanceSchedule {
         let state = Arc::clone(&self.state);
         let budget = crate::core::config::Config::default().max_memory_bytes;
         let interval = self.intervals.memory_eviction;
-        std::mem::drop(supervise::spawn_supervised(
+        supervise::spawn_supervised(
             TASK_MEMORY_EVICTION,
             self.is_shutting_down(),
             supervise::Restart::Idempotent,
@@ -324,7 +343,7 @@ impl MaintenanceSchedule {
                 let state = Arc::clone(&state);
                 async move {
                     loop {
-                        tokio::time::sleep(interval).await;
+                        kernal_api::async_engine::sleep(interval).await;
                         let req_removed =
                             trim_request_cache(&state.request_cache, EPHEMERAL_CACHE_MAX_AGE);
                         let req_validation_removed = trim_request_validation_cache(
@@ -352,7 +371,8 @@ impl MaintenanceSchedule {
                     }
                 }
             },
-        ));
+        )
+        .detach();
         TASK_MEMORY_EVICTION
     }
 
@@ -366,7 +386,7 @@ impl MaintenanceSchedule {
     fn start_depgraph_save(&self) -> &'static str {
         let state = Arc::clone(&self.state);
         let interval = self.intervals.depgraph_save;
-        std::mem::drop(supervise::spawn_supervised(
+        supervise::spawn_supervised(
             TASK_DEPGRAPH_SAVE,
             self.is_shutting_down(),
             supervise::Restart::Idempotent,
@@ -386,7 +406,7 @@ impl MaintenanceSchedule {
                     let mut last_saved_contexts = 0usize;
                     let mut waited = Duration::ZERO;
                     loop {
-                        tokio::time::sleep(tick).await;
+                        kernal_api::async_engine::sleep(tick).await;
                         waited += tick;
                         let dg = state.dep_graph.load();
                         let contexts = dg.stats().context_count;
@@ -410,14 +430,16 @@ impl MaintenanceSchedule {
                     }
                 }
             },
-        ));
+        )
+        .detach();
         TASK_DEPGRAPH_SAVE
     }
 
     fn start_legacy_temp_root_cleanup(&self) -> &'static str {
         let cache_dir = self.state.cache_dir.clone();
-        std::mem::drop(self.spawn(async move {
-            let cleaned = tokio::task::spawn_blocking(move || {
+        let runtime_handle = self.runtime_handle.clone();
+        self.spawn(async move {
+            let cleaned = launch_maintenance_blocking(runtime_handle.as_ref(), move || {
                 crate::core::config::cleanup_legacy_temp_root_state(
                     &std::env::temp_dir(),
                     cache_dir.as_path(),
@@ -429,16 +451,17 @@ impl MaintenanceSchedule {
             if cleaned > 0 {
                 tracing::info!(cleaned, "cleaned legacy temp-root zccache state");
             }
-        }));
+        })
+        .detach();
         TASK_LEGACY_TEMP_ROOT_CLEANUP
     }
 
     fn start_idle_watchdog(&self) -> &'static str {
         let state = Arc::clone(&self.state);
         let timeout = self.idle_timeout_secs;
-        std::mem::drop(self.spawn(async move {
+        self.spawn(async move {
             loop {
-                tokio::time::sleep(IDLE_WATCHDOG_INTERVAL).await;
+                kernal_api::async_engine::sleep(IDLE_WATCHDOG_INTERVAL).await;
                 let last = state.last_activity.load(Ordering::Relaxed);
                 let idle = now_secs().saturating_sub(last);
                 if idle >= timeout {
@@ -460,15 +483,16 @@ impl MaintenanceSchedule {
                     break;
                 }
             }
-        }));
+        })
+        .detach();
         TASK_IDLE_WATCHDOG
     }
 
     fn start_private_daemon_owner_reaper(&self) -> &'static str {
         let state = Arc::clone(&self.state);
-        std::mem::drop(self.spawn(async move {
+        self.spawn(async move {
             loop {
-                tokio::time::sleep(PRIVATE_DAEMON_POLL_INTERVAL).await;
+                kernal_api::async_engine::sleep(PRIVATE_DAEMON_POLL_INTERVAL).await;
                 if !state.private_daemon.is_enabled().await {
                     continue;
                 }
@@ -497,7 +521,8 @@ impl MaintenanceSchedule {
                     break;
                 }
             }
-        }));
+        })
+        .detach();
         TASK_PRIVATE_DAEMON_OWNERS
     }
 }

@@ -2,7 +2,7 @@
 //! `SystemIncludeCache` snapshot. Mirrors the compiler-hash phase-2a
 //! tests in `tests/compiler_hash.rs` ("Issue #784: deferred compiler-
 //! hash-cache load" section) and the metadata phase-2b tests, with the
-//! `tokio::sync::Mutex` wrinkle on the live cache.
+//! canonical async `Mutex` wrinkle on the live cache.
 
 use super::super::*;
 

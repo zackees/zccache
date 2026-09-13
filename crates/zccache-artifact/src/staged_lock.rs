@@ -45,9 +45,9 @@ pub fn staged_root(artifact_dir: &Path) -> NormalizedPath {
 /// `symlink_metadata` and this re-stat) reads as "not a link", matching the
 /// historical behavior where the caller's already-fetched metadata decided.
 pub fn is_staged_link_or_reparse(path: &Path) -> bool {
-    use crate::platform::fs::links::LinkKind;
+    use kernal_api::platform::fs::LinkKind;
     matches!(
-        crate::platform::fs::links::classify(path),
+        kernal_api::platform::fs::classify(path),
         Ok(LinkKind::Symlink | LinkKind::Reparse)
     )
 }

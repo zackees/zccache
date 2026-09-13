@@ -5,13 +5,13 @@ use super::*;
 /// Enter an artifact-publication critical section unless shutdown has closed
 /// the daemon to new publishers.
 ///
-/// The shutdown flag must be checked *after* acquiring the fair Tokio lock:
+/// The shutdown flag must be checked *after* acquiring the fair canonical lock:
 /// a request may have started before shutdown but queued behind shutdown's
 /// writer. In that case it must not publish after the writer drains and the
 /// index task has stopped.
 pub(super) async fn begin_artifact_publication(
     state: &SharedState,
-) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
+) -> Option<kernal_api::async_engine::OwnedRwLockReadGuard<()>> {
     let guard = Arc::clone(&state.artifact_publication).read_owned().await;
     if state.shutdown_requested.load(Ordering::Acquire) {
         None
@@ -23,7 +23,7 @@ pub(super) async fn begin_artifact_publication(
 /// Blocking-worker counterpart to [`begin_artifact_publication`].
 pub(super) fn begin_artifact_publication_blocking(
     state: &SharedState,
-) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
+) -> Option<kernal_api::async_engine::RwLockReadGuard<'_, ()>> {
     let guard = state.artifact_publication.blocking_read();
     if state.shutdown_requested.load(Ordering::Acquire) {
         None
@@ -230,13 +230,13 @@ pub(super) fn context_env_deps_fresh(
 /// index removal ahead of an already-started hit.
 pub(super) struct CachedArtifactLookup {
     cached: CachedArtifact,
-    _publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    _publication_guard: kernal_api::async_engine::OwnedRwLockReadGuard<()>,
 }
 
 impl CachedArtifactLookup {
     fn new(
         cached: CachedArtifact,
-        publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+        publication_guard: kernal_api::async_engine::OwnedRwLockReadGuard<()>,
     ) -> Self {
         Self {
             cached,
@@ -259,7 +259,7 @@ pub(super) fn lookup_artifact_with_disk_fallback(
 ) -> Option<CachedArtifactLookup> {
     // Maintenance/Clear already owns or is queued for the write side. Treat
     // this as a cache miss instead of making a request wait behind destructive
-    // work. Tokio's fair RwLock also rejects new readers once a writer queues.
+    // work. The canonical fair RwLock also rejects new readers once a writer queues.
     let publication_guard = Arc::clone(&state.artifact_publication)
         .try_read_owned()
         .ok()?;

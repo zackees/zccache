@@ -17,10 +17,10 @@
     clippy::unwrap_in_result
 )]
 
+use kernal_api::async_engine::Notify;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zccache::core::NormalizedPath;
 use zccache::daemon::DaemonServer;

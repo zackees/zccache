@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn detect_prefix_accepts_unc_paths() {
-        if !crate::platform::host::is_windows() {
+        if !kernal_api::platform::host::target_is_windows() {
             return;
         }
         let line = "Hinweis: Einlesen der Datei: \\\\server\\share\\sdk\\foo.h";
@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn non_english_locale_detected() {
-        if !crate::platform::host::is_windows() {
+        if !kernal_api::platform::host::target_is_windows() {
             return;
         }
         // Simulates Japanese MSVC locale.

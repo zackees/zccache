@@ -37,7 +37,7 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) exit_code: i32,
     pub(super) compile_start: Instant,
     pub(super) synchronous_persist: bool,
-    pub(super) publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    pub(super) publication_guard: kernal_api::async_engine::OwnedRwLockReadGuard<()>,
     pub(super) resource_admission:
         crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 }
@@ -217,7 +217,7 @@ impl PersistOutcome {
 /// never existed.
 fn enqueue_persisted_index(
     outcome: PersistOutcome,
-    index_writer_tx: &tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    index_writer_tx: &kernal_api::async_engine::UnboundedSender<IndexWriterCommand>,
     key_hex: String,
 ) -> bool {
     if !outcome.published {
@@ -321,7 +321,7 @@ fn store_rustc_outputs(
     t_artifact_build: Instant,
     synchronous_persist: bool,
     staged_persist_plan: Option<StagedCompilePlan>,
-    publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    publication_guard: kernal_api::async_engine::OwnedRwLockReadGuard<()>,
     resource_admission: crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 ) {
     let state = state_arc.as_ref();
@@ -400,7 +400,7 @@ fn store_rustc_outputs(
         let sid = *sid;
         let completion_key = artifact_key_hex.to_string();
         let t_persist_enqueue = Instant::now();
-        tokio::spawn(async move {
+        kernal_api::async_engine::launch(async move {
             let plan_for_publish = Arc::clone(&staged_plan);
             #[expect(
                 clippy::expect_used,
@@ -411,7 +411,7 @@ fn store_rustc_outputs(
                 .acquire()
                 .await
                 .expect("persist_semaphore is owned by ServerState and never closed");
-            let published = tokio::task::spawn_blocking(move || {
+            let published = kernal_api::async_engine::launch_blocking(move || {
                 let _publication_guard = publication_guard;
                 let _resource_admission = resource_admission;
                 let _staged_plan = plan_for_publish;
@@ -431,6 +431,7 @@ fn store_rustc_outputs(
                 })?;
                 Ok::<_, std::io::Error>(snapshot)
             })
+            .detach_on_drop()
             .await;
             match published {
                 Ok(Ok(snapshot)) => {
@@ -503,7 +504,7 @@ fn store_rustc_outputs(
             }
             drop(staged_plan);
             pending_writes::complete(&state_ref.pending_cache_writes, &completion_key);
-        });
+        }).detach();
         stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
         let latency_ns = compile_start.elapsed().as_nanos() as u64;
         state.stats.record_miss(latency_ns, artifact_bytes);
@@ -696,7 +697,7 @@ fn store_single_output(
     stats: &mut MissArtifactStoreStats,
     t_artifact_build: Instant,
     synchronous_persist: bool,
-    publication_guard: tokio::sync::OwnedRwLockReadGuard<()>,
+    publication_guard: kernal_api::async_engine::OwnedRwLockReadGuard<()>,
     resource_admission: crate::daemon::server::compile_resource_gate::CompileResourcePermit,
 ) {
     let state = state_arc.as_ref();
@@ -862,7 +863,7 @@ fn store_single_output(
     let index_writer_tx = state.index_writer_tx.clone();
     let lifecycle_cache_root = state.cache_dir.clone();
     let completion_key = artifact_key_hex.to_string();
-    tokio::spawn(async move {
+    kernal_api::async_engine::launch(async move {
         #[expect(
             clippy::expect_used,
             reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
@@ -871,7 +872,7 @@ fn store_single_output(
             .acquire()
             .await
             .expect("persist_semaphore is owned by ServerState and never closed");
-        let written = tokio::task::spawn_blocking(move || {
+        let written = kernal_api::async_engine::launch_blocking(move || {
             let _guard = guard;
             let _publication_guard = publication_guard;
             let _resource_admission = resource_admission;
@@ -912,6 +913,7 @@ fn store_single_output(
                 }
             }
         })
+        .detach_on_drop()
         .await;
         match written {
             Ok(outcome) => {
@@ -930,7 +932,7 @@ fn store_single_output(
         // Always complete the pending entry, even on JoinError, so
         // waiters cannot hang past the spawn's lifetime.
         pending_writes::complete(&state_ref.pending_cache_writes, &completion_key);
-    });
+    }).detach();
     stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
 
     let t_artifact_insert_stats = Instant::now();

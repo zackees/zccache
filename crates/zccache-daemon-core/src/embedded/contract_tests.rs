@@ -7,9 +7,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
+use kernal_api::async_engine::CancellationSource;
 use tempfile::TempDir;
 use tokio::sync::{oneshot, Notify, Semaphore};
-use tokio_util::sync::CancellationToken;
 
 use super::*;
 
@@ -421,9 +421,9 @@ async fn dropped_waiter_and_guard_release_external_work_capacity() {
 #[tokio::test]
 async fn host_cancellation_wakes_external_work_waiters() {
     let temp = TempDir::new().expect("temp cache root");
-    let cancellation = CancellationToken::new();
+    let cancellation = CancellationSource::new();
     let mut service_config = config(&temp, "external-cancellation", Some(1));
-    service_config.cancellation = Some(cancellation.clone());
+    service_config.cancellation = Some(cancellation.token());
     let service = ZccacheService::start(service_config)
         .await
         .expect("service start");
@@ -529,6 +529,23 @@ async fn forced_shutdown_cancels_an_inflight_compile_future() {
     shutdown
         .await
         .expect("shutdown task joined")
+        .expect("forced shutdown");
+}
+
+#[tokio::test]
+async fn forced_shutdown_precedes_a_ready_compile_result() {
+    let temp = TempDir::new().expect("temp cache root");
+    let service = ZccacheService::start(config(&temp, "forced-ready-order", None))
+        .await
+        .expect("service start");
+    service.force_cancellation.cancel();
+
+    let outcome = service.await_compile(async { Ok::<_, String>(()) }).await;
+    assert!(matches!(outcome, Err(EmbeddedError::Cancelled)));
+
+    service
+        .shutdown(ShutdownMode::Force)
+        .await
         .expect("forced shutdown");
 }
 

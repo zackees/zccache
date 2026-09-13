@@ -245,7 +245,14 @@ pub fn format_elapsed(d: Duration) -> String {
 /// kill atomically. On Unix this calls `setsid` via `pre_exec`; on Windows
 /// this sets the `CREATE_NEW_PROCESS_GROUP` creation flag.
 pub fn configure_process_group(cmd: &mut Command) {
-    crate::platform::process::command::configure_process_group(cmd);
+    kernal_api::platform::process::configure_session_leader_command(cmd);
+}
+
+/// Preserve the CI runner's product-specific tree-kill fallback. Kernal-api
+/// owns Unix group termination; Windows retains `taskkill /T` because a
+/// console process group is not a retained tree-control capability there.
+fn force_process_group(pid: u32) {
+    crate::platform::force_process_group(pid);
 }
 
 /// Kill `child` and every descendant. Best-effort: errors are swallowed
@@ -253,7 +260,7 @@ pub fn configure_process_group(cmd: &mut Command) {
 pub fn kill_process_tree(child: &mut Child) {
     let pid = child.id();
 
-    crate::platform::process::terminate::force_group(pid);
+    force_process_group(pid);
 
     // Reap the direct child to avoid a zombie even on platforms where the
     // group-kill above did the heavy lifting.
@@ -303,7 +310,7 @@ fn dump_relevant_processes() {
 }
 
 fn home_dir() -> Option<NormalizedPath> {
-    let key = if crate::platform::host::is_windows() {
+    let key = if kernal_api::platform::host::target_is_windows() {
         "USERPROFILE"
     } else {
         "HOME"
@@ -533,7 +540,7 @@ mod tests {
     fn sleep_forever_cmd() -> Command {
         // A child that will never exit on its own. We use the host's interpreter
         // so this works on Windows (where `sleep` is not a binary).
-        if crate::platform::host::is_windows() {
+        if kernal_api::platform::host::target_is_windows() {
             let mut c = Command::new("cmd");
             c.args(["/C", "ping -n 600 127.0.0.1 > NUL"]);
             c.stdout(Stdio::null()).stderr(Stdio::null());
@@ -547,7 +554,7 @@ mod tests {
     }
 
     fn quick_exit_cmd() -> Command {
-        if crate::platform::host::is_windows() {
+        if kernal_api::platform::host::target_is_windows() {
             let mut c = Command::new("cmd");
             c.args(["/C", "exit 0"]);
             c.stdout(Stdio::null()).stderr(Stdio::null());

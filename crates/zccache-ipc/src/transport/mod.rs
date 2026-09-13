@@ -133,7 +133,7 @@ impl IpcConnection {
     /// `recv`/`recv_wire` call.
     pub async fn try_serve_backend_handle_probe(
         &mut self,
-        daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+        daemon: &kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
     ) -> Result<bool, IpcError> {
         probe::try_serve_backend_handle_probe(
             &mut self.reader,
@@ -526,7 +526,7 @@ fn emit_insecure_socket_dir(endpoint: &str, outcome: &str, error: Option<&std::i
 pub async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
     let native = crate::platform::ipc::Endpoint::from_native(endpoint);
     let timeout = native.connect_timeout();
-    let stream = tokio::time::timeout(timeout, crate::platform::ipc::connect(&native))
+    let stream = kernal_api::async_engine::timeout(timeout, crate::platform::ipc::connect(&native))
         .await
         .map_err(|_| {
             contextualize_connect_error(

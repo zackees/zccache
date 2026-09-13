@@ -277,7 +277,7 @@ pub(crate) async fn cmd_fetch(
         &tmp_dir,
         &options,
         progress,
-        tokio_util::sync::CancellationToken::new(),
+        kernal_api::async_engine::CancellationSource::new().token(),
     )
     .await
     {

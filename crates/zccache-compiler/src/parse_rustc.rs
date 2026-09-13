@@ -77,9 +77,9 @@ fn test_harness_caching_enabled() -> bool {
 /// rustc's output naming. Linux/macOS use the `lib` prefix; Windows
 /// doesn't.
 fn rustc_proc_macro_filename(crate_name: &str, extra: &str) -> String {
-    if crate::platform::host::is_windows() {
+    if kernal_api::platform::host::target_is_windows() {
         format!("{crate_name}{extra}.dll")
-    } else if crate::platform::host::is_macos() {
+    } else if kernal_api::platform::host::target_is_macos() {
         format!("lib{crate_name}{extra}.dylib")
     } else {
         format!("lib{crate_name}{extra}.so")
@@ -88,7 +88,7 @@ fn rustc_proc_macro_filename(crate_name: &str, extra: &str) -> String {
 
 /// Host dynamic-library file-name pattern for a Dylint lint cdylib.
 fn rustc_dylint_cdylib_filename(crate_name: &str) -> String {
-    if crate::platform::host::is_macos() {
+    if kernal_api::platform::host::target_is_macos() {
         format!("lib{crate_name}.dylib")
     } else {
         format!("lib{crate_name}.so")
@@ -204,7 +204,7 @@ fn rustc_primary_output_filename(shape: &RustcOutputShape<'_>) -> String {
 fn rustc_bin_filename(crate_name: &str, extra: &str, target: Option<&str>) -> String {
     let windows_target = target
         .map(|triple| triple.split('-').any(|part| part == "windows"))
-        .unwrap_or_else(crate::platform::host::is_windows);
+        .unwrap_or(kernal_api::platform::host::target_is_windows());
     if windows_target {
         format!("{crate_name}{extra}.exe")
     } else {
@@ -515,7 +515,7 @@ pub(crate) fn parse_rustc_invocation_with_policy(
     // The Dylint bootstrap is the only cdylib form whose full output set is
     // modeled. Keep it host-only and reject extra-filename because
     // dylint-link's package-name guard would not create the sidecar.
-    let is_dylint_cdylib = !crate::platform::host::is_windows()
+    let is_dylint_cdylib = !kernal_api::platform::host::target_is_windows()
         && crate_types == ["cdylib"]
         && target.is_none()
         && extra_filename.as_deref().is_none_or(str::is_empty)

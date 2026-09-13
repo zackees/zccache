@@ -28,7 +28,7 @@ dylint_linting::declare_late_lint! {
     ///
     /// The blessed helpers in `crates/zccache-daemon-core/src/daemon/process.rs`
     /// (`command_output_with_priority`, `tokio_command_output_with_priority`)
-    /// execute through running-process, then apply zccache's priority and
+    /// execute through the kernal-api process facade, then apply zccache's priority and
     /// daemon Job Object policy. Bypassing them silently regresses one or
     /// more of those invariants.
     ///
@@ -178,8 +178,8 @@ fn check_resolved_path(
         emit_message(
             cx,
             span,
-            "`CommandExt::creation_flags` bypasses running-process; execute the configured command \
-             through `running_process::spawn` or `running_process::spawn_tokio`"
+            "`CommandExt::creation_flags` bypasses kernal-api; execute the configured command \
+             through the daemon process helpers backed by `kernal_api::async_process`"
                 .to_string(),
         );
         return;
@@ -198,8 +198,8 @@ fn emit_lint(cx: &LateContext<'_>, span: rustc_span::Span, banned: &[&str]) {
         cx,
         span,
         format!(
-            "`{}` bypasses running-process; execute the configured command through \
-             `running_process::spawn` or `running_process::spawn_tokio`",
+            "`{}` bypasses kernal-api; execute the configured command through \
+             the daemon process helpers backed by `kernal_api::async_process`",
             banned.join("::")
         ),
     );
@@ -210,9 +210,8 @@ fn emit_raw_platform(cx: &LateContext<'_>, span: rustc_span::Span, name: &str) {
         cx,
         span,
         format!(
-            "raw platform process API `{name}` bypasses running-process; remove the declaration or \
-             call and use `running_process::spawn`, `running_process::spawn_tokio`, or \
-             `running_process::spawn_daemon*`"
+            "raw platform process API `{name}` bypasses kernal-api; remove the declaration or \
+             call a daemon process helper backed by `kernal_api::async_process`"
         ),
     );
 }
