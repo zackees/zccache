@@ -6,6 +6,7 @@ sibling `server/` subject (pack/persist, cache trim, fingerprint, link cache,
 PCH resolution, write-cached-output, post-link hook, server IPC end-to-end).
 `fs_matrix.rs` runs the same materialization contract against every available
 filesystem fixture and always prints executed/skipped rows with reasons.
+`fingerprint_encoding.rs` checks the request encoder against literal legacy bytes.
 
 `mod.rs` declares the per-domain submodules and owns the crate-wide canonical
 test guard for process-global cache-dir mutations (`CacheDirEnvGuard`).

@@ -18,6 +18,7 @@ mod disk_maintenance;
 mod embedded_flush;
 mod exec_probe;
 mod fingerprint;
+mod fingerprint_encoding;
 mod fs_matrix;
 mod index_writer_gone;
 mod link_cache;
