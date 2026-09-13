@@ -3475,6 +3475,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4193,6 +4199,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "typed-path",
  "uuid",
  "wait-timeout",
  "windows-sys 0.61.2",
@@ -4333,6 +4340,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "typed-path",
  "zccache-core",
  "zccache-hash",
  "zccache-platform",

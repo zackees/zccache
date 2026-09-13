@@ -248,10 +248,11 @@ def rewrite_rust_source_for_amalgamation(
     module: str,
     module_map: dict[str, str],
 ) -> str:
-    if module == "hash":
-        # The published native facade embeds the hash crate with its native
+    if module in {"hash", "compiler"}:
+        # The published native facade embeds these crates with their native
         # default enabled. Crate-local feature names do not survive amalgamation.
         text = text.replace('#[cfg(feature = "native")]\n', "")
+        text = text.replace('#[cfg(all(test, feature = "native"))]', "#[cfg(test)]")
     text = re.sub(r"\bcrate::", f"crate::{module}::", text)
     for crate_name, module_name in sorted(
         module_map.items(),

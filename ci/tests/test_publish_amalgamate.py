@@ -17,6 +17,14 @@ from ci.publish_amalgamate import (
 )
 
 
+def test_compiler_amalgamation_retains_native_surface() -> None:
+    source = '#[cfg(feature = "native")]\npub mod parse;\n#[cfg(all(test, feature = "native"))]\nmod tests;\n'
+    assert (
+        rewrite_rust_source_for_amalgamation(source, module="compiler", module_map={})
+        == "pub mod parse;\n#[cfg(test)]\nmod tests;\n"
+    )
+
+
 def test_zccache_publish_manifest_keeps_gha_feature_dependencies(
     tmp_path: Path,
 ) -> None:
