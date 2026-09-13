@@ -133,6 +133,24 @@ Non-cacheable patterns detected by the CLI:
 - `-` as input (stdin source).
 - Unrecognized compiler.
 
+## Shared Request-Fingerprint Encoding
+
+The daemon's request-cache fast path uses
+`zccache_hash::request_fingerprint::emit_request_fingerprint`. This is the
+existing `zccache-request-v2` encoding, not the complete artifact key. It emits
+the domain, normalized compiler, ordered normalized argv, optional raw user
+depfile salt, normalized working directory, and selected sorted environment.
+The daemon still owns normalization and environment selection; detached Rust
+remap values are normalized lazily without collecting another argument vector.
+
+The emitter accepts a fallible byte sink and returns its first error without
+emitting more chunks or consuming further arguments. Native callers feed the
+existing `StreamHasher`; no whole-key buffer or extra IPC round trip is added.
+Literal-byte daemon fixtures retain the previous encoding, including `-MF -`
+and dangling depfile/remap flags. This extraction is a prerequisite for
+kernal-api#13, not proof that the native hash dependency graph or path policy
+can yet run in a Wasm guest.
+
 ## Rustc Cache-Key Specifics (zccache#1021)
 
 The rustc lane shares the pipeline above but has four key-scope rules of
