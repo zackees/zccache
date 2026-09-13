@@ -1,3 +1,12 @@
+# kernal-api#13 portable Rustc policy
+
+- [x] RED missing output-plan seam; GREEN 384 compiler tests after extraction.
+- [x] Preserve native explicit-output and directory-join semantics across host facts (24-case fixture; complete 385-test compiler suite passes).
+- [x] Separate lexical path syntax from compiler host and expose a native-dependency-free policy surface (only typed-path remains).
+- [x] Validate 387 native tests, three no-default public API tests, native/no-default strict Clippy, no-default docs, 11 packaging tests, and Astra review.
+- [ ] Execute identical parser fixtures through Core and Component guests, then review and merge.
+- [ ] Complete controlled cache hit/miss and bounded process-output proof.
+
 # kernal-api#13 resumable request encoding
 
 - [x] RED: compare a resumable cursor with the literal existing byte protocol (missing cursor, build log 20260913T103304Z).

@@ -139,6 +139,7 @@ globset = "0.4"
 
 # compiler
 clang = { workspace = true }
+typed-path = { version = "=0.12.3", default-features = false }
 
 # depgraph
 rkyv = { workspace = true }

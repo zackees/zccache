@@ -3,9 +3,13 @@
 //! Rustc has a completely different invocation model from C/C++ compilers:
 //! crate types, `--emit=` mixed types, host-side proc-macro dylibs, etc.
 
+#[cfg(feature = "native")]
 use std::sync::Arc;
+#[cfg(feature = "native")]
 use zccache_core::NormalizedPath;
 
+use super::rustc_path::RustcPathSyntax;
+#[cfg(feature = "native")]
 use super::{CacheableCompilation, CompilerFamily, ParsedInvocation};
 
 /// Native compiler host facts used by Rustc output/cacheability policy.
@@ -20,6 +24,7 @@ pub enum RustcHost {
     Windows,
 }
 
+#[cfg(feature = "native")]
 impl RustcHost {
     fn current() -> Self {
         if crate::platform::host::is_windows() {
@@ -93,6 +98,7 @@ const RUSTC_TEST_HARNESS_REASON: &str = "test harness link product not cacheable
 /// typo — leaves the exclusion in force. Deliberately NOT a hand-rolled
 /// parser: soldr#2740 found five mutually disagreeing truthy parsers in the
 /// sibling repo, one of which made `FOO=false` turn a switch *on*.
+#[cfg(feature = "native")]
 fn test_harness_caching_enabled() -> bool {
     zccache_core::config::cache_test_binaries_enabled()
 }
@@ -115,26 +121,6 @@ fn rustc_dylint_cdylib_filename(crate_name: &str, host: RustcHost) -> String {
     } else {
         format!("lib{crate_name}.so")
     }
-}
-
-fn is_dylint_linker(linker: Option<&str>) -> bool {
-    linker.is_some_and(|linker| {
-        std::path::Path::new(linker)
-            .file_stem()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|stem| stem.eq_ignore_ascii_case("dylint-link"))
-    })
-}
-
-fn is_dylint_library_out_dir(out_dir: Option<&str>) -> bool {
-    let Some(out_dir) = out_dir else {
-        return false;
-    };
-    let components: Vec<_> = std::path::Path::new(out_dir).components().collect();
-    components.windows(2).any(|pair| {
-        pair[0].as_os_str() == std::ffi::OsStr::new("dylint")
-            && pair[1].as_os_str() == std::ffi::OsStr::new("libraries")
-    })
 }
 
 /// Host executable file-name pattern for `--crate-type bin`. Windows
@@ -288,6 +274,7 @@ const RUSTC_FLAGS_WITH_VALUE: &[&str] = &[
 /// Cacheable: `--crate-type` is `lib`, `rlib`, `staticlib`, `proc-macro`, or `bin`.
 /// Non-cacheable: `dylib`, `cdylib`, and any `--test` harness link
 /// (see [`RUSTC_TEST_HARNESS_REASON`]).
+#[cfg(feature = "native")]
 pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
     parse_rustc_invocation_with_policy(compiler, args, test_harness_caching_enabled())
 }
@@ -300,6 +287,7 @@ pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedI
 /// deterministic: no test has to mutate process-global environment state to
 /// exercise either side of the policy. Mirrors the
 /// `no_spawn_from_env_value` seam in `zccache_core::config`.
+#[cfg(feature = "native")]
 pub(crate) fn parse_rustc_invocation_with_policy(
     compiler: &str,
     args: &[String],
@@ -319,18 +307,106 @@ pub(crate) fn parse_rustc_invocation_with_policy(
 /// `NormalizedPath` values and lexical path operations still use the native
 /// crate's path semantics and dependency graph.
 #[must_use]
+#[cfg(feature = "native")]
 pub fn parse_rustc_invocation_with_host(
     compiler: &str,
     args: &[String],
     host: RustcHost,
     cache_test_bins: bool,
 ) -> ParsedInvocation {
-    let execution_args = args;
+    match parse_rustc_plan(compiler, args, host, cache_test_bins) {
+        RustcPlan::NonCacheable { reason } => ParsedInvocation::NonCacheable { reason },
+        RustcPlan::Cacheable {
+            source,
+            output,
+            unknown_flags,
+        } => {
+            let output = match output {
+                RustcOutputPlan::Explicit(path) => path,
+                RustcOutputPlan::InDirectory {
+                    directory,
+                    filename,
+                } => NormalizedPath::new(directory)
+                    .join(filename)
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            ParsedInvocation::Cacheable(CacheableCompilation {
+                compiler: NormalizedPath::new(compiler),
+                family: CompilerFamily::Rustc,
+                source_file: NormalizedPath::new(source),
+                output_file: NormalizedPath::new(output),
+                original_args: Arc::from(args.to_vec()),
+                unknown_flags,
+            })
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+/// Unnormalized output spelling chosen by Rustc policy.
+pub enum RustcOutputPlan {
+    /// Explicit output spelling, or a generated filename relative to the cwd.
+    Explicit(String),
+    /// Join only in the native embedding, using its established path semantics.
+    InDirectory { directory: String, filename: String },
+}
+
+/// Cacheability decision without native paths, environment access, or execution.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RustcPlan {
+    /// Invocation is excluded by the existing cacheability policy.
+    NonCacheable {
+        /// Human-readable exclusion reason.
+        reason: String,
+    },
+    /// Source/output plan and preserved unknown flags for cache-key salt.
+    Cacheable {
+        /// Original source spelling.
+        source: String,
+        /// Output spelling or deferred directory join.
+        output: RustcOutputPlan,
+        /// Unrecognized flags in original order.
+        unknown_flags: Vec<String>,
+    },
+}
+
+#[cfg(feature = "native")]
+pub(crate) fn parse_rustc_plan(
+    compiler: &str,
+    args: &[String],
+    host: RustcHost,
+    cache_test_bins: bool,
+) -> RustcPlan {
+    parse_rustc_plan_with_syntax(
+        compiler,
+        args,
+        host,
+        cache_test_bins,
+        RustcPathSyntax::current(),
+    )
+}
+
+/// Evaluate the existing Rustc policy using explicitly supplied embedding facts.
+///
+/// `host` controls compiler-host naming; `syntax` controls lexical path parsing.
+/// Neither is inferred from the policy module's compilation target. The caller
+/// resolves test-cache opt-in before entry and retains the original argv for
+/// execution. No normalization, filesystem access, hashing, or process spawn
+/// occurs here. Output plans require native materialization before use.
+#[must_use]
+pub fn parse_rustc_plan_with_syntax(
+    compiler: &str,
+    args: &[String],
+    host: RustcHost,
+    cache_test_bins: bool,
+    syntax: RustcPathSyntax,
+) -> RustcPlan {
     let args = match super::dylint_inner_rustc_args(compiler, args) {
         Ok(Some((_inner_rustc, rustc_args))) => rustc_args,
         Ok(None) => args,
         Err(reason) => {
-            return ParsedInvocation::NonCacheable {
+            return RustcPlan::NonCacheable {
                 reason: reason.to_string(),
             };
         }
@@ -524,7 +600,7 @@ pub fn parse_rustc_invocation_with_host(
     let source = match source_file {
         Some(s) => s,
         None => {
-            return ParsedInvocation::NonCacheable {
+            return RustcPlan::NonCacheable {
                 reason: "no .rs source file found".to_string(),
             };
         }
@@ -540,7 +616,7 @@ pub fn parse_rustc_invocation_with_host(
             .as_deref()
             .is_some_and(is_randomized_autocfg_crate_name)
     {
-        return ParsedInvocation::NonCacheable {
+        return RustcPlan::NonCacheable {
             reason: "randomized autocfg probe crate name".to_string(),
         };
     }
@@ -568,15 +644,15 @@ pub fn parse_rustc_invocation_with_host(
         && crate_types == ["cdylib"]
         && target.is_none()
         && extra_filename.as_deref().is_none_or(str::is_empty)
-        && is_dylint_linker(linker.as_deref())
-        && is_dylint_library_out_dir(out_dir.as_deref());
+        && syntax.is_dylint_linker(linker.as_deref())
+        && syntax.is_dylint_library_dir(out_dir.as_deref());
 
     // Check all crate types are cacheable.
     for ct in &crate_types {
         if !(RUSTC_CACHEABLE_CRATE_TYPES.contains(&ct.as_str())
             || ct == "cdylib" && is_dylint_cdylib)
         {
-            return ParsedInvocation::NonCacheable {
+            return RustcPlan::NonCacheable {
                 reason: format!("non-cacheable crate type: {ct}"),
             };
         }
@@ -595,7 +671,7 @@ pub fn parse_rustc_invocation_with_host(
     // Keying the exclusion on the crate type instead would have missed the
     // real-world cargo shape entirely, which passes no `--crate-type` at all.
     if is_test_harness && !cache_test_bins {
-        return ParsedInvocation::NonCacheable {
+        return RustcPlan::NonCacheable {
             reason: RUSTC_TEST_HARNESS_REASON.to_string(),
         };
     }
@@ -633,11 +709,11 @@ pub fn parse_rustc_invocation_with_host(
             .map(String::as_str)
     };
     let output = if let Some(o) = output_file {
-        o
+        RustcOutputPlan::Explicit(o)
     } else if let Some(o) = explicit_link_output {
-        o
+        RustcOutputPlan::Explicit(o)
     } else if let Some(o) = explicit_output {
-        o
+        RustcOutputPlan::Explicit(o)
     } else {
         // The two remaining cases differ only in how the crate name and the
         // `-C extra-filename` suffix are resolved; the filename dispatch
@@ -652,12 +728,9 @@ pub fn parse_rustc_invocation_with_host(
                 extra_filename.as_deref().unwrap_or(""),
             )
         } else {
-            let name = crate_name.as_deref().unwrap_or_else(|| {
-                std::path::Path::new(&source)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-            });
+            let name = crate_name
+                .as_deref()
+                .unwrap_or_else(|| syntax.file_stem(&source).unwrap_or("unknown"));
             (name, "")
         };
         let filename = rustc_primary_output_filename(&RustcOutputShape {
@@ -673,21 +746,17 @@ pub fn parse_rustc_invocation_with_host(
             is_staticlib: crate_types.iter().any(|t| t == "staticlib"),
         });
         match out_dir {
-            // NormalizedPath::join handles platform path separators correctly.
-            Some(ref dir) => NormalizedPath::new(dir)
-                .join(filename)
-                .to_string_lossy()
-                .into_owned(),
-            None => filename,
+            Some(directory) => RustcOutputPlan::InDirectory {
+                directory,
+                filename,
+            },
+            None => RustcOutputPlan::Explicit(filename),
         }
     };
 
-    ParsedInvocation::Cacheable(CacheableCompilation {
-        compiler: NormalizedPath::new(compiler),
-        family: CompilerFamily::Rustc,
-        source_file: NormalizedPath::new(source),
-        output_file: NormalizedPath::new(output),
-        original_args: Arc::from(execution_args.to_vec()),
+    RustcPlan::Cacheable {
+        source,
+        output,
         unknown_flags,
-    })
+    }
 }
