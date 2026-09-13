@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import shutil
-import tomllib
 from pathlib import Path
 
 import pytest
+import tomllib
 
 from ci import release_checks
 from ci.publish_amalgamate import (
-    AmalgamatedModule,
     INTERNAL_MODULES,
+    AmalgamatedModule,
     drop_python_extension_bindings,
     prepare_zccache_crate_for_publish,
     rewrite_rust_source_for_amalgamation,
@@ -189,6 +189,11 @@ sha2 = { workspace = true, optional = true }
     hash_src = root / "crates" / "zccache-hash" / "src"
     hash_src.mkdir(parents=True)
     (hash_src / "lib.rs").write_text(
+        '#[cfg(feature = "native")]\nmod native;\n'
+        '#[cfg(feature = "native")]\npub use native::*;\n',
+        encoding="utf-8",
+    )
+    (hash_src / "native.rs").write_text(
         "pub struct ContentHash;\n",
         encoding="utf-8",
     )
@@ -216,34 +221,34 @@ sha2 = { workspace = true, optional = true }
 
     assert (zccache / "src" / "core" / "mod.rs").is_file()
     assert (zccache / "src" / "hash" / "mod.rs").is_file()
+    assert (zccache / "src" / "hash" / "native.rs").is_file()
+    assert (zccache / "src" / "hash" / "mod.rs").read_text(
+        encoding="utf-8"
+    ) == "mod native;\npub use native::*;\n"
     assert (zccache / "proto" / "zccache_v1.proto").is_file()
     assert "crate::hash::ContentHash" in (
         zccache / "src" / "core" / "mod.rs"
     ).read_text(encoding="utf-8")
-    assert "crate::core::VERSION" in (
-        zccache / "src" / "core" / "config.rs"
-    ).read_text(encoding="utf-8")
-    assert "pub mod core;" in (zccache / "src" / "lib.rs").read_text(
+    assert "crate::core::VERSION" in (zccache / "src" / "core" / "config.rs").read_text(
         encoding="utf-8"
     )
+    assert "pub mod core;" in (zccache / "src" / "lib.rs").read_text(encoding="utf-8")
     assert '#[cfg(feature = "download-daemon-entry")]' in (
         zccache / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
-    assert "pub mod download_daemon_entry;" in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert "pub mod dev_daemon_identity;" in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert '#[cfg(feature = "formatter")]' in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert "pub use cli_core::formatter;" in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(
+    assert "pub mod download_daemon_entry;" in (zccache / "src" / "lib.rs").read_text(
         encoding="utf-8"
     )
+    assert "pub mod dev_daemon_identity;" in (zccache / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert '#[cfg(feature = "formatter")]' in (zccache / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "pub use cli_core::formatter;" in (zccache / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(encoding="utf-8")
     assert "zccache-platform =" not in (zccache / "Cargo.toml").read_text(
         encoding="utf-8"
     )
@@ -261,16 +266,17 @@ def test_public_crate_matches_platform_native_dependencies() -> None:
     )
 
     for target in ("cfg(unix)", "cfg(windows)"):
-        assert public_manifest["target"][target]["dependencies"] == (
-            platform_manifest["target"][target]["dependencies"]
+        assert (
+            public_manifest["target"][target]["dependencies"]
+            == (platform_manifest["target"][target]["dependencies"])
         )
 
 
 def test_platform_host_modules_can_be_reexported_after_amalgamation() -> None:
     root = Path(__file__).parents[2]
-    platform_lib = (
-        root / "crates" / "zccache-platform" / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
+    platform_lib = (root / "crates" / "zccache-platform" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert "pub(crate) mod platform_win;" in platform_lib
     assert "pub(crate) mod platform_linux;" in platform_lib
@@ -299,7 +305,7 @@ def test_prepare_copies_platform_sources_and_rewrites_platform_paths(
     (zccache / "src").mkdir(parents=True)
     (zccache / "src" / "lib.rs").write_text("", encoding="utf-8")
     (zccache / "Cargo.toml").write_text(
-        "[package]\nname = \"zccache\"\n\n[dependencies]\n"
+        '[package]\nname = "zccache"\n\n[dependencies]\n'
         "zccache-platform = { workspace = true }\n",
         encoding="utf-8",
     )
@@ -351,9 +357,7 @@ def test_prepare_copies_platform_sources_and_rewrites_platform_paths(
     # inside platform sources rebases to `crate::platform::`, so facade
     # self-references double the segment and still resolve
     # (crate::platform::platform::fs).
-    platform_mod = (zccache / "src" / "platform" / "mod.rs").read_text(
-        encoding="utf-8"
-    )
+    platform_mod = (zccache / "src" / "platform" / "mod.rs").read_text(encoding="utf-8")
     assert "mod platform;" in platform_mod
     assert "pub use platform::fs;" in platform_mod
     platform_facade = (zccache / "src" / "platform" / "platform.rs").read_text(
@@ -361,18 +365,14 @@ def test_prepare_copies_platform_sources_and_rewrites_platform_paths(
     )
     assert "crate::platform::platform::fs::answer()" in platform_facade
     # `zccache_platform::` in consumers rewrites to `crate::platform::`.
-    core_mod = (zccache / "src" / "core" / "mod.rs").read_text(
-        encoding="utf-8"
-    )
+    core_mod = (zccache / "src" / "core" / "mod.rs").read_text(encoding="utf-8")
     assert "use crate::platform::fs;" in core_mod
     assert "zccache_platform" not in core_mod
     # The prepared manifest drops the internal path dependency.
     manifest = (zccache / "Cargo.toml").read_text(encoding="utf-8")
     assert "zccache-platform =" not in manifest
     # The private root module is declared in the regenerated lib.rs.
-    assert "mod platform;" in (zccache / "src" / "lib.rs").read_text(
-        encoding="utf-8"
-    )
+    assert "mod platform;" in (zccache / "src" / "lib.rs").read_text(encoding="utf-8")
 
 
 def test_release_metadata_allows_only_public_zccache_crate(

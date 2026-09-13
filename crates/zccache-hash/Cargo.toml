@@ -10,10 +10,14 @@ readme = "README.md"
 description = "Hashing utilities and cache key builders for zccache"
 publish = false
 
+[features]
+default = ["native"]
+native = ["dep:blake3", "dep:memmap2", "dep:serde"]
+
 [dependencies]
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
-serde = { workspace = true }
+blake3 = { workspace = true, optional = true }
+memmap2 = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

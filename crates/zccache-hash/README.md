@@ -4,3 +4,7 @@ Internal hashing utilities for zccache.
 
 This crate contains the content hashing and cache key builder modules that are
 re-exported through the main `zccache` crate facade.
+
+Default features retain native hashing. For effect-free resumable request-key
+encoding, disable default features; see the
+[hashing architecture](../../docs/architecture/overview.md#28-hashing-engine).

@@ -1,3 +1,12 @@
+# kernal-api#13 resumable request encoding
+
+- [x] RED: compare a resumable cursor with the literal existing byte protocol (missing cursor, build log 20260913T103304Z).
+- [x] Share one encoding implementation between synchronous native sinks and async guest consumers (24 hash tests and strict all-target Clippy pass).
+- [x] Preserve lazy argv consumption and first-error behavior; test, lint, review (Astra clean; focused test independently passed).
+- [x] Isolate encoder-only guest dependencies; Wasm check and empty normal dependency graph pass. Native 24 tests, encoder-only three tests, packaging ten tests, strict Clippy and Ruff pass.
+- [ ] Finish downstream daemon fingerprint validation, then open the coordinated PR.
+- [ ] Follow with actual kernel hash execution and portable compiler policy; crate compilation alone is not runtime acceptance.
+
 # kernal-api#13 explicit Rustc parser host facts
 
 - [x] RED: inject Linux/macOS/Windows naming facts independently of the test host.
