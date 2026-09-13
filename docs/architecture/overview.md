@@ -205,6 +205,18 @@ impl ArtifactStore {
 
 **Responsibility:** Compute deterministic cache keys and content digests using blake3.
 
+The internal `zccache-hash` crate defaults to its `native` feature, retaining
+content hashing and both cache-key builders. With default features disabled,
+only effect-free request-fingerprint encoding is available, with no normal
+dependencies. `RequestFingerprint::next_fragment` lends one byte fragment at a
+time, retaining at most the current normalized argument; async consumers can
+copy into bounded chunks and await their host's hash capability. The native
+`emit_request_fingerprint` callback uses this same cursor, preserving the v2
+byte protocol, argument order, raw depfile salt, and immediate sink errors.
+Release amalgamation resolves the internal native gates when embedding this
+module into the published native facade. This boundary does not itself prove
+portable compiler policy or a complete Wasm cache workflow.
+
 **Key interfaces:**
 ```rust
 fn compute_cache_key(

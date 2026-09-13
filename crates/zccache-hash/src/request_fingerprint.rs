@@ -1,5 +1,9 @@
 //! Request-key byte encoding, independent of path policy and hashing effects.
 
+#[path = "request_fingerprint_cursor.rs"]
+mod cursor;
+pub use cursor::RequestFingerprint;
+
 /// Emit the existing v2 request fingerprint without allocating a whole-key buffer.
 ///
 /// The caller supplies normalized compiler/argv/cwd and selected, sorted environment
@@ -21,44 +25,15 @@ where
     A: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    emit(b"zccache-request-v2\0")?;
-    emit(compiler.as_bytes())?;
-    emit(b"\0")?;
-    for arg in normalized_args {
-        emit(arg.as_ref().as_bytes())?;
-        emit(b"\0")?;
-    }
-    if raw_args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "-MD" | "-MMD"))
-    {
-        emit(b"user-depfile-raw-argv\0")?;
-        let mut index = 0;
-        while index < raw_args.len() {
-            let arg = &raw_args[index];
-            if arg == "-MF" {
-                if raw_args.get(index + 1).is_some_and(|value| value == "-") {
-                    emit(b"-MF-stdout\0")?;
-                }
-                index += 2;
-                continue;
-            }
-            if arg == "-MF-" {
-                emit(b"-MF-stdout\0")?;
-            } else if !arg.starts_with("-MF") {
-                emit(arg.as_bytes())?;
-                emit(b"\0")?;
-            }
-            index += 1;
-        }
-    }
-    emit(cwd.as_bytes())?;
-    emit(b"\0")?;
-    for (key, value) in selected_env {
-        emit(key.as_bytes())?;
-        emit(b"=")?;
-        emit(value.as_bytes())?;
-        emit(b"\0")?;
+    let mut cursor = RequestFingerprint::new(
+        compiler,
+        normalized_args.into_iter(),
+        raw_args,
+        cwd,
+        selected_env,
+    );
+    while let Some(fragment) = cursor.next_fragment() {
+        emit(fragment)?;
     }
     Ok(())
 }
@@ -66,6 +41,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::emit_request_fingerprint;
+
+    #[test]
+    fn resumable_cursor_preserves_bytes_and_lazy_arguments() {
+        use std::cell::Cell;
+        let consumed = Cell::new(0);
+        let raw = ["-MMD", "-MF", "out.d", "-MF-", "source.c"].map(String::from);
+        let args = ["first", "", "last"].into_iter().map(|arg| {
+            consumed.set(consumed.get() + 1);
+            arg.to_owned()
+        });
+        let env = [("A", "value")];
+        let mut cursor = super::RequestFingerprint::new("cc", args, &raw, "cwd", &env);
+        let mut bytes = Vec::new();
+        for _ in 0..3 {
+            bytes.extend_from_slice(cursor.next_fragment().unwrap());
+            assert_eq!(consumed.get(), 0);
+        }
+        bytes.extend_from_slice(cursor.next_fragment().unwrap());
+        assert_eq!(consumed.get(), 1);
+        while let Some(fragment) = cursor.next_fragment() {
+            bytes.extend_from_slice(fragment);
+        }
+        assert_eq!(consumed.get(), 3);
+        assert!(cursor.next_fragment().is_none());
+        assert_eq!(bytes, b"zccache-request-v2\0cc\0first\0\0last\0user-depfile-raw-argv\0-MMD\0-MF-stdout\0source.c\0cwd\0A=value\0");
+    }
 
     #[test]
     fn emits_ordered_bytes_and_raw_depfile_salt() {
