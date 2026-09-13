@@ -26,6 +26,9 @@ members = [
     "crates/zccache-fingerprint-py",
 ]
 exclude = [
+    # The temporary dependency sub-git is a workspace of its own, not a
+    # zccache member. Cargo resolves it only through `kernal-api` below.
+    "_vender/kernal-api",
     "dylints/ban_std_pathbuf",
     "dylints/ban_unrooted_tempdir",
     "dylints/ban_raw_subprocess_in_daemon",
