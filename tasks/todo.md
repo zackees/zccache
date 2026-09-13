@@ -1,3 +1,11 @@
+# kernal-api#13 explicit Rustc parser host facts
+
+- [x] RED: inject Linux/macOS/Windows naming facts independently of the test host.
+- [x] Preserve the native entry point while passing host facts into the existing parser.
+- [x] Check proc-macro/bin/Dylint policy, target override, and original argv preservation.
+- [ ] Run compiler tests, strict Clippy, review, and open a coordinated PR.
+- [ ] Follow with portable dependency/path seams and actual kernel-hosted Wasm proof; this change alone does not make the compiler crate portable.
+
 # kernal-api#13 shared request-fingerprint encoding
 
 - [x] Capture literal-byte compatibility fixtures against the existing daemon encoder.

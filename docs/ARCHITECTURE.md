@@ -31,6 +31,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **High-level design** → [overview.md](architecture/overview.md)
 - **"How does a cache hit work?"** → [data-flow.md](architecture/data-flow.md)
 - **Nested Dylint driver caching** → [data-flow.md](architecture/data-flow.md#nested-dylint-driver-caching)
+- **Explicit Rustc host policy** → [data-flow.md](architecture/data-flow.md#explicit-rustc-host-policy)
 - **CLI↔daemon communication** → [ipc.md](architecture/ipc.md)
 - **Compile queue visibility, progress-based wedge detection** → [ipc.md § Compile progress heartbeats](architecture/ipc.md#compile-progress-heartbeats-issue-1216)
 - **File change detection** → [metadata-cache.md](architecture/metadata-cache.md)

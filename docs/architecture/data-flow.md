@@ -206,6 +206,26 @@ its own:
   of large system libraries. Revisit if a real-world stale-bin report
   lands.
 
+## Explicit Rustc Host Policy
+
+`zccache_compiler::parse_rustc_invocation_with_host` runs the existing Rustc
+parser with a caller-supplied `RustcHost` and resolved test-cache opt-in. The
+native `parse_invocation` path keeps resolving those facts through its existing
+platform/configuration providers, then delegates to that same implementation.
+No compiler arguments or cache keys are changed by this seam.
+
+Host-side proc-macro/Dylint names use the supplied Linux/macOS/Windows family;
+an explicit compiler `--target` still controls executable naming. These are
+different inputs from the target used to compile a future Wasm policy module.
+The focused `rustc_host` tests exercise all three host families in every native
+test run, including Dylint admission and the test-harness opt-in.
+
+This is preparatory work for [kernal-api #13](https://github.com/zackees/kernal-api/issues/13),
+not a portable-crate claim. `NormalizedPath`, lexical path operations, and the
+compiler dependency graph still have native semantics. The Wasm proof must
+resolve those seams and route hashing/process effects through the kernel;
+the daemon and its native lifecycle remain outside the guest.
+
 ## Nested Dylint Driver Caching
 
 Dylint invokes Rust through a two-level compiler command:

@@ -14,6 +14,7 @@ public API.
 | `cpp_output.rs` | Default output paths, PCH naming, concatenated -o, unknown-flag preservation, BUG_LINKER repro |
 | `detect.rs` | `detect_family` + `supports_depfile` for clang/gcc/msvc/emcc |
 | `rustc.rs` | Rustc invocation parsing: crate types, --emit, --out-dir, proc-macro/bin output naming |
+| `rustc_host.rs` | Explicit host facts versus requested target, Dylint admission, and test opt-in |
 | `clippy_driver.rs` | `clippy-driver` detection + caching (re-uses rustc parser) |
 | `modules.rs` | C++20 modules: .cppm/.ixx, -x c++-module, header units, --precompile, GCC -fmodules-ts |
 | `clang_cl.rs` | clang-cl / cl.exe dispatch into the MSVC parser (issue #261), MSVC-style flags |

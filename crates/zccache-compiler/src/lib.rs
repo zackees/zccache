@@ -52,6 +52,7 @@ pub use output_policy::{
     OutputClassification, OutputRole,
 };
 pub use parse::parse_invocation;
+pub use parse_rustc::{parse_rustc_invocation_with_host, RustcHost};
 pub use side_outputs::unmodeled_side_output_flag;
 
 /// Supported compiler families.
