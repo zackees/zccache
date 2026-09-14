@@ -19,6 +19,11 @@ on:
         default: true
         type: boolean
 
+# Never cancelled and never coalesced: every publish runs to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
 permissions:
   actions: read
   contents: write

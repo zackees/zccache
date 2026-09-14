@@ -47,8 +47,8 @@ permissions:
 # key on run_id so each gets its own group -- GitHub keeps only ONE pending
 # run per group, so a shared group silently drops queued main-push SHAs.
 concurrency:
-  group: python-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   pytest:

@@ -44,8 +44,8 @@ permissions:
 concurrency:
   # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
   # per group, so a ref-only group silently cancels queued main-push SHAs.
-  group: wrapper-e2e-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   wrapper-e2e:
