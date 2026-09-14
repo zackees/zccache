@@ -273,6 +273,33 @@ fn test_serialization_latency_precision_boundary() {
     );
 }
 
+// ─── Compiler-child peak RSS (soldr#3152) ──────────────────────────────────
+
+#[test]
+fn child_peak_rss_serializes_only_when_measured() {
+    let measured = JournalEntry::new(
+        super::make_ctx(vec!["--crate-name", "a"]),
+        "miss",
+        0,
+        1,
+        None,
+    )
+    .with_child_peak_rss_bytes(Some(5_368_709_120));
+    let v: serde_json::Value = serde_json::to_value(&measured).unwrap();
+    assert_eq!(v["child_peak_rss_bytes"], 5_368_709_120_u64);
+
+    let hit = JournalEntry::new(
+        super::make_ctx(vec!["--crate-name", "a"]),
+        "hit",
+        0,
+        1,
+        None,
+    )
+    .with_child_peak_rss_bytes(None);
+    let json = serde_json::to_string(&hit).unwrap();
+    assert!(!json.contains("child_peak_rss_bytes"), "json: {json}");
+}
+
 // ─── Profile-mode schema extension (issue #256) ───────────────────────────
 
 #[test]
@@ -290,6 +317,7 @@ fn serializes_extended_fields_when_present() {
         daemon_generation: None,
         latency_ns: 1_234_567,
         context_key: None,
+        child_peak_rss_bytes: None,
         crate_name: Some("soldr_cli".to_string()),
         crate_type: Some("bin".to_string()),
         output_ext: Some("exe".to_string()),

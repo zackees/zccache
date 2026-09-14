@@ -62,6 +62,7 @@ pub(super) fn legacy_entry(
         daemon_generation: None,
         latency_ns,
         context_key: None,
+        child_peak_rss_bytes: None,
         crate_name: None,
         crate_type: None,
         output_ext: None,

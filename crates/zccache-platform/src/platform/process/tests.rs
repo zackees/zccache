@@ -77,6 +77,22 @@ fn child_cpu_ticks_are_nondecreasing() {
     child.wait().expect("reap child");
 }
 
+/// soldr#3152: the compiler-child memory high-water mark must be readable
+/// for a live child on every supported platform, and it never decreases.
+#[test]
+fn child_peak_rss_is_positive_and_nondecreasing() {
+    let mut child = spawn::sleeping_child(Duration::from_secs(30)).expect("spawn child");
+    let first = inspect::peak_rss_bytes(child.id()).expect("first peak RSS reading");
+    let second = inspect::peak_rss_bytes(child.id()).expect("second peak RSS reading");
+    assert!(first > 0, "a live process has a non-zero peak RSS");
+    assert!(
+        second >= first,
+        "peak RSS is a high-water mark: {first} -> {second}"
+    );
+    child.kill().expect("kill child");
+    child.wait().expect("reap child");
+}
+
 #[test]
 fn native_capabilities_have_stable_labels() {
     assert!(!exit::crash_label(exit::NativeExit::Success).is_empty());

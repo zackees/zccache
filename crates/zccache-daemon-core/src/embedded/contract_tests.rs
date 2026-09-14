@@ -591,3 +591,74 @@ async fn host_event_sink_receives_redacted_events_when_file_audit_is_off() {
         .await
         .expect("shutdown");
 }
+
+/// soldr#3152: a compiler that actually runs must land its measured peak RSS
+/// on the embedded journal row — the calibration input for memory-aware
+/// admission.
+#[cfg(unix)]
+#[tokio::test]
+async fn embedded_compile_journals_child_peak_rss() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn find_journal(dir: &std::path::Path) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = find_journal(&path) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("compile_journal.jsonl") {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    let temp = TempDir::new().expect("temp cache root");
+    let compiler = temp.path().join("slow-compiler");
+    std::fs::write(&compiler, "#!/bin/sh\nsleep 1\nexit 3\n").expect("write compiler");
+    std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))
+        .expect("make compiler executable");
+    let service = ZccacheService::start(config(&temp, "embedded-peak-rss", None))
+        .await
+        .expect("service start");
+    let response = service
+        .compile(CompileRequest {
+            audit: AuditContext::new(
+                crate::audit::AuditId::new("peak-rss-run").expect("non-empty"),
+                crate::audit::AuditId::new("peak-rss-trace").expect("non-empty"),
+            ),
+            compiler: compiler.into(),
+            args: Vec::new(),
+            cwd: temp.path().into(),
+            env: Vec::new(),
+            stdin: Vec::new(),
+        })
+        .await
+        .expect("compiler returns a compile response");
+    assert_eq!(response.exit_code, 3);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let row = loop {
+        let row = find_journal(temp.path())
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| c.lines().next().map(str::to_owned));
+        match row {
+            Some(row) => break row,
+            None if std::time::Instant::now() > deadline => {
+                panic!("embedded compile produced no compile_journal.jsonl record")
+            }
+            None => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&row).expect("valid JSON journal line");
+    assert!(
+        v["child_peak_rss_bytes"].as_u64().is_some_and(|b| b > 0),
+        "a compiler that ran must journal its peak RSS: {v}"
+    );
+
+    service
+        .shutdown(ShutdownMode::Graceful)
+        .await
+        .expect("shutdown service");
+}

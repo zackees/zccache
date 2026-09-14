@@ -22,6 +22,7 @@ scripts) can rely on.
 | `daemon_generation` | string     | no             | Which daemon process generation served the compile (zackees/soldr#2436 D4). The embedded host passes its route-generation identity; a standalone daemon mints one per-process UUID. Restart-warmth analysis joins rows to generations with it. |
 | `latency_ns`   | integer         | yes            | Wall-clock nanoseconds (per the project's `_ns` convention). |
 | `context_key`  | string          | no             | Full root-normalized dep-graph context hash. Present once cache-key construction completes; useful for comparing ephemeral cross-worktree requests. |
+| `child_peak_rss_bytes` | integer | no           | Largest resident-memory high-water mark, in bytes, among the compiler/tool children the request spawned (zackees/soldr#3152). Linux `VmHWM`, macOS lifetime max physical footprint, Windows `PeakWorkingSetSize`. Sampled every 250 ms while the child runs (Windows also reads the exact final peak after exit), so growth in a Unix child's last tick can go unseen. Omitted for hits and when unmeasurable. |
 | `crate_name`   | string          | no             | Populated when parseable from `--crate-name` (rustc). |
 | `crate_type`   | string          | no             | Canonical: `lib`, `bin`, `proc-macro`, `build-script`, `test`, `bench`, `example`. |
 | `output_ext`   | string          | no             | Derived from `crate_type` — `rlib`, `exe`, `so`, etc. |

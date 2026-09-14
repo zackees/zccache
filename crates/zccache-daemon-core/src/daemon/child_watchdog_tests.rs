@@ -400,6 +400,25 @@ fn short_sleep_cmd() -> tokio::process::Command {
     }
 }
 
+/// soldr#3152: the watchdog samples the child's memory high-water mark while
+/// it runs and hands the largest reading to the enclosing compile scope, which
+/// is what puts `child_peak_rss_bytes` on the journal row.
+#[tokio::test]
+async fn watchdog_records_child_peak_rss_into_the_compile_scope() {
+    crate::test_support::test_timeout(async {
+        let child = piped(short_sleep_cmd()).spawn().expect("spawn");
+        let (output, _, _, peak) =
+            crate::daemon::compile_journal::capture_miss_reason(Box::pin(async move {
+                wait_with_output_watchdog(child, "sleep1").await
+            }))
+            .await;
+        output.expect("watchdog wait");
+        let peak = peak.expect("a ~1s child must yield a peak RSS sample");
+        assert!(peak > 0, "peak RSS must be non-zero, got {peak}");
+    })
+    .await;
+}
+
 /// The watchdog must not serialize concurrent child waits: running N of them
 /// at once should take about as long as one, not N times as long. Guards
 /// against a regression where the per-wait select loop / CPU sampling

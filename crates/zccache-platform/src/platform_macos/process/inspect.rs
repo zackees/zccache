@@ -19,3 +19,10 @@ pub fn cpu_ticks(pid: u32) -> Option<u64> {
     let result = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, std::ptr::from_mut(&mut info).cast()) };
     (result == 0).then(|| info.ri_user_time.wrapping_add(info.ri_system_time))
 }
+pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
+    let pid = i32::try_from(pid).ok()?;
+    // SAFETY: zeroed POD filled by proc_pid_rusage for the matching flavor.
+    let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+    let result = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V4, std::ptr::from_mut(&mut info).cast()) };
+    (result == 0).then_some(info.ri_lifetime_max_phys_footprint)
+}

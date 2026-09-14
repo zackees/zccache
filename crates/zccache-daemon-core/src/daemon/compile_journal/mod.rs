@@ -91,6 +91,7 @@ pub mod miss_reason {
 tokio::task_local! {
     static ACTIVE_MISS_REASON: Cell<Option<&'static str>>;
     static ACTIVE_CONTEXT_KEY: std::cell::RefCell<Option<String>>;
+    static ACTIVE_CHILD_PEAK_RSS: Cell<Option<u64>>;
 }
 
 /// Run one request with an isolated miss-attribution slot.
@@ -100,22 +101,36 @@ tokio::task_local! {
 /// task-local scope can exhaust Tokio's default worker stack on Windows.
 pub async fn capture_miss_reason<F>(
     future: std::pin::Pin<Box<F>>,
-) -> (F::Output, Option<&'static str>, Option<String>)
+) -> (F::Output, Option<&'static str>, Option<String>, Option<u64>)
 where
     F: Future + ?Sized,
 {
-    ACTIVE_CONTEXT_KEY
-        .scope(std::cell::RefCell::new(None), async move {
-            ACTIVE_MISS_REASON
-                .scope(Cell::new(None), async move {
-                    let output = future.await;
-                    let reason = ACTIVE_MISS_REASON.with(Cell::get);
-                    let context_key = ACTIVE_CONTEXT_KEY.with(|slot| slot.borrow().clone());
-                    (output, reason, context_key)
+    ACTIVE_CHILD_PEAK_RSS
+        .scope(Cell::new(None), async move {
+            ACTIVE_CONTEXT_KEY
+                .scope(std::cell::RefCell::new(None), async move {
+                    ACTIVE_MISS_REASON
+                        .scope(Cell::new(None), async move {
+                            let output = future.await;
+                            let reason = ACTIVE_MISS_REASON.with(Cell::get);
+                            let context_key = ACTIVE_CONTEXT_KEY.with(|slot| slot.borrow().clone());
+                            let child_peak_rss = ACTIVE_CHILD_PEAK_RSS.with(Cell::get);
+                            (output, reason, context_key, child_peak_rss)
+                        })
+                        .await
                 })
                 .await
         })
         .await
+}
+
+/// Record a compiler/tool child's resident-memory high-water mark, in bytes,
+/// for the active compile's journal row (soldr#3152). A request may spawn
+/// several children; the row keeps the largest. No-op outside a compile scope.
+pub fn record_child_peak_rss(bytes: u64) {
+    let _ = ACTIVE_CHILD_PEAK_RSS.try_with(|slot| {
+        slot.set(Some(slot.get().map_or(bytes, |seen| seen.max(bytes))));
+    });
 }
 
 /// Record the most specific reason known by the active compile pipeline.
@@ -212,6 +227,11 @@ pub struct JournalEntry {
     /// Root-normalized dependency-graph context identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_key: Option<String>,
+    /// soldr#3152: largest resident-memory high-water mark, in bytes, sampled
+    /// from the compiler/tool children this request spawned. Omitted when no
+    /// child ran (a cache hit) or the platform could not measure it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_peak_rss_bytes: Option<u64>,
 
     // ─── Extended profile-mode fields (issue #256). ─────────────────────
     // All optional; emission is gated behind `--profile` in a follow-up PR.
@@ -324,6 +344,7 @@ impl JournalEntry {
             daemon_generation: Some(daemon_generation().to_string()),
             latency_ns,
             context_key: None,
+            child_peak_rss_bytes: None,
             crate_name: None,
             crate_type: None,
             output_ext: None,
@@ -336,6 +357,12 @@ impl JournalEntry {
     #[must_use]
     pub fn with_context_key(mut self, context_key: Option<String>) -> Self {
         self.context_key = context_key;
+        self
+    }
+
+    #[must_use]
+    pub fn with_child_peak_rss_bytes(mut self, child_peak_rss_bytes: Option<u64>) -> Self {
+        self.child_peak_rss_bytes = child_peak_rss_bytes;
         self
     }
 

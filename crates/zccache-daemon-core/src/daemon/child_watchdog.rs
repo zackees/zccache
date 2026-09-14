@@ -79,6 +79,33 @@ const DEFAULT_STALL_WINDOW: Duration = Duration::from_secs(300);
 /// `/proc/<pid>/stat` read per tick.
 const STALL_TICK: Duration = Duration::from_secs(5);
 
+/// How often the watchdog samples the child's resident-memory high-water mark
+/// (soldr#3152). The kernel maintains the high-water mark itself, so the tick
+/// only bounds how much growth in the child's final instant goes unseen. One
+/// `/proc/<pid>/status` / `proc_pid_rusage` / `GetProcessMemoryInfo` read.
+const MEMORY_SAMPLE_TICK: Duration = Duration::from_millis(250);
+
+/// The largest peak-RSS sample taken for one child, published to the
+/// enclosing compile scope when the wait ends — on every return path,
+/// including errors and cancellation, because it publishes from `Drop`.
+struct PeakRssSample(Option<u64>);
+
+impl PeakRssSample {
+    fn observe(&mut self, pid: Option<u32>) {
+        if let Some(bytes) = pid.and_then(crate::platform::process::inspect::peak_rss_bytes) {
+            self.0 = Some(self.0.map_or(bytes, |seen| seen.max(bytes)));
+        }
+    }
+}
+
+impl Drop for PeakRssSample {
+    fn drop(&mut self) {
+        if let Some(bytes) = self.0 {
+            crate::daemon::compile_journal::record_child_peak_rss(bytes);
+        }
+    }
+}
+
 /// Env override for [`DEFAULT_STALL_WINDOW`], in milliseconds. `0` disables the
 /// alive-hung (Mode B) watchdog, leaving only the post-exit orphan-pipe (Mode A)
 /// watchdog active.
@@ -222,6 +249,14 @@ async fn watchdog_inner_impl(
     // fires the child has already exited and `child.id()` returns `None`, so we
     // record it now while it is still live.
     let child_pid = child.id();
+    // soldr#3152: sample the child's memory high-water mark while it runs.
+    // Samples use `child.id()`, which is `None` once Tokio has reaped the child,
+    // so a Unix sample can never read a reused pid. Windows re-reads once after
+    // exit: the process handle `child` still holds keeps the exact final peak
+    // readable there.
+    let mut peak_rss = PeakRssSample(None);
+    let mut memory_tick = tokio::time::interval(MEMORY_SAMPLE_TICK);
+    memory_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut out: Vec<u8> = Vec::new();
@@ -325,7 +360,12 @@ async fn watchdog_inner_impl(
             // alongside so we notice exit promptly.
             status = child.wait(), if exited.is_none() => {
                 let status = status?;
+                #[cfg(windows)]
+                peak_rss.observe(child_pid);
                 exited = Some((status, Instant::now()));
+            }
+            _ = memory_tick.tick(), if exited.is_none() => {
+                peak_rss.observe(child.id());
             }
             r = read_opt(stdout.as_mut(), &mut sbuf), if !stdout_done => match r {
                 Ok(0) => stdout_done = true,
