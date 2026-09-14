@@ -98,7 +98,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-crash-handler = "0.6"
+crash-handler = "0.7"
 
 # hash
 blake3 = { workspace = true }
