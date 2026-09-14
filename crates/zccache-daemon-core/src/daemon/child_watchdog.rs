@@ -92,7 +92,11 @@ struct PeakRssSample(Option<u64>);
 
 impl PeakRssSample {
     fn observe(&mut self, pid: Option<u32>) {
-        if let Some(bytes) = pid.and_then(crate::platform::process::inspect::peak_rss_bytes) {
+        // A zero reading is an image caught mid-exec, not a measurement.
+        if let Some(bytes) = pid
+            .and_then(crate::platform::process::inspect::peak_rss_bytes)
+            .filter(|&bytes| bytes > 0)
+        {
             self.0 = Some(self.0.map_or(bytes, |seen| seen.max(bytes)));
         }
     }
@@ -251,9 +255,9 @@ async fn watchdog_inner_impl(
     let child_pid = child.id();
     // soldr#3152: sample the child's memory high-water mark while it runs.
     // Samples use `child.id()`, which is `None` once Tokio has reaped the child,
-    // so a Unix sample can never read a reused pid. Windows re-reads once after
-    // exit: the process handle `child` still holds keeps the exact final peak
-    // readable there.
+    // so a Unix sample can never read a reused pid. Where the platform keeps a
+    // held handle's final peak readable (Windows), it is re-read once after
+    // exit.
     let mut peak_rss = PeakRssSample(None);
     let mut memory_tick = tokio::time::interval(MEMORY_SAMPLE_TICK);
     memory_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -360,8 +364,9 @@ async fn watchdog_inner_impl(
             // alongside so we notice exit promptly.
             status = child.wait(), if exited.is_none() => {
                 let status = status?;
-                #[cfg(windows)]
-                peak_rss.observe(child_pid);
+                if crate::platform::process::inspect::PEAK_RSS_READABLE_AFTER_EXIT {
+                    peak_rss.observe(child_pid);
+                }
                 exited = Some((status, Instant::now()));
             }
             _ = memory_tick.tick(), if exited.is_none() => {

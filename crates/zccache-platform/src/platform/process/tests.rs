@@ -78,19 +78,49 @@ fn child_cpu_ticks_are_nondecreasing() {
 }
 
 /// soldr#3152: the compiler-child memory high-water mark must be readable
-/// for a live child on every supported platform, and it never decreases.
+/// for a live child on every supported platform.
+///
+/// Monotonicity is deliberately not asserted across two child readings: the
+/// sleeping child may still `exec` (a shell replacing itself with `sleep`),
+/// and an exec starts a fresh high-water mark. The watchdog keeps the largest
+/// sample for exactly that reason.
 #[test]
-fn child_peak_rss_is_positive_and_nondecreasing() {
+fn live_child_peak_rss_is_positive() {
     let mut child = spawn::sleeping_child(Duration::from_secs(30)).expect("spawn child");
-    let first = inspect::peak_rss_bytes(child.id()).expect("first peak RSS reading");
-    let second = inspect::peak_rss_bytes(child.id()).expect("second peak RSS reading");
-    assert!(first > 0, "a live process has a non-zero peak RSS");
-    assert!(
-        second >= first,
-        "peak RSS is a high-water mark: {first} -> {second}"
-    );
+    let peak = inspect::peak_rss_bytes(child.id()).expect("peak RSS reading");
+    assert!(peak > 0, "a live process has a non-zero peak RSS");
     child.kill().expect("kill child");
     child.wait().expect("reap child");
+}
+
+/// Within one process image the reading tracks the high-water mark: touching
+/// memory raises it past the touched size, and releasing that memory does not
+/// take it back down.
+///
+/// Linux batches RSS counters per thread (`SPLIT_RSS_COUNTING`), so `VmHWM`
+/// can read a few hundred KiB low for a moment; observed 38 817 792 ->
+/// 38 121 472 bytes. The slack absorbs that batching and nothing more.
+#[test]
+fn peak_rss_is_a_high_water_mark_within_one_image() {
+    const TOUCH: usize = 32 * 1024 * 1024;
+    const COUNTER_SLACK: u64 = 4 * 1024 * 1024;
+    let pid = std::process::id();
+    let touched = vec![0x5a_u8; TOUCH];
+    let during = inspect::peak_rss_bytes(pid).expect("peak RSS while touched");
+    assert_eq!(
+        touched.iter().map(|&b| u64::from(b)).sum::<u64>(),
+        0x5a * TOUCH as u64
+    );
+    drop(touched);
+    let after = inspect::peak_rss_bytes(pid).expect("peak RSS after release");
+    assert!(
+        during + COUNTER_SLACK >= TOUCH as u64,
+        "peak RSS {during} does not cover the {TOUCH} bytes just touched"
+    );
+    assert!(
+        after + COUNTER_SLACK >= during,
+        "peak RSS fell after releasing memory: {during} -> {after}"
+    );
 }
 
 #[test]

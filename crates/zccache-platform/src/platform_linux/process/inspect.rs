@@ -14,3 +14,4 @@ pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
     let kib = status.lines().find_map(|line| line.strip_prefix("VmHWM:"))?.trim().strip_suffix("kB")?.trim();
     Some(kib.parse::<u64>().ok()?.saturating_mul(1024))
 }
+pub const PEAK_RSS_READABLE_AFTER_EXIT: bool = false;

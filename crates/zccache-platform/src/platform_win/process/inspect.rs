@@ -71,3 +71,4 @@ pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
         (result != 0).then_some(counters.peak_working_set_size as u64)
     }
 }
+pub const PEAK_RSS_READABLE_AFTER_EXIT: bool = true;

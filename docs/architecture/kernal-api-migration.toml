@@ -91,7 +91,7 @@ disposition = "extend"
 kernel_capability = "native exit and crash-context classification"
 [[platform_group]]
 source = "crates/zccache-platform/src/platform/process/inspect.rs"
-items = ["is_alive", "executable_path", "cpu_ticks", "peak_rss_bytes"]
+items = ["is_alive", "executable_path", "cpu_ticks", "peak_rss_bytes", "PEAK_RSS_READABLE_AFTER_EXIT"]
 disposition = "extend"
 kernel_capability = "process inspection"
 [[platform_group]]

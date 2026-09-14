@@ -26,3 +26,4 @@ pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
     let result = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V4, std::ptr::from_mut(&mut info).cast()) };
     (result == 0).then_some(info.ri_lifetime_max_phys_footprint)
 }
+pub const PEAK_RSS_READABLE_AFTER_EXIT: bool = false;
