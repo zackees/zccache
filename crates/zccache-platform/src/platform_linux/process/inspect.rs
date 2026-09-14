@@ -9,3 +9,9 @@ pub fn cpu_ticks(pid: u32) -> Option<u64> {
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     Some(fields.get(11)?.parse::<u64>().ok()?.wrapping_add(fields.get(12)?.parse::<u64>().ok()?))
 }
+pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let kib = status.lines().find_map(|line| line.strip_prefix("VmHWM:"))?.trim().strip_suffix("kB")?.trim();
+    Some(kib.parse::<u64>().ok()?.saturating_mul(1024))
+}
+pub const PEAK_RSS_READABLE_AFTER_EXIT: bool = false;

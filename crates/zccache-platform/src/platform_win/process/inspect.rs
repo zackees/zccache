@@ -4,6 +4,13 @@ use std::os::windows::ffi::OsStringExt;
 #[derive(Clone, Copy)]
 struct FileTime { low: u32, high: u32 }
 
+#[repr(C)]
+struct ProcessMemoryCounters {
+    cb: u32, page_fault_count: u32, peak_working_set_size: usize, working_set_size: usize,
+    quota_peak_paged_pool_usage: usize, quota_paged_pool_usage: usize, quota_peak_non_paged_pool_usage: usize,
+    quota_non_paged_pool_usage: usize, pagefile_usage: usize, peak_pagefile_usage: usize,
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
@@ -11,6 +18,7 @@ unsafe extern "system" {
     fn WaitForSingleObject(handle: isize, milliseconds: u32) -> u32;
     fn QueryFullProcessImageNameW(handle: isize, flags: u32, buffer: *mut u16, size: *mut u32) -> i32;
     fn GetProcessTimes(handle: isize, creation: *mut FileTime, exit: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime) -> i32;
+    fn K32GetProcessMemoryInfo(handle: isize, counters: *mut ProcessMemoryCounters, size: u32) -> i32;
 }
 const QUERY: u32 = 0x1000;
 const SYNCHRONIZE: u32 = 0x0010_0000;
@@ -50,3 +58,17 @@ pub fn cpu_ticks(pid: u32) -> Option<u64> {
         (result != 0).then(|| value(kernel).wrapping_add(value(user)))
     }
 }
+pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
+    // SAFETY: handle and the counters output pointer remain live for the call.
+    unsafe {
+        let handle = OpenProcess(QUERY, 0, pid);
+        if handle == 0 { return None; }
+        let size = std::mem::size_of::<ProcessMemoryCounters>() as u32;
+        let mut counters: ProcessMemoryCounters = std::mem::zeroed();
+        counters.cb = size;
+        let result = K32GetProcessMemoryInfo(handle, &mut counters, size);
+        CloseHandle(handle);
+        (result != 0).then_some(counters.peak_working_set_size as u64)
+    }
+}
+pub const PEAK_RSS_READABLE_AFTER_EXIT: bool = true;
