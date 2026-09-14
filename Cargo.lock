@@ -783,7 +783,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -822,7 +822,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1496,7 +1496,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1922,7 +1922,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2688,7 +2688,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.12"
+version = "4.10.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6eee98b1f2f29a7852b77328f097b0a4a7350e93b84f63ba9de6ab942f04bad4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2717,7 +2719,9 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.12"
+version = "4.10.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8a3a322c2972ff33785e73a04c68a1dd4590887a46d4e57b595d8703c14546d"
 dependencies = [
  "blake3",
  "dirs",
@@ -2739,7 +2743,9 @@ dependencies = [
 
 [[package]]
 name = "running-process-protocol"
-version = "4.10.12"
+version = "4.10.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "857a9c98297410fe2b7e085e9e179337c355a2a3f0a2a0a53992e8f7c60e6a52"
 dependencies = [
  "prost",
  "prost-build",
@@ -2772,7 +2778,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3173,10 +3179,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3766,7 +3772,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
