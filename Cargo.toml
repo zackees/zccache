@@ -92,7 +92,7 @@ rkyv = "0.8"
 # Before a release branch, replace it with the exact published version, remove
 # `_vender/kernal-api`, regenerate the lockfile, and validate normally; see
 # `CLAUDE.md` → Temporary dependent subgit integration.
-kernal-api = { path = "_vender/kernal-api", version = "=0.1.0", default-features = false }
+kernal-api = { path = "_vender/kernal-api", version = "=0.1.2", default-features = false }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
