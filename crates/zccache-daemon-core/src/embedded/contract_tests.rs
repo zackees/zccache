@@ -660,6 +660,9 @@ async fn embedded_compile_journals_a_tree_peak_covering_a_heavy_descendant() {
         .expect("shutdown service");
 }
 
+// Only the Unix-gated tree-peak test above calls this; ungated it is dead code
+// on Windows, where CI builds tests with `-D warnings`.
+#[cfg(unix)]
 fn contract_find_journal(dir: &std::path::Path) -> Option<PathBuf> {
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
