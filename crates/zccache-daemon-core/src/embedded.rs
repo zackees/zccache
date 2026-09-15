@@ -17,6 +17,7 @@ use crate::daemon::server::{
 };
 
 pub use crate::audit::{AuditConfig, AuditContext, AuditEvent};
+pub use crate::daemon::compile_journal::ChildMemory;
 pub use crate::daemon::server::compile_resource_gate::{
     HostAdmissionClassifier, HostAdmissionError, HostAdmissionPermit, HostCompilerRequest,
 };
@@ -299,6 +300,12 @@ pub struct CompileResponse {
     pub cached: bool,
     pub cache_outcome: CacheOutcome,
     pub compile_id: String,
+    /// Memory measured for the compiler/tool children this compile spawned:
+    /// the child's own resident high-water mark and the sampled peak of its
+    /// whole live process tree (zccache#1588). Both fields are `None` for a
+    /// cache hit. The same values are journaled; hosts that schedule by
+    /// measured memory read them here instead of parsing the journal.
+    pub child_memory: ChildMemory,
 }
 
 /// Conservative cache outcome exposed by the MVP embedded API.
@@ -330,6 +337,8 @@ pub enum CompileChunk {
         cached: bool,
         cache_outcome: CacheOutcome,
         compile_id: String,
+        /// See [`CompileResponse::child_memory`].
+        child_memory: ChildMemory,
     },
 }
 
@@ -679,12 +688,16 @@ impl ZccacheService {
                 cached,
                 cache_outcome,
                 compile_id,
-            } => done = Some((exit_code, cached, cache_outcome, compile_id)),
+                child_memory,
+            } => done = Some((exit_code, cached, cache_outcome, compile_id, child_memory)),
         })
         .await?;
-        let (exit_code, cached, cache_outcome, compile_id) = done.ok_or_else(|| {
-            EmbeddedError::Compile("streaming compile completed without a Done event".to_string())
-        })?;
+        let (exit_code, cached, cache_outcome, compile_id, child_memory) =
+            done.ok_or_else(|| {
+                EmbeddedError::Compile(
+                    "streaming compile completed without a Done event".to_string(),
+                )
+            })?;
         Ok(CompileResponse {
             exit_code,
             stdout,
@@ -692,6 +705,7 @@ impl ZccacheService {
             cached,
             cache_outcome,
             compile_id,
+            child_memory,
         })
     }
 
@@ -803,6 +817,7 @@ impl ZccacheService {
             cached: response.cached,
             cache_outcome,
             compile_id,
+            child_memory: response.child_memory,
         })
     }
 
@@ -853,6 +868,7 @@ impl ZccacheService {
             cached: response.cached,
             cache_outcome: response.cache_outcome,
             compile_id: response.compile_id,
+            child_memory: response.child_memory,
         });
         Ok(())
     }

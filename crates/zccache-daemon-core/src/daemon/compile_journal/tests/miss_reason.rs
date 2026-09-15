@@ -7,8 +7,9 @@ use std::sync::Arc;
 use crate::protocol::Response;
 
 use super::super::{
-    capture_miss_reason, extract_outcome, miss_reason, record_child_peak_rss, record_context_key,
-    record_miss_reason, CompileJournal, JournalContext, JournalEntry, MissDiff,
+    capture_miss_reason, extract_outcome, miss_reason, record_child_memory, record_child_peak_rss,
+    record_context_key, record_miss_reason, ChildMemory, CompileJournal, JournalContext,
+    JournalEntry, MissDiff,
 };
 use super::wait_for_lines;
 
@@ -157,6 +158,24 @@ async fn compile_scope_captures_the_context_key() {
     assert_eq!(captured, Some("2a".repeat(32)));
 }
 
+/// zccache#1588: both child-memory fields keep their own maximum.
+#[tokio::test]
+async fn compile_scope_keeps_the_largest_of_each_child_memory_field() {
+    let (_, _, _, memory) = capture_miss_reason(Box::pin(async {
+        record_child_memory(ChildMemory {
+            peak_rss_bytes: Some(10 << 20),
+            tree_peak_rss_bytes: Some(900 << 20),
+        });
+        record_child_memory(ChildMemory {
+            peak_rss_bytes: Some(40 << 20),
+            tree_peak_rss_bytes: Some(200 << 20),
+        });
+    }))
+    .await;
+    assert_eq!(memory.peak_rss_bytes, Some(40 << 20));
+    assert_eq!(memory.tree_peak_rss_bytes, Some(900 << 20));
+}
+
 /// soldr#3152: a request can spawn several children (compiler, linker,
 /// archiver); the journal row keeps the largest high-water mark among them.
 #[tokio::test]
@@ -167,10 +186,14 @@ async fn compile_scope_keeps_the_largest_child_peak_rss() {
         record_child_peak_rss(12 << 20);
     }))
     .await;
-    assert_eq!(peak, Some(96 << 20));
+    assert_eq!(peak.peak_rss_bytes, Some(96 << 20));
 
     let (_, _, _, none) = capture_miss_reason(Box::pin(async {})).await;
-    assert_eq!(none, None, "a hit that spawned no child records no peak");
+    assert_eq!(
+        none,
+        ChildMemory::default(),
+        "a hit that spawned no child records no peak"
+    );
 }
 
 // ─── JournalEntry::new miss_reason threading ──────────────────────────────

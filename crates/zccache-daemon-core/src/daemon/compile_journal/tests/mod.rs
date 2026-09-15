@@ -63,6 +63,8 @@ pub(super) fn legacy_entry(
         latency_ns,
         context_key: None,
         child_peak_rss_bytes: None,
+        tree_peak_rss_bytes: None,
+        tree_peak_rss_source: None,
         crate_name: None,
         crate_type: None,
         output_ext: None,

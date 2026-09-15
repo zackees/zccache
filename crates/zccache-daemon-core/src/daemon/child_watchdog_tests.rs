@@ -407,14 +407,48 @@ fn short_sleep_cmd() -> tokio::process::Command {
 async fn watchdog_records_child_peak_rss_into_the_compile_scope() {
     crate::test_support::test_timeout(async {
         let child = piped(short_sleep_cmd()).spawn().expect("spawn");
-        let (output, _, _, peak) =
+        let (output, _, _, memory) =
             crate::daemon::compile_journal::capture_miss_reason(Box::pin(async move {
                 wait_with_output_watchdog(child, "sleep1").await
             }))
             .await;
         output.expect("watchdog wait");
-        let peak = peak.expect("a ~1s child must yield a peak RSS sample");
+        let peak = memory
+            .peak_rss_bytes
+            .expect("a ~1s child must yield a peak RSS sample");
         assert!(peak > 0, "peak RSS must be non-zero, got {peak}");
+    })
+    .await;
+}
+
+/// zccache#1588: a small child whose descendant holds ~64 MB. The sampled tree
+/// peak covers the descendant; the child's own high-water mark does not.
+#[cfg(unix)]
+#[tokio::test]
+async fn watchdog_records_a_tree_peak_that_covers_a_heavy_descendant() {
+    crate::test_support::test_timeout(async {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            r#"sh -c 'x=$(head -c 64000000 /dev/zero | tr "\000" a); sleep 3; true' & wait"#,
+        ]);
+        let child = piped(cmd).spawn().expect("spawn");
+        let (output, _, _, memory) =
+            crate::daemon::compile_journal::capture_miss_reason(Box::pin(async move {
+                wait_with_output_watchdog(child, "heavy-tree").await
+            }))
+            .await;
+        output.expect("watchdog wait");
+        let tree = memory.tree_peak_rss_bytes.expect("tree peak sampled");
+        let own = memory.peak_rss_bytes.expect("own peak sampled");
+        assert!(
+            tree >= 48 * 1024 * 1024,
+            "tree peak {tree} missed the heavy descendant"
+        );
+        assert!(
+            tree > own,
+            "tree peak {tree} must exceed the child's own {own}"
+        );
     })
     .await;
 }

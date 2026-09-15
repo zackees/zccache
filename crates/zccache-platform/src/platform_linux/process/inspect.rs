@@ -15,3 +15,26 @@ pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
     Some(kib.parse::<u64>().ok()?.saturating_mul(1024))
 }
 pub const PEAK_RSS_READABLE_AFTER_EXIT: bool = false;
+pub const MAX_TREE_PROCESSES: usize = 4096;
+fn rss_bytes(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let kib = status.lines().find_map(|line| line.strip_prefix("VmRSS:"))?.trim().strip_suffix("kB")?.trim();
+    Some(kib.parse::<u64>().ok()?.saturating_mul(1024))
+}
+pub fn tree_rss_bytes(pid: u32) -> Option<u64> {
+    let mut total = rss_bytes(pid)?;
+    let mut seen = std::collections::HashSet::from([pid]);
+    let mut stack = vec![pid];
+    while let Some(parent) = stack.pop() {
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{parent}/task")) else { continue };
+        for task in tasks.flatten() {
+            let Ok(children) = std::fs::read_to_string(task.path().join("children")) else { continue };
+            for child in children.split_whitespace().filter_map(|value| value.parse::<u32>().ok()) {
+                if seen.len() >= MAX_TREE_PROCESSES || !seen.insert(child) { continue; }
+                if let Some(bytes) = rss_bytes(child) { total = total.saturating_add(bytes); }
+                stack.push(child);
+            }
+        }
+    }
+    Some(total)
+}

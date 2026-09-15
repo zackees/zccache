@@ -85,27 +85,32 @@ const STALL_TICK: Duration = Duration::from_secs(5);
 /// `/proc/<pid>/status` / `proc_pid_rusage` / `GetProcessMemoryInfo` read.
 const MEMORY_SAMPLE_TICK: Duration = Duration::from_millis(250);
 
-/// The largest peak-RSS sample taken for one child, published to the
-/// enclosing compile scope when the wait ends — on every return path,
+/// The memory samples taken for one child: its own high-water mark and the
+/// largest resident total of its live process tree (zccache#1588), published
+/// to the enclosing compile scope when the wait ends — on every return path,
 /// including errors and cancellation, because it publishes from `Drop`.
-struct PeakRssSample(Option<u64>);
+struct ChildMemorySample(crate::daemon::compile_journal::ChildMemory);
 
-impl PeakRssSample {
+impl ChildMemorySample {
     fn observe(&mut self, pid: Option<u32>) {
+        let Some(pid) = pid else {
+            return;
+        };
         // A zero reading is an image caught mid-exec, not a measurement.
-        if let Some(bytes) = pid
-            .and_then(crate::platform::process::inspect::peak_rss_bytes)
-            .filter(|&bytes| bytes > 0)
-        {
-            self.0 = Some(self.0.map_or(bytes, |seen| seen.max(bytes)));
-        }
+        let sample = crate::daemon::compile_journal::ChildMemory {
+            peak_rss_bytes: crate::platform::process::inspect::peak_rss_bytes(pid)
+                .filter(|&bytes| bytes > 0),
+            tree_peak_rss_bytes: crate::platform::process::inspect::tree_rss_bytes(pid)
+                .filter(|&bytes| bytes > 0),
+        };
+        self.0 = self.0.merge(sample);
     }
 }
 
-impl Drop for PeakRssSample {
+impl Drop for ChildMemorySample {
     fn drop(&mut self) {
-        if let Some(bytes) = self.0 {
-            crate::daemon::compile_journal::record_child_peak_rss(bytes);
+        if self.0 != crate::daemon::compile_journal::ChildMemory::default() {
+            crate::daemon::compile_journal::record_child_memory(self.0);
         }
     }
 }
@@ -258,7 +263,7 @@ async fn watchdog_inner_impl(
     // so a Unix sample can never read a reused pid. Where the platform keeps a
     // held handle's final peak readable (Windows), it is re-read once after
     // exit.
-    let mut peak_rss = PeakRssSample(None);
+    let mut peak_rss = ChildMemorySample(crate::daemon::compile_journal::ChildMemory::default());
     let mut memory_tick = tokio::time::interval(MEMORY_SAMPLE_TICK);
     memory_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut stdout = child.stdout.take();
