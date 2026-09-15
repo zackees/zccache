@@ -11,6 +11,12 @@ struct ProcessMemoryCounters {
     quota_non_paged_pool_usage: usize, pagefile_usage: usize, peak_pagefile_usage: usize,
 }
 
+#[repr(C)]
+struct ProcessEntry32W {
+    size: u32, usage: u32, process_id: u32, default_heap_id: usize, module_id: u32, threads: u32,
+    parent_process_id: u32, pri_class_base: i32, flags: u32, exe_file: [u16; 260],
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
@@ -19,6 +25,9 @@ unsafe extern "system" {
     fn QueryFullProcessImageNameW(handle: isize, flags: u32, buffer: *mut u16, size: *mut u32) -> i32;
     fn GetProcessTimes(handle: isize, creation: *mut FileTime, exit: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime) -> i32;
     fn K32GetProcessMemoryInfo(handle: isize, counters: *mut ProcessMemoryCounters, size: u32) -> i32;
+    fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+    fn Process32FirstW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
+    fn Process32NextW(snapshot: isize, entry: *mut ProcessEntry32W) -> i32;
 }
 const QUERY: u32 = 0x1000;
 const SYNCHRONIZE: u32 = 0x0010_0000;
@@ -72,3 +81,52 @@ pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
     }
 }
 pub const PEAK_RSS_READABLE_AFTER_EXIT: bool = true;
+pub const MAX_TREE_PROCESSES: usize = 4096;
+const SNAP_PROCESS: u32 = 0x0000_0002;
+const INVALID_HANDLE: isize = -1;
+fn working_set_bytes(pid: u32) -> Option<u64> {
+    // SAFETY: handle and the counters output pointer remain live for the call.
+    unsafe {
+        let handle = OpenProcess(QUERY, 0, pid);
+        if handle == 0 { return None; }
+        let size = std::mem::size_of::<ProcessMemoryCounters>() as u32;
+        let mut counters: ProcessMemoryCounters = std::mem::zeroed();
+        counters.cb = size;
+        let result = K32GetProcessMemoryInfo(handle, &mut counters, size);
+        CloseHandle(handle);
+        (result != 0).then_some(counters.working_set_size as u64)
+    }
+}
+fn parent_map() -> std::collections::HashMap<u32, Vec<u32>> {
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    // SAFETY: the snapshot handle is checked and closed exactly once; the entry is a sized POD.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(SNAP_PROCESS, 0);
+        if snapshot == INVALID_HANDLE || snapshot == 0 { return children; }
+        let mut entry: ProcessEntry32W = std::mem::zeroed();
+        entry.size = std::mem::size_of::<ProcessEntry32W>() as u32;
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            if entry.process_id != entry.parent_process_id {
+                children.entry(entry.parent_process_id).or_default().push(entry.process_id);
+            }
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    children
+}
+pub fn tree_rss_bytes(pid: u32) -> Option<u64> {
+    let mut total = working_set_bytes(pid)?;
+    let children = parent_map();
+    let mut seen = std::collections::HashSet::from([pid]);
+    let mut stack = vec![pid];
+    while let Some(parent) = stack.pop() {
+        for &child in children.get(&parent).map(Vec::as_slice).unwrap_or_default() {
+            if seen.len() >= MAX_TREE_PROCESSES || !seen.insert(child) { continue; }
+            if let Some(bytes) = working_set_bytes(child) { total = total.saturating_add(bytes); }
+            stack.push(child);
+        }
+    }
+    Some(total)
+}

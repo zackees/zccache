@@ -93,6 +93,51 @@ fn live_child_peak_rss_is_positive() {
     child.wait().expect("reap child");
 }
 
+/// zccache#1588: the tree reading always includes the root process itself.
+#[test]
+fn tree_rss_includes_the_root_process() {
+    let mut child = spawn::sleeping_child(Duration::from_secs(30)).expect("spawn child");
+    let tree = inspect::tree_rss_bytes(child.id()).expect("tree RSS reading");
+    assert!(tree > 0, "a live process tree has non-zero resident memory");
+    child.kill().expect("kill child");
+    child.wait().expect("reap child");
+}
+
+/// zccache#1588: a small child whose descendant holds ~64 MB. The child's own
+/// high-water mark stays small; the tree reading must cover the descendant,
+/// which is the shape of `rustc` -> `cc` -> `ld`.
+#[cfg(unix)]
+#[test]
+fn tree_rss_counts_a_live_memory_heavy_descendant() {
+    let mut child = std::process::Command::new("sh")
+        .args([
+            "-c",
+            r#"sh -c 'x=$(head -c 64000000 /dev/zero | tr "\000" a); sleep 3; true' & wait"#,
+        ])
+        .spawn()
+        .expect("spawn heavy tree");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut tree = 0;
+    while std::time::Instant::now() < deadline {
+        tree = inspect::tree_rss_bytes(child.id()).unwrap_or(0);
+        if tree >= 48 * 1024 * 1024 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let own_peak = inspect::peak_rss_bytes(child.id()).expect("own peak");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        tree >= 48 * 1024 * 1024,
+        "tree RSS {tree} missed the ~64 MB descendant"
+    );
+    assert!(
+        own_peak < 48 * 1024 * 1024,
+        "the child itself stayed small, got {own_peak}"
+    );
+}
+
 /// Within one process image the reading tracks the high-water mark: touching
 /// memory raises it past the touched size, and releasing that memory does not
 /// take it back down.

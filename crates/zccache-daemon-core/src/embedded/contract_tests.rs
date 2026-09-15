@@ -592,6 +592,88 @@ async fn host_event_sink_receives_redacted_events_when_file_audit_is_off() {
         .expect("shutdown");
 }
 
+/// zccache#1588: a compiler whose descendant does the heavy work (the
+/// `rustc` -> `cc` -> `ld` shape) journals a tree peak covering it.
+#[cfg(unix)]
+#[tokio::test]
+async fn embedded_compile_journals_a_tree_peak_covering_a_heavy_descendant() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = TempDir::new().expect("temp cache root");
+    let compiler = temp.path().join("linking-compiler");
+    std::fs::write(&compiler, "#!/bin/sh\nsh -c 'x=$(head -c 64000000 /dev/zero | tr \"\\000\" a); sleep 3; true' & wait\nexit 3\n")
+        .expect("write compiler");
+    std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755))
+        .expect("make compiler executable");
+    let service = ZccacheService::start(config(&temp, "embedded-tree-peak", None))
+        .await
+        .expect("service start");
+    let response = service
+        .compile(CompileRequest {
+            audit: AuditContext::new(
+                crate::audit::AuditId::new("tree-peak-run").expect("non-empty"),
+                crate::audit::AuditId::new("tree-peak-trace").expect("non-empty"),
+            ),
+            compiler: compiler.into(),
+            args: Vec::new(),
+            cwd: temp.path().into(),
+            env: Vec::new(),
+            stdin: Vec::new(),
+        })
+        .await
+        .expect("compiler returns a compile response");
+    assert_eq!(response.exit_code, 3);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let row = loop {
+        let row = contract_find_journal(temp.path())
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|c| c.lines().next().map(str::to_owned));
+        match row {
+            Some(row) => break row,
+            None if std::time::Instant::now() > deadline => {
+                panic!("embedded compile produced no compile_journal.jsonl record")
+            }
+            None => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&row).expect("valid JSON journal line");
+    let tree = v["tree_peak_rss_bytes"]
+        .as_u64()
+        .expect("tree peak journaled");
+    let own = v["child_peak_rss_bytes"]
+        .as_u64()
+        .expect("child peak journaled");
+    assert!(
+        tree >= 48 * 1024 * 1024,
+        "tree peak {tree} missed the heavy descendant: {v}"
+    );
+    assert!(
+        tree > own,
+        "tree peak must exceed the compiler's own peak: {v}"
+    );
+    assert_eq!(v["tree_peak_rss_source"], "sampled");
+
+    service
+        .shutdown(ShutdownMode::Graceful)
+        .await
+        .expect("shutdown service");
+}
+
+fn contract_find_journal(dir: &std::path::Path) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = contract_find_journal(&path) {
+                return Some(found);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("compile_journal.jsonl") {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// soldr#3152: a compiler that actually runs must land its measured peak RSS
 /// on the embedded journal row — the calibration input for memory-aware
 /// admission.

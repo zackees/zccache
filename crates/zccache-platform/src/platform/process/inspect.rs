@@ -24,6 +24,24 @@ pub fn peak_rss_bytes(pid: u32) -> Option<u64> {
     platform_imp::process::inspect::peak_rss_bytes(pid)
 }
 
+/// Current resident bytes of `pid` plus every live descendant (zccache#1588).
+///
+/// The per-process figure is current resident memory, not a high-water mark:
+/// Linux `VmRSS`, macOS `ri_resident_size`, Windows `WorkingSetSize`.
+/// Descendants come from `/proc/<pid>/task/*/children` on Linux,
+/// `proc_listchildpids` on macOS and a Toolhelp32 snapshot on Windows, so a
+/// caller that samples this repeatedly and keeps the maximum gets a sampled
+/// peak for the whole tree. That is the only way the memory of a `rustc` ->
+/// `cc` -> `ld` link shows up: the linker is a grandchild. `None` when `pid`
+/// itself cannot be read; the walk is capped at [`MAX_TREE_PROCESSES`].
+pub fn tree_rss_bytes(pid: u32) -> Option<u64> {
+    platform_imp::process::inspect::tree_rss_bytes(pid)
+}
+
+/// Upper bound on processes [`tree_rss_bytes`] visits in one call, so a fork
+/// bomb under a compiler cannot turn one sample into an unbounded walk.
+pub const MAX_TREE_PROCESSES: usize = platform_imp::process::inspect::MAX_TREE_PROCESSES;
+
 /// Whether [`peak_rss_bytes`] stays exact for a child that has exited but
 /// whose handle is still held. True on Windows, where the retained process
 /// handle keeps the pid and its final peak readable. False on Unix, where the

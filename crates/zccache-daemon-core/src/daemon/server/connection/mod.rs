@@ -59,7 +59,7 @@ pub(in crate::daemon::server) struct PendingJournalContext {
     context: JournalContext,
     attributed_miss_reason: Option<&'static str>,
     context_key: Option<String>,
-    child_peak_rss_bytes: Option<u64>,
+    child_memory: crate::daemon::compile_journal::ChildMemory,
 }
 
 impl PendingJournalContext {
@@ -67,13 +67,13 @@ impl PendingJournalContext {
         context: JournalContext,
         attributed_miss_reason: Option<&'static str>,
         context_key: Option<String>,
-        child_peak_rss_bytes: Option<u64>,
+        child_memory: crate::daemon::compile_journal::ChildMemory,
     ) -> Self {
         Self {
             context,
             attributed_miss_reason,
             context_key,
-            child_peak_rss_bytes,
+            child_memory,
         }
     }
 }
@@ -449,7 +449,7 @@ pub(super) async fn handle_connection(
                 context: ctx,
                 attributed_miss_reason,
                 context_key,
-                child_peak_rss_bytes,
+                child_memory,
             } = pending;
             let termination_signal = crate::daemon::compile_journal::termination_signal(&response);
             let (outcome, exit_code, miss_reason) = extract_outcome(&response)?;
@@ -480,7 +480,7 @@ pub(super) async fn handle_connection(
                 profile_on,
                 context_key,
                 termination_signal,
-                child_peak_rss_bytes,
+                child_memory,
             ))
         });
         if let Some((ctx, _, _, latency_ns, reason, _, _, _, _, _)) = journal_payload.as_ref() {
@@ -504,13 +504,13 @@ pub(super) async fn handle_connection(
             profile_on,
             context_key,
             termination_signal,
-            child_peak_rss_bytes,
+            child_memory,
         )) = journal_payload
         {
             let entry = JournalEntry::new(ctx, outcome, exit_code, latency_ns, miss_reason)
                 .with_context_key(context_key)
                 .with_termination_signal(termination_signal)
-                .with_child_peak_rss_bytes(child_peak_rss_bytes);
+                .with_child_memory(child_memory);
             // Issue #256: extended-journal fields are populated only
             // for sessions that opted in via session-start --profile.
             //
