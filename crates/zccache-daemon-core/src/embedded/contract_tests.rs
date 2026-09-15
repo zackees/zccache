@@ -623,6 +623,16 @@ async fn embedded_compile_journals_a_tree_peak_covering_a_heavy_descendant() {
         .await
         .expect("compiler returns a compile response");
     assert_eq!(response.exit_code, 3);
+    // zccache#1588: the host receives the same measurement on the response, so
+    // an embedding host can learn a unit's peak without reading the journal.
+    let host_tree = response
+        .child_memory
+        .tree_peak_rss_bytes
+        .expect("tree peak on the compile response");
+    assert!(
+        host_tree >= 48 * 1024 * 1024,
+        "response tree peak {host_tree} missed the heavy descendant"
+    );
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let row = loop {

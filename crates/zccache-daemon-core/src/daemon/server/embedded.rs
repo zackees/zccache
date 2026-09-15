@@ -355,6 +355,7 @@ impl EmbeddedDaemon {
                     stdout,
                     stderr,
                     cached,
+                    child_memory,
                 })
             }
             Response::Error { message } => {

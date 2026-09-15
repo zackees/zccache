@@ -107,6 +107,8 @@ pub(crate) struct EmbeddedCompileResult {
     pub(crate) stdout: Arc<Vec<u8>>,
     pub(crate) stderr: Arc<Vec<u8>>,
     pub(crate) cached: bool,
+    /// Memory measured for the children this compile spawned (zccache#1588).
+    pub(crate) child_memory: crate::daemon::compile_journal::ChildMemory,
 }
 
 pub(crate) struct EmbeddedStatsSnapshot {
