@@ -60,6 +60,12 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
 heap-profile = ["dep:mimalloc-pprof"]
+# Re-export `mimalloc_pprof` so an embedding host (soldr) can use it as its
+# `#[global_allocator]` without adding a separate, version-drifted
+# `mimalloc-pprof` pin of its own (soldr#3053). The dependency carries default
+# features, i.e. mimalloc-pprof's `pprof` (`MI_PPROF=1`) is on, so the
+# re-exported `MiMalloc` exposes the exact allocator counters.
+mimalloc-allocator = ["dep:mimalloc-pprof"]
 # The release binary hosts both daemons behind argv[0] dispatch. The legacy
 # daemon [[bin]] features remain available as source-build/test shims.
 zccache-bin = ["cli", "download-daemon-entry", "dep:mimalloc-pprof"]
