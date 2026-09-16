@@ -174,6 +174,8 @@ def write_publish_lib_rs(
 //! still get parallel compilation from the internal workspace crates.
 
 {internal_declarations}
+#[cfg(feature = "mimalloc-allocator")]
+pub use mimalloc_pprof;
 /// Issue zccache#926 - durable audit JSONL writer for the embedded service.
 pub use daemon_core::audit_writer;
 #[cfg(feature = "ci")]
