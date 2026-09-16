@@ -17,7 +17,7 @@ fn rustc_depinfo_exists(rustc_args: &crate::depgraph::RustcParsedArgs, cwd: &Pat
     if !rustc_args.emit_types.iter().any(|emit| emit == "dep-info") {
         return false;
     }
-    let name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let name = rustc_args.effective_crate_name();
     let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
     let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
     dir.join(format!("{name}{ext_suffix}.d")).exists()

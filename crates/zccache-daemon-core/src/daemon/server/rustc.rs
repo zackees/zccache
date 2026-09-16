@@ -487,7 +487,7 @@ pub(super) fn rustc_depfile_output_path(
     {
         return Some(path.clone());
     }
-    let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let crate_name = rustc_args.effective_crate_name();
     let extra_filename = rustc_args.extra_filename.as_deref().unwrap_or("");
     let output_dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
     Some(
@@ -516,7 +516,7 @@ pub(super) fn rustc_expected_output_paths(
         .find(|(kind, _)| kind == "link")
         .map(|(_, path)| path.clone());
     let mut paths = vec![explicit_link.unwrap_or_else(|| NormalizedPath::new(primary_output_path))];
-    let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let crate_name = rustc_args.effective_crate_name();
     let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
     let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
 
@@ -759,7 +759,7 @@ pub(super) fn collect_rustc_output_files(
     }];
 
     // Find additional outputs based on --emit types
-    let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let crate_name = rustc_args.effective_crate_name();
     let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
     let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
 

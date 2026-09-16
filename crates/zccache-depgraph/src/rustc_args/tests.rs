@@ -47,6 +47,22 @@ fn parse_crate_name() {
 }
 
 #[test]
+fn effective_crate_name_prefers_explicit_crate_name() {
+    let parsed = parse_rustc_args(&args(&["--crate-name", "mylib", "src/lib.rs"]), &cwd());
+    assert_eq!(parsed.effective_crate_name(), "mylib");
+}
+
+#[test]
+fn effective_crate_name_defaults_to_source_file_stem() {
+    // soldr#3241: without `--crate-name`, rustc derives the crate name from
+    // the source file stem. `effective_crate_name` must match, or the staged
+    // plan declares `libunknown.rmeta` for a single-file `--emit metadata`
+    // compile and fails as a missing primary output.
+    let parsed = parse_rustc_args(&args(&["src/some_file.rs"]), &cwd());
+    assert_eq!(parsed.effective_crate_name(), "some_file");
+}
+
+#[test]
 fn parse_emit_types() {
     let parsed = parse_rustc_args(
         &args(&["--emit=dep-info,metadata,link", "src/lib.rs"]),
