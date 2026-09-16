@@ -719,18 +719,17 @@ pub fn parse_rustc_plan_with_syntax(
         // `-C extra-filename` suffix are resolved; the filename dispatch
         // itself is identical, so it lives in one place.
         //
-        // Without `--out-dir` rustc writes into the cwd, an absent
-        // `--crate-name` falls back to the source file stem, and no
-        // `extra-filename` suffix applies.
+        // `--crate-name` defaults to the source file stem, mirroring rustc: a
+        // bare `rustc --crate-type lib --emit metadata foo.rs` writes
+        // `libfoo.rmeta`, whether or not `--out-dir` redirects the directory.
+        // Without `--out-dir` rustc writes into the cwd and no `extra-filename`
+        // suffix applies; with `--out-dir` only the suffix resolution changes.
+        let name = crate_name
+            .as_deref()
+            .unwrap_or_else(|| syntax.file_stem(&source).unwrap_or("unknown"));
         let (name, suffix) = if out_dir.is_some() {
-            (
-                crate_name.as_deref().unwrap_or("unknown"),
-                extra_filename.as_deref().unwrap_or(""),
-            )
+            (name, extra_filename.as_deref().unwrap_or(""))
         } else {
-            let name = crate_name
-                .as_deref()
-                .unwrap_or_else(|| syntax.file_stem(&source).unwrap_or("unknown"));
             (name, "")
         };
         let filename = rustc_primary_output_filename(&RustcOutputShape {

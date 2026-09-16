@@ -408,6 +408,36 @@ fn rustc_output_from_out_dir() {
 }
 
 #[test]
+fn rustc_metadata_only_without_crate_name_uses_file_stem() {
+    // soldr#3241: a single-file `rustc --crate-type lib --emit metadata
+    // some_file.rs` with no `--crate-name` defaults the crate name to the
+    // source file stem, so the primary output is `libsome_file.rmeta`, not
+    // `libunknown.rmeta`. The staged plan must agree with rustc's actual
+    // output or the post-compile collector finds nothing and reports a
+    // missing primary output.
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-type",
+            "lib",
+            "--emit=metadata",
+            "--out-dir",
+            "/tmp/probe",
+            "some_file.rs",
+        ]),
+    );
+    match result {
+        ParsedInvocation::Cacheable(c) => {
+            assert_eq!(
+                c.output_file,
+                NormalizedPath::new("/tmp/probe/libsome_file.rmeta")
+            );
+        }
+        other => panic!("expected cacheable, got: {other:?}"),
+    }
+}
+
+#[test]
 fn rustc_explicit_emit_link_path_is_the_primary_output() {
     let emit_arg = if cfg!(windows) {
         r"--emit=link=C:\tmp\custom.rlib,dep-info=C:\tmp\custom.d".to_string()
