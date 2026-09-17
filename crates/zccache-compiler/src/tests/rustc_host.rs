@@ -13,10 +13,13 @@ fn lexical_path_syntax_is_independent_of_compiler_host() {
         RustcPathSyntax::Unix.file_stem(r"C:\src\fixture.rs"),
         Some(r"C:\src\fixture")
     );
-    assert!(RustcPathSyntax::Windows.is_dylint_library_dir(Some(r"C:\dylint\libraries\out")));
-    assert!(!RustcPathSyntax::Unix.is_dylint_library_dir(Some(r"C:\dylint\libraries\out")));
     assert!(RustcPathSyntax::Unix.is_dylint_linker(Some("/tools/dylint-link.exe")));
-    assert!(!RustcPathSyntax::Unix.is_dylint_library_dir(Some("dylint/../libraries")));
+    // zackees/soldr#3044: the Dylint cdylib decision no longer consults the
+    // output tree at all, so the only host-sensitive lexical fact left is
+    // the file stem. `C:\...\dylint-link` is one component under Unix
+    // syntax and a real file stem under Windows syntax.
+    assert!(RustcPathSyntax::Windows.is_dylint_linker(Some(r"C:\tools\dylint-link.exe")));
+    assert!(!RustcPathSyntax::Unix.is_dylint_linker(Some(r"C:\tools\dylint-link.exe")));
 }
 
 #[test]

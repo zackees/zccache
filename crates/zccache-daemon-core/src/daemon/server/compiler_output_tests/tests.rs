@@ -117,6 +117,186 @@ mod dylint_sidecar_tests {
         let without_identity = rustc_expected_output_paths(&parsed, &primary, cwd, None);
         assert_eq!(without_identity, vec![NormalizedPath::new(primary)]);
     }
+
+    /// zackees/soldr#3044: widen the Dylint cdylib path gate to
+    /// `dylint/tests` (dylint's own test-crate builds), not only
+    /// `dylint/libraries`. This is the `dylint/tests` sibling of
+    /// `perf_dylint_cdylib_models_toolchain_sidecar_as_complete_output_set`
+    /// above -- every other input stays identical, only the out-dir tree
+    /// changes. The libraries-tree assertions above are unchanged in
+    /// substance, per soldr#3039's acceptance table.
+    #[test]
+    fn perf_dylint_tests_tree_cdylib_models_toolchain_sidecar() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
+        let cwd = Path::new("/repo");
+        let out_dir =
+            "/repo/target/dylint/tests/ban_raw_process_creation/target/nightly/release/deps";
+        let args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/dylint-link".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        let extension = if crate::platform::host::is_macos() {
+            "dylib"
+        } else {
+            "so"
+        };
+        let primary = Path::new(out_dir).join(format!("liblint.{extension}"));
+        let env = vec![
+            ("CARGO_PKG_NAME".to_string(), "lint".to_string()),
+            (
+                "RUSTUP_TOOLCHAIN".to_string(),
+                "nightly-2026-01-18-x86_64-unknown-linux-gnu".to_string(),
+            ),
+        ];
+
+        let outputs = rustc_expected_output_paths(&parsed, &primary, cwd, Some(&env));
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0], NormalizedPath::new(&primary));
+        assert!(outputs[1].ends_with(format!(
+            "release/liblint@nightly-2026-01-18-x86_64-unknown-linux-gnu.{extension}"
+        )));
+
+        let without_identity = rustc_expected_output_paths(&parsed, &primary, cwd, None);
+        assert_eq!(without_identity, vec![NormalizedPath::new(primary)]);
+    }
+
+    /// zackees/soldr#3044: `is_dylint_cdylib_args` must also recognise the
+    /// `dylint/tests` tree so the linker-hash key material
+    /// (`add_dylint_linker_key_material`) is applied there too, not only
+    /// under `dylint/libraries`.
+    #[test]
+    fn dylint_linker_key_material_is_applied_in_the_tests_tree() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
+        let cwd = Path::new("/repo");
+        let out_dir =
+            "/repo/target/dylint/tests/ban_raw_process_creation/target/nightly/release/deps";
+        let args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/dylint-link".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, cwd);
+        assert!(is_dylint_cdylib_args(&parsed));
+
+        // Over-widening guard: a non-dylint-link linker under the same
+        // tests-tree out-dir must not be treated as a dylint cdylib build.
+        let non_dylint_linker_args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/cc".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let non_dylint_linker_parsed =
+            crate::depgraph::parse_rustc_args(&non_dylint_linker_args, cwd);
+        assert!(!is_dylint_cdylib_args(&non_dylint_linker_parsed));
+
+        // Over-widening guard: a non-empty extra-filename must not be
+        // treated as a dylint cdylib build either -- this is the linker-hash
+        // key material's isolation being proven still applies outside
+        // `dylint/libraries`.
+        let extra_filename_args = vec![
+            "--crate-name=lint".to_string(),
+            "--crate-type=cdylib".to_string(),
+            "--emit=link".to_string(),
+            format!("--out-dir={out_dir}"),
+            "-Clinker=/tools/dylint-link".to_string(),
+            "-Cextra-filename=-9a1b2c3d".to_string(),
+            "src/lib.rs".to_string(),
+        ];
+        let extra_filename_parsed = crate::depgraph::parse_rustc_args(&extra_filename_args, cwd);
+        assert!(!is_dylint_cdylib_args(&extra_filename_parsed));
+    }
+
+    /// zackees/soldr#3044 acceptance item 4. `out_dir` is deliberately
+    /// excluded from the rustc context key (see the "non-cache-key state
+    /// (out_dir excluded; ...)" comment in
+    /// `crates/zccache-depgraph/src/context/mod.rs`), so this test does NOT
+    /// assert that the libraries-tree and tests-tree keys differ by
+    /// out-dir -- that assertion would be false and would encode a wrong
+    /// model. It asserts the isolation that actually exists: per
+    /// `dylint-link`/nightly identity, per driver-nightly compiler identity,
+    /// and with-vs-without the dylint linker key material applied.
+    #[test]
+    fn dylint_cdylib_keys_stay_isolated_per_driver_and_linker() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
+        let cwd = Path::new("/repo");
+        let out_dir =
+            "/repo/target/dylint/tests/ban_raw_process_creation/target/nightly/release/deps";
+        let parse = || {
+            let args = vec![
+                "--crate-name=lint".to_string(),
+                "--crate-type=cdylib".to_string(),
+                "--emit=link".to_string(),
+                format!("--out-dir={out_dir}"),
+                "-Clinker=/tools/dylint-link".to_string(),
+                "src/lib.rs".to_string(),
+            ];
+            crate::depgraph::parse_rustc_args(&args, cwd)
+        };
+
+        let key_with_linker_hash = |linker_hash: ContentHash, compiler_hash: ContentHash| {
+            let mut parsed = parse();
+            add_dylint_linker_key_material(&mut parsed, linker_hash);
+            crate::depgraph::RustcCompileContext::from_parsed_args(&parsed, &[], compiler_hash)
+                .context_key()
+        };
+
+        // (a) different `dylint-link`/nightly identities isolate the key.
+        assert_ne!(
+            key_with_linker_hash(
+                ContentHash::from_bytes([1; 32]),
+                ContentHash::from_bytes([9; 32])
+            ),
+            key_with_linker_hash(
+                ContentHash::from_bytes([2; 32]),
+                ContentHash::from_bytes([9; 32])
+            ),
+        );
+
+        // (b) different driver-nightly (compiler) identities isolate the key.
+        assert_ne!(
+            key_with_linker_hash(
+                ContentHash::from_bytes([1; 32]),
+                ContentHash::from_bytes([9; 32])
+            ),
+            key_with_linker_hash(
+                ContentHash::from_bytes([1; 32]),
+                ContentHash::from_bytes([10; 32])
+            ),
+        );
+
+        // (c) applying the dylint linker key material changes the key
+        // relative to the same fixture without it -- this is why t5's
+        // `is_dylint_cdylib_args` widening to `dylint/tests` matters for
+        // correctness, not only for cache-hit rate.
+        let without_material = crate::depgraph::RustcCompileContext::from_parsed_args(
+            &parse(),
+            &[],
+            ContentHash::from_bytes([9; 32]),
+        )
+        .context_key();
+        let with_material = key_with_linker_hash(
+            ContentHash::from_bytes([1; 32]),
+            ContentHash::from_bytes([9; 32]),
+        );
+        assert_ne!(without_material, with_material);
+    }
 }
 
 #[test]
