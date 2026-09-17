@@ -640,12 +640,23 @@ pub fn parse_rustc_plan_with_syntax(
     // The Dylint bootstrap is the only cdylib form whose full output set is
     // modeled. Keep it host-only and reject extra-filename because
     // dylint-link's package-name guard would not create the sidecar.
+    //
+    // zackees/soldr#3044: the gate is deliberately NOT keyed on the output
+    // tree. `-C linker=dylint-link` is what identifies a Dylint cdylib —
+    // dylint only ever installs that linker for its own lint libraries — and
+    // dylint writes those libraries into several trees: `dylint/libraries`
+    // for a workspace's declared lints, and `dylint/tests/<name>/target/...`
+    // when dylint builds a lint's own test crate. Requiring a
+    // `dylint`/`libraries` component pair therefore recorded every
+    // tests-tree lint cdylib as `uncacheable_input` even though its full
+    // output set is modeled identically. The remaining conjuncts (host,
+    // sole `cdylib` crate type, no `--target`, empty `-C extra-filename`)
+    // still hold the shape narrow.
     let is_dylint_cdylib = host != RustcHost::Windows
         && crate_types == ["cdylib"]
         && target.is_none()
         && extra_filename.as_deref().is_none_or(str::is_empty)
-        && syntax.is_dylint_linker(linker.as_deref())
-        && syntax.is_dylint_library_dir(out_dir.as_deref());
+        && syntax.is_dylint_linker(linker.as_deref());
 
     // Check all crate types are cacheable.
     for ct in &crate_types {

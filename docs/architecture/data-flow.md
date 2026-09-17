@@ -270,13 +270,22 @@ lint output.
 
 Dylint's earlier lint-library bootstrap is a separate, narrowly modeled Rust
 `cdylib` lane on Linux and macOS. General `cdylib` and every Windows `cdylib`
-remain non-cacheable. The narrow lane requires the isolated
-`target/dylint/libraries/...` output tree, host compilation, no extra filename,
-and `dylint-link` as the linker. Its key includes the linker binary and link
-arguments. The artifact set contains both rustc's declared dynamic library and
-the toolchain-qualified sidecar that `dylint-link` byte-copies for Dylint to
-load. Missing package/toolchain identity fails back to the direct compiler
-path, so a hit cannot silently omit the sidecar.
+remain non-cacheable. The narrow lane requires `dylint-link` as the linker,
+host compilation, `cdylib` as the sole crate type, and no extra filename. Its
+key includes the linker binary and link arguments. The artifact set contains
+both rustc's declared dynamic library and the toolchain-qualified sidecar that
+`dylint-link` byte-copies for Dylint to load. Missing package/toolchain
+identity fails back to the direct compiler path, so a hit cannot silently omit
+the sidecar.
+
+The output tree is deliberately not part of that decision (zackees/soldr#3044).
+Dylint installs `dylint-link` only for its own lint libraries, but it writes
+them into more than one tree: `target/dylint/libraries/...` for a workspace's
+declared lints, and `target/dylint/tests/<lint>/target/...` when it builds a
+lint's own test crate. Requiring a `dylint`/`libraries` component pair
+therefore recorded every tests-tree lint `cdylib` as `uncacheable_input` while
+adding nothing the linker name had not already established. The linker is the
+identifying signal; the remaining conjuncts keep the lane narrow.
 
 This cache is separate from Cargo incremental compilation:
 
