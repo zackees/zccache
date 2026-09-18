@@ -304,7 +304,9 @@ fn run_server(args: Args) {
         mutable_state_dir = %daemon_state_root.display(),
         "resolved daemon cache state"
     );
-    crate::core::defender::maybe_emit_first_run_banner(cache_root.as_path());
+    // Off the critical path: the PowerShell query can outlive the CLI's
+    // lockfile grace (see `spawn_first_run_banner`).
+    crate::core::defender::spawn_first_run_banner(cache_root.clone());
 
     #[expect(
         clippy::expect_used,
