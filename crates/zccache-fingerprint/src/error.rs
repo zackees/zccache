@@ -17,6 +17,12 @@ pub enum FingerprintError {
 
     #[error("no pending data for {path}: run `check` before `mark-success`/`mark-failure`")]
     NoPendingData { path: NormalizedPath },
+
+    #[error("invalid mtime manifest {path}: {message}")]
+    Manifest {
+        path: NormalizedPath,
+        message: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, FingerprintError>;

@@ -20,6 +20,7 @@ pub(crate) mod fetch;
 pub(crate) mod fp;
 pub(crate) mod gha;
 pub(crate) mod meson_cache;
+pub(crate) mod mtime;
 pub(crate) mod rust_plan;
 pub(crate) mod service_definition;
 pub(crate) mod session;
@@ -469,6 +470,20 @@ fn dispatch(command: Commands, global_overrides: wrap::WrapperOverrides) -> Exit
             manifest_path,
             stamp_seconds_ahead,
         ),
+        Commands::Snapshot {
+            workspace,
+            out,
+            exclude,
+        } => {
+            let excludes: Vec<&Path> = exclude.iter().map(|p| p.as_path()).collect();
+            mtime::cmd_snapshot(&workspace, &out, &excludes)
+        }
+        Commands::Replay {
+            workspace,
+            manifest,
+            json,
+            min_applied_ratio,
+        } => mtime::cmd_replay(&workspace, &manifest, json, min_applied_ratio),
         Commands::Symbols { action } => match action {
             SymbolsCommands::Install {
                 version,

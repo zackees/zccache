@@ -11,6 +11,67 @@ Answers "has this set of files changed since the last successful operation?" wit
 
 Both use the pending pattern (pre-compute → mark success/failure) for crash safety.
 
+## mtime snapshot / replay (#1595)
+
+A checkout (cache restore, `git checkout`, tar extract, …) stamps every file
+it writes with the moment of the checkout, not the file's original
+modification time. Build systems that key freshness off mtime — Ninja,
+Cargo's incremental fingerprints, Make — then see every restored source as
+"newer than its cached object" and rebuild, even when the bytes are
+identical. The `mtime_replay` module fixes that without introducing a worse
+bug: it never blanket-touches a tree, and it never restores a recorded mtime
+onto content that no longer matches.
+
+### Manifest shape
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "path": "src/main.rs",
+      "size": 1234,
+      "mtime_ns": 1700000000000000000,
+      "blake3": "9f86d0..."
+    }
+  ]
+}
+```
+
+`path` is workspace-relative and POSIX-separated (`/`) regardless of host
+platform. `mtime_ns` is signed nanoseconds since the Unix epoch (negative for
+pre-1970 timestamps). `blake3` is the lowercase hex content hash.
+
+### Replay decision table
+
+| Check (in order)              | Outcome         | mtime touched? |
+|--------------------------------|-----------------|-----------------|
+| Path escapes the workspace     | `Missing`       | no |
+| Missing, not a regular file    | `Missing`       | no |
+| Size differs (checked **before** hashing) | `SizeMismatch` | no |
+| blake3 hash differs            | `Modified`      | no |
+| `set_file_times` fails         | `Modified`      | no |
+| Size and hash both match       | `Applied`       | restored to the recorded value |
+
+Every non-`Applied` outcome leaves the file's current (fresh, post-checkout)
+mtime exactly as the checkout left it — a missing or un-replayed mtime only
+ever costs an extra rebuild, never a stale (wrong) reuse.
+
+### Exclusions
+
+`.git` and `node_modules` directories are excluded by name at any depth
+(mirrors the plain `walk_files` exclusion). `--exclude` directories are
+matched by **resolved path**, not by name: a source directory that happens
+to be named `build` elsewhere in the tree is not excluded, only the
+specific directory the exclude path resolves to.
+
+### CLI
+
+```bash
+zccache snapshot --workspace . --exclude build --out .cache/mtime.json
+zccache replay --workspace . --manifest .cache/mtime.json
+```
+
 ## CLI
 
 ### Subcommands
