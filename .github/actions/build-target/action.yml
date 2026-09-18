@@ -502,10 +502,13 @@ runs:
                     echo "::error::$STRIP --strip-debug failed on $1"
                     exit 1
                   }
-                  # grep without -q reads all input, so pipefail cannot see
-                  # a SIGPIPE'd readelf and silently pass the check.
-                  if readelf -SW "$1" | grep ' \.debug_' >/dev/null; then
-                    echo "::error::$1 still contains .debug_* sections after stripping"
+                  # .debug_gdb_scripts is rustc's few-byte GDB pretty-printer
+                  # loader, not DWARF; --strip-debug keeps it by design (the
+                  # same exemption as ci/wheel_check.py). grep without -q reads
+                  # all input, so pipefail cannot see a SIGPIPE'd readelf.
+                  leftover="$(readelf -SW "$1" | grep -oE ' \.z?debug_[a-z_]+' | grep -v 'debug_gdb_scripts' || true)"
+                  if [ -n "$leftover" ]; then
+                    echo "::error::$1 still contains debug sections after stripping:" $leftover
                     exit 1
                   fi
                   ;;
