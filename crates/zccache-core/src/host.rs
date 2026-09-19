@@ -83,7 +83,7 @@ fn cpu_identity_material_from_parts(
         material.push_str(host_label);
         material.push('=');
         material.push_str(&hostname.to_string_lossy());
-    } else if machine_id.map_or(true, str::is_empty) {
+    } else if machine_id.is_none_or(str::is_empty) {
         material.push_str("\0pid=");
         material.push_str(&process_id.to_string());
     }
@@ -158,7 +158,7 @@ fn mutate_defender(command: &str, path: &Path) -> Result<(), DefenderError> {
 fn run_powershell(args: &[&str]) -> Result<String, DefenderError> {
     let mut command = std::process::Command::new("powershell.exe");
     command.args(args);
-    let output = kernal_api::foreground::output(&mut command).map_err(map_powershell_error)?;
+    let output = kernal_api::platform::process::foreground_output(&mut command).map_err(map_powershell_error)?;
     if !output.status.success() {
         return Err(DefenderError::CommandFailed {
             exit_code: output.status.code(),

@@ -9,15 +9,15 @@
 //! `ZCCACHE_DAEMON_WIRE=frame`; `auto` never prefers it.
 //!
 //! The outer envelope construction and the buffer-level codec come from
-//! running-process's `backend_sdk` family (`Frame::request`/`response_to`
-//! and `frame_ext::encode_framed`/`try_decode_framed`); this module is the
-//! thin zccache-side wrapper that pins the payload protocol id and binds
-//! the codecs to typed prost messages. See zackees/zccache#718.
+//! kernal-api's facade-owned `daemon_frame_v1` capability
+//! (`DaemonFrame::request`/`response_to` and `DaemonFrameCodec`); this module
+//! is the thin zccache-side wrapper that pins the payload protocol id and
+//! binds the codecs to typed prost messages. See zackees/zccache#718.
 
 use bytes::BytesMut;
-use kernal_api::broker::{
-    encode_framed, try_decode_framed, Frame, FrameKind, FramingError, PayloadEncoding,
-    ENVELOPE_VERSION,
+use kernal_api::daemon_frame_v1::{
+    DaemonFrame, DaemonFrameCodec, DaemonFrameDecode, DaemonFrameError, DaemonFrameKind,
+    DaemonPayloadEncoding, DAEMON_FRAME_V1_VERSION,
 };
 use prost::Message;
 
@@ -53,7 +53,8 @@ pub fn encode_frame_v1_request<M: Message>(
     request_id: u64,
 ) -> Result<BytesMut, ProtocolError> {
     let payload = encode_payload(msg)?;
-    let frame = Frame::request(ZCCACHE_FRAME_PAYLOAD_PROTOCOL, payload).with_request_id(request_id);
+    let frame =
+        DaemonFrame::request(ZCCACHE_FRAME_PAYLOAD_PROTOCOL, payload).with_request_id(request_id);
     encode_framed_bytes(&frame)
 }
 
@@ -72,12 +73,12 @@ pub fn encode_frame_v1_response<M: Message>(
 ) -> Result<BytesMut, ProtocolError> {
     // Use a one-shot request as the template so `response_to` can echo the
     // request_id + payload_protocol exactly the way the SDK builds it on the
-    // server side. `Frame::request` is a pure constructor (no I/O), and the
-    // golden-bytes test pins the resulting wire.
-    let template =
-        Frame::request(ZCCACHE_FRAME_PAYLOAD_PROTOCOL, Vec::new()).with_request_id(request_id);
+    // server side. `DaemonFrame::request` is a pure constructor (no I/O), and
+    // the golden-bytes test pins the resulting wire.
+    let template = DaemonFrame::request(ZCCACHE_FRAME_PAYLOAD_PROTOCOL, Vec::new())
+        .with_request_id(request_id);
     let payload = encode_payload(msg)?;
-    let frame = Frame::response_to(&template, payload);
+    let frame = DaemonFrame::response_to(&template, payload);
     encode_framed_bytes(&frame)
 }
 
@@ -88,9 +89,9 @@ fn encode_payload<M: Message>(msg: &M) -> Result<Vec<u8>, ProtocolError> {
     Ok(payload)
 }
 
-fn encode_framed_bytes(frame: &Frame) -> Result<BytesMut, ProtocolError> {
-    let bytes = encode_framed(frame).map_err(|e| match e {
-        FramingError::FrameTooLarge { body_length, .. } => {
+fn encode_framed_bytes(frame: &DaemonFrame) -> Result<BytesMut, ProtocolError> {
+    let bytes = DaemonFrameCodec::encode(frame).map_err(|e| match e {
+        DaemonFrameError::FrameTooLarge { body_length, .. } => {
             ProtocolError::MessageTooLarge(body_length)
         }
         other => ProtocolError::Serialization(other.to_string()),
@@ -113,7 +114,7 @@ pub fn buffer_starts_running_process_frame(buf: &[u8]) -> Option<bool> {
     if buf.is_empty() {
         return None;
     }
-    if buf[0] != ENVELOPE_VERSION {
+    if buf[0] != DAEMON_FRAME_V1_VERSION {
         return Some(false);
     }
     if buf.len() < 8 {
@@ -147,10 +148,10 @@ pub fn decode_frame_v1_message<M: Message + Default>(
     buf: &mut BytesMut,
 ) -> Result<Option<FrameV1Decoded<M>>, ProtocolError> {
     use bytes::Buf;
-    let decoded = match try_decode_framed(buf.as_ref()) {
-        Ok(Some(d)) => d,
-        Ok(None) => return Ok(None),
-        Err(FramingError::FrameTooLarge { body_length, .. }) => {
+    let (frame, consumed) = match DaemonFrameCodec::decode(buf.as_ref()) {
+        Ok(DaemonFrameDecode::Frame { frame, consumed }) => (frame, consumed),
+        Ok(DaemonFrameDecode::NeedMoreBytes) => return Ok(None),
+        Err(DaemonFrameError::FrameTooLarge { body_length, .. }) => {
             return Err(ProtocolError::MessageTooLarge(body_length))
         }
         Err(other) => {
@@ -160,42 +161,41 @@ pub fn decode_frame_v1_message<M: Message + Default>(
         }
     };
 
-    let frame = decoded.frame;
-    if frame.envelope_version != 1 {
+    if frame.envelope_version() != 1 {
         return Err(ProtocolError::Deserialization(format!(
             "unsupported running-process Frame envelope_version {}",
-            frame.envelope_version
+            frame.envelope_version()
         )));
     }
-    if frame.payload_protocol != ZCCACHE_FRAME_PAYLOAD_PROTOCOL {
+    if frame.payload_protocol() != ZCCACHE_FRAME_PAYLOAD_PROTOCOL {
         return Err(ProtocolError::Deserialization(format!(
             "running-process Frame payload_protocol {:#06X} is not the zccache payload protocol \
              {ZCCACHE_FRAME_PAYLOAD_PROTOCOL:#06X}",
-            frame.payload_protocol
+            frame.payload_protocol()
         )));
     }
     if !matches!(
-        FrameKind::try_from(frame.kind),
-        Ok(FrameKind::Request | FrameKind::Response)
+        frame.kind_classification(),
+        DaemonFrameKind::Request | DaemonFrameKind::Response
     ) {
         return Err(ProtocolError::Deserialization(format!(
             "unsupported running-process Frame kind {} on the zccache lane",
-            frame.kind
+            frame.kind()
         )));
     }
-    if PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None) {
+    if frame.payload_encoding_classification() != DaemonPayloadEncoding::None {
         return Err(ProtocolError::Deserialization(format!(
             "unsupported running-process Frame payload_encoding {} on the zccache lane",
-            frame.payload_encoding
+            frame.payload_encoding()
         )));
     }
 
-    let message = M::decode(frame.payload.as_slice())
-        .map_err(|e| ProtocolError::Deserialization(e.to_string()))?;
-    buf.advance(decoded.consumed);
+    let message =
+        M::decode(frame.payload()).map_err(|e| ProtocolError::Deserialization(e.to_string()))?;
+    buf.advance(consumed);
     Ok(Some(FrameV1Decoded {
         message,
-        request_id: frame.request_id,
+        request_id: frame.request_id(),
     }))
 }
 
@@ -203,7 +203,6 @@ pub fn decode_frame_v1_message<M: Message + Default>(
 mod tests {
     use super::*;
     use crate::wire_prost::zccache_v1;
-    use bytes::BufMut;
 
     /// Build a fixed, deterministic zccache `Lookup` request used as the
     /// golden-bytes fixture. The contents must never change — if a field is
@@ -280,25 +279,16 @@ mod tests {
     /// payload is decoded.
     #[test]
     fn frame_v1_rejects_foreign_payload_protocol() {
-        use kernal_api::broker::{Frame, FrameKind, PayloadEncoding, ENVELOPE_VERSION};
         use prost::Message as _;
 
-        let frame = Frame {
-            envelope_version: 1,
-            kind: FrameKind::Request as i32,
-            payload_protocol: 0x7001, // not the zccache lane
-            payload: golden_request().encode_to_vec(),
-            request_id: 7,
-            payload_encoding: PayloadEncoding::None as i32,
-            deadline_unix_ms: 0,
-            traceparent: String::new(),
-            tracestate: String::new(),
-        };
-        let body = frame.encode_to_vec();
-        let mut buf = BytesMut::new();
-        buf.put_u8(ENVELOPE_VERSION);
-        buf.put_u32_le(u32::try_from(body.len()).unwrap());
-        buf.extend_from_slice(&body);
+        // 0x7001 is not the zccache lane.
+        let frame =
+            DaemonFrame::request(0x7001, golden_request().encode_to_vec()).with_request_id(7);
+        let mut buf = BytesMut::from(
+            DaemonFrameCodec::encode(&frame)
+                .expect("encode foreign frame")
+                .as_slice(),
+        );
 
         let err = decode_frame_v1_message::<zccache_v1::Request>(&mut buf)
             .expect_err("foreign payload protocol must be rejected");
