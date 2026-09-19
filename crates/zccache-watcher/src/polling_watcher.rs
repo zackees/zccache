@@ -4,7 +4,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use kernal_api::platform::fs::{PatternSet, PatternSetBuilder};
 use zccache_core::NormalizedPath;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,8 +17,8 @@ struct FileState {
 struct ScanConfig {
     root: NormalizedPath,
     include_folders: Vec<NormalizedPath>,
-    include_globs: GlobSet,
-    exclude_globs: GlobSet,
+    include_globs: PatternSet,
+    exclude_globs: PatternSet,
     excluded_names: HashSet<String>,
 }
 
@@ -448,12 +448,13 @@ fn build_config(
     })
 }
 
-fn build_globset(patterns: &[String]) -> std::io::Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
+fn build_globset(patterns: &[String]) -> std::io::Result<PatternSet> {
+    // The facade validates the whole set at `build`, not each pattern as it
+    // is added, so there is one error site instead of two. `globset`'s own
+    // error names the offending pattern, so it is still identifiable.
+    let mut builder = PatternSetBuilder::new();
     for pattern in patterns {
-        builder.add(
-            Glob::new(pattern).map_err(|e| std::io::Error::other(format!("invalid glob: {e}")))?,
-        );
+        builder = builder.add_pattern(pattern);
     }
     builder
         .build()
@@ -499,42 +500,32 @@ fn scan_snapshot(config: &ScanConfig) -> HashMap<NormalizedPath, FileState> {
         let exclude_names = config.excluded_names.clone();
         let exclude_globs = config.exclude_globs.clone();
 
-        let walker = jwalk::WalkDir::new(base)
-            .follow_links(false)
-            .skip_hidden(false)
-            .process_read_dir(move |_depth, _path, _state, children| {
-                children.retain(|entry| {
-                    let Ok(entry) = entry else {
-                        return true;
-                    };
-                    if !entry.file_type.is_dir() {
-                        return true;
+        let walker = kernal_api::platform::fs::DirectoryWalk::new(base.to_path_buf())
+            .follow_symbolic_links(false)
+            .include_hidden_entries(true)
+            .prune_directories(move |directory| {
+                if let Some(name) = directory.file_name().and_then(|name| name.to_str()) {
+                    if exclude_names.contains(name) {
+                        return false;
                     }
-                    let path = entry.path();
-                    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                        if exclude_names.contains(name) {
-                            return false;
-                        }
-                    }
-                    let rel = rel_string(&root, &path);
-                    !exclude_globs.is_match(&rel)
-                });
+                }
+                let rel = rel_string(&root, directory);
+                !exclude_globs.is_match(&rel)
             });
 
         // Step 1: collect the candidate file paths from the (already-parallel)
-        // jwalk traversal. Applying the include/exclude globs here is cheap
-        // (string match) and avoids an extra `metadata()` syscall for files
-        // we'd just drop. Normalize at collection time so step 2's parallel
-        // metadata fetch already operates on the watcher's canonical key
-        // type.
+        // traversal. Applying the include/exclude globs here is cheap (string
+        // match) and avoids an extra `metadata()` syscall for files we'd just
+        // drop. Normalize at collection time so step 2's parallel metadata
+        // fetch already operates on the watcher's canonical key type.
         let candidates: Vec<NormalizedPath> = walker
-            .into_iter()
+            .walk()
             .flatten()
             .filter_map(|entry| {
-                if !entry.file_type.is_file() {
+                if !entry.is_file() {
                     return None;
                 }
-                let path = entry.path();
+                let path = entry.path().to_path_buf();
                 let rel = rel_string(&config.root, &path);
                 if config.exclude_globs.is_match(&rel) || !config.include_globs.is_match(&rel) {
                     return None;

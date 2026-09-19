@@ -18,6 +18,14 @@ fn never_shutting_down() -> impl Fn() -> bool + Send + 'static {
     || false
 }
 
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 /// A panicking loop is restarted. This is the failure #1177 is about: before
 /// supervision the panic was silent, the task vanished, and the only symptom
 /// was that eviction quietly stopped happening.
@@ -61,7 +69,7 @@ async fn a_panicking_idempotent_task_is_restarted() {
     .await
     .expect("a panicking task must be restarted, not silently dropped");
 
-    handle.abort();
+    handle.cancel();
 }
 
 /// Restarts are bounded. A loop that has panicked this many times is failing
@@ -144,6 +152,60 @@ async fn a_task_ending_during_shutdown_is_not_treated_as_a_fault() {
         attempts.load(Ordering::Acquire),
         1,
         "an idempotent task must not be restarted once shutdown was requested"
+    );
+}
+
+/// A supervisor owns the loop it is awaiting. Cancelling the supervisor must
+/// therefore cancel that loop as well: leaving the child detached would let a
+/// supposedly stopped daemon keep running maintenance after its owner left.
+#[tokio::test]
+async fn cancelling_supervisor_cancels_its_active_child_without_restart() {
+    let started = Arc::new(AtomicBool::new(false));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let attempts = Arc::new(AtomicU32::new(0));
+    let started_factory = Arc::clone(&started);
+    let dropped_factory = Arc::clone(&dropped);
+    let attempts_factory = Arc::clone(&attempts);
+
+    let handle = spawn_supervised(
+        "test-cancel-owned-child",
+        never_shutting_down(),
+        Restart::Idempotent,
+        None,
+        move || {
+            let started = Arc::clone(&started_factory);
+            let dropped = Arc::clone(&dropped_factory);
+            let attempts = Arc::clone(&attempts_factory);
+            async move {
+                let _owned_by_supervisor = DropFlag(dropped);
+                attempts.fetch_add(1, Ordering::AcqRel);
+                started.store(true, Ordering::Release);
+                std::future::pending::<()>().await;
+            }
+        },
+    );
+
+    for _ in 0..8 {
+        if started.load(Ordering::Acquire) {
+            break;
+        }
+        kernal_api::async_engine::yield_now().await;
+    }
+    assert!(started.load(Ordering::Acquire), "child must have started");
+
+    handle.cancel();
+    let error = handle
+        .await
+        .expect_err("cancelled supervisor must not succeed");
+    assert!(error.is_cancelled(), "supervisor must report cancellation");
+    assert!(
+        dropped.load(Ordering::Acquire),
+        "cancelling the supervisor must drop its owned child"
+    );
+    assert_eq!(
+        attempts.load(Ordering::Acquire),
+        1,
+        "cancellation must not schedule a replacement child"
     );
 }
 

@@ -559,7 +559,7 @@ fn try_normalize(path: &Path) -> Option<NormalizedPath> {
     // be stripped to match the watcher's path format for journal lookups.
     let p = path.canonicalize().ok()?;
     Some(NormalizedPath::new(
-        crate::platform::fs::path::strip_verbatim_prefix(&p),
+        zccache_core::path::strip_verbatim_prefix(&p),
     ))
 }
 

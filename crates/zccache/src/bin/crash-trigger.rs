@@ -8,7 +8,13 @@
 //! appeared on disk.
 //!
 //! Invocation: `crash-trigger <mode>` where `<mode>` is one of
-//! `panic`, `sigsegv`, `sigabrt`, `stack-overflow`, `illegal-instruction`.
+//! `panic`, `sigsegv`, `sigabrt`, `stack-overflow`, `illegal-instruction`,
+//! or `drain`.
+//!
+//! `drain` crashes nothing. A fatal signal is captured by the facade into a
+//! binary record and turned into a readable dump by the *next* start, so a
+//! test that wants to see the dump has to model that next start. This mode is
+//! it: `install` runs, drains, and returns.
 
 fn main() {
     // Single install call covers both layers (panic hook + native
@@ -17,6 +23,8 @@ fn main() {
 
     let mode = std::env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
+        // `install` above already drained; nothing else to do.
+        "drain" => {}
         "panic" => panic!("intentional test panic from crash-trigger"),
         "sigsegv" => unsafe { sadness_generator::raise_segfault() },
         "sigabrt" => unsafe { sadness_generator::raise_abort() },
@@ -24,7 +32,7 @@ fn main() {
         "illegal-instruction" => unsafe { sadness_generator::raise_illegal_instruction() },
         other => {
             eprintln!(
-                "crash-trigger: unknown mode '{other}' (expected panic|sigsegv|sigabrt|stack-overflow|illegal-instruction)"
+                "crash-trigger: unknown mode '{other}' (expected panic|sigsegv|sigabrt|stack-overflow|illegal-instruction|drain)"
             );
             std::process::exit(2);
         }

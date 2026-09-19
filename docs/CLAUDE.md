@@ -25,7 +25,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-symbols` | Crate README — 128-byte release footer, `<dump>.symref` sidecars, `zccache-stamp` CI helper |
 | Perf measurement harness | [/PERF.md](../PERF.md) — local Docker matrix, scenarios, gate semantics |
 | Crash dumper (CLI + daemon) | [runtime.md](architecture/runtime.md) (Crash Dumper) — `zccache_core::crash::install` covers both binaries |
-| Host-platform boundary (`zccache-platform`, `crate::platform`) | [portability.md](architecture/portability.md) — one selector, five facades, host-vs-compiler-target rule |
+| Host-platform boundary (`kernal-api` plus private product adapters) | [portability.md](architecture/portability.md) — canonical native ownership and host-vs-compiler-target rule |
 | kernal-api migration baseline (`zccache#1519`) | [kernal-api-migration.md](architecture/kernal-api-migration.md) — capability ownership, characterization, and comparable build evidence |
 | Generic tool exec (`zccache exec`, issue #272) | [runtime.md § Generic tool exec](architecture/runtime.md#generic-tool-exec-zccache-exec) — `handle_exec.rs` + `cli/commands/exec.rs` |
 | External tool fetch (`zccache fetch`, issue #1469) | [runtime.md § External tool fetch](architecture/runtime.md#external-tool-fetch-zccache-fetch-issue-1469) — `cli/commands/fetch.rs`, blob + extraction CAS |

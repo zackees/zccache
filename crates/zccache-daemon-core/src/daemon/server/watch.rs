@@ -13,7 +13,7 @@ pub(super) async fn watch_directory(state: &SharedState, dir: &Path) {
 }
 
 async fn canonicalize_watch_registration_batch(dirs: Vec<NormalizedPath>) -> Vec<NormalizedPath> {
-    tokio::task::spawn_blocking(move || {
+    kernal_api::async_engine::launch_blocking(move || {
         dirs.into_iter()
             .filter_map(|dir| match dir.canonicalize() {
                 Ok(p) => Some(crate::platform::fs::path::strip_verbatim_prefix(&p).into()),
@@ -24,6 +24,7 @@ async fn canonicalize_watch_registration_batch(dirs: Vec<NormalizedPath>) -> Vec
             })
             .collect()
     })
+    .detach_on_drop()
     .await
     .unwrap_or_else(|err| {
         tracing::warn!("watch canonicalization worker failed: {err}");

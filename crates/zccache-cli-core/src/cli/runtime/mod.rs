@@ -30,8 +30,7 @@ pub fn run_async<T>(
 /// `None` means the identity could not be established, and every kill path
 /// treats that as a refusal rather than as a wildcard.
 #[must_use]
-pub fn current_daemon_instance(
-) -> Option<running_process::broker::protocol_v2::backend_handle::DaemonProcess> {
+pub fn current_daemon_instance() -> Option<kernal_api::daemon_identity::DaemonIdentity> {
     crate::ipc::read_backend_identity()
 }
 
@@ -470,7 +469,7 @@ async fn wait_for_exit_while(budget: std::time::Duration, is_alive: impl Fn() ->
 /// to, and the kill is refused rather than aimed at whatever is current.
 async fn stop_stale_daemon(
     endpoint: &str,
-    failed_instance: Option<&running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
+    failed_instance: Option<&kernal_api::daemon_identity::DaemonIdentity>,
 ) -> Option<u32> {
     stop_daemon_instance(endpoint, failed_instance, GRACEFUL_DRAIN_BUDGET).await
 }
@@ -493,7 +492,7 @@ const WEDGE_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis
 /// names now" is frequently a healthy replacement another client just spawned.
 pub async fn stop_wedged_daemon(
     endpoint: &str,
-    wedged_instance: Option<&running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
+    wedged_instance: Option<&kernal_api::daemon_identity::DaemonIdentity>,
 ) -> Option<u32> {
     stop_daemon_instance(endpoint, wedged_instance, WEDGE_DRAIN_BUDGET).await
 }
@@ -518,7 +517,7 @@ pub(crate) async fn replace_running_daemon(endpoint: &str, reason: &str) -> Resu
 /// I kill" is not a question the caller's urgency gets to answer.
 async fn stop_daemon_instance(
     endpoint: &str,
-    failed_instance: Option<&running_process::broker::protocol_v2::backend_handle::DaemonProcess>,
+    failed_instance: Option<&kernal_api::daemon_identity::DaemonIdentity>,
     drain_budget: std::time::Duration,
 ) -> Option<u32> {
     // Gate before the Shutdown request, not just before the kill: asking an
@@ -527,9 +526,9 @@ async fn stop_daemon_instance(
         Some(expected) if crate::ipc::daemon_identity_matches(expected) => {}
         Some(expected) => {
             tracing::warn!(
-                expected_pid = expected.pid,
-                expected_started_at_unix_ms = expected.started_at_unix_ms,
-                current_pid = crate::ipc::read_backend_identity().map(|d| d.pid),
+                expected_pid = expected.pid(),
+                expected_started_at_unix_ms = expected.started_at_unix_ms(),
+                current_pid = crate::ipc::read_backend_identity().map(|d| d.pid()),
                 "refusing to replace the daemon: the instance on disk is not the one that failed"
             );
             return None;
@@ -546,7 +545,7 @@ async fn stop_daemon_instance(
     // The instance we verified above, not a fresh lock read. #1161 leg 1
     // gated on identity; re-reading the lock here would reopen the same
     // window on the kill itself.
-    let outgoing_pid = failed_instance.map(|instance| instance.pid);
+    let outgoing_pid = failed_instance.map(|instance| instance.pid());
 
     let _ = crate::ipc::daemon_control_roundtrip(
         endpoint,
@@ -599,9 +598,41 @@ async fn stop_daemon_instance(
         }),
     );
 
-    let kill_ok = crate::ipc::force_kill_process(pid).is_ok();
-    if kill_ok {
-        wait_for_process_exit(pid, FORCE_KILL_REAP_BUDGET).await;
+    let kill_ok = match crate::ipc::force_kill_verified_daemon(pid) {
+        Ok(Some(handle)) => {
+            let deadline = std::time::Instant::now() + FORCE_KILL_REAP_BUDGET;
+            loop {
+                // `is_alive` is a best-effort convenience predicate: an
+                // observation failure reads false. Cleanup requires the
+                // stronger held-object answer, including its error result.
+                match handle.has_exited() {
+                    Ok(true) => break true,
+                    Ok(false) if std::time::Instant::now() >= deadline => break false,
+                    Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+                    Err(error) => {
+                        tracing::warn!(pid, %error, "verified daemon exit could not be confirmed");
+                        break false;
+                    }
+                }
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(
+                pid,
+                "daemon identity unavailable; refusing PID-reopen force kill"
+            );
+            false
+        }
+        Err(error) => {
+            tracing::warn!(pid, %error, "verified daemon force kill unavailable");
+            false
+        }
+    };
+    if !kill_ok {
+        // The endpoint may still belong to a live legacy/direct daemon. Do
+        // not retire its state merely because verified held-control was
+        // unsupported or identity was unavailable.
+        return None;
     }
     crate::ipc::remove_lock_file();
     super::recovery::clear_stale_daemon_state();

@@ -133,11 +133,11 @@ async fn standalone_daemon_startup_expires_seeded_stale_cache() {
     let payload_path = artifact_dir.join(format!("{key}_0"));
     std::fs::write(&meta_path, b"invalid legacy metadata").expect("seed metadata");
     std::fs::write(&payload_path, vec![0_u8; 4096]).expect("seed payload");
-    let stale = filetime::FileTime::from_system_time(
+    let stale = kernal_api::platform::fs::FileTime::from_system_time(
         std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 60 * 60),
     );
-    filetime::set_file_mtime(&meta_path, stale).expect("age metadata");
-    filetime::set_file_mtime(&payload_path, stale).expect("age payload");
+    kernal_api::platform::fs::set_file_mtime(&meta_path, stale).expect("age metadata");
+    kernal_api::platform::fs::set_file_mtime(&payload_path, stale).expect("age payload");
 
     let endpoint = crate::ipc::unique_test_endpoint();
     let mut server = super::super::DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir)

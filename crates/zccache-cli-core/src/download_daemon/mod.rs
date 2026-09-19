@@ -13,8 +13,8 @@ use crate::download::{
 };
 use crate::download_protocol::{Request, Response};
 use dashmap::DashMap;
+use kernal_api::async_engine::CancellationSource;
 use tokio::sync::{watch, Notify, RwLock};
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 struct FileLogger {
@@ -50,7 +50,7 @@ struct DownloadJob {
     status: RwLock<DownloadStatus>,
     updates: watch::Sender<u64>,
     active_clients: AtomicUsize,
-    cancel_token: CancellationToken,
+    cancel_source: CancellationSource,
     cleanup_pending: AtomicBool,
 }
 
@@ -107,15 +107,22 @@ impl DownloadDaemon {
 
     pub async fn run(&mut self) -> Result<(), crate::ipc::IpcError> {
         loop {
-            tokio::select! {
-                _ = self.state.shutdown.notified() => {
+            let shutdown = self.state.shutdown.notified();
+            let accept = self.listener.accept();
+            let idle = kernal_api::async_engine::sleep(self.idle_timeout);
+            let mut shutdown = std::pin::pin!(shutdown);
+            let mut accept = std::pin::pin!(accept);
+            let mut idle = std::pin::pin!(idle);
+            match kernal_api::fair_race!((shutdown.as_mut()), (accept.as_mut()), (idle.as_mut()),)
+                .await
+            {
+                kernal_api::async_engine::FairRace3::First(()) => {
                     self.state.logger.log("download daemon shutdown requested");
                     break;
                 }
-                accepted = self.listener.accept() => {
-                    let conn = crate::download_ipc::DownloadIpcConnection::from_connection(
-                        accepted?,
-                    );
+                kernal_api::async_engine::FairRace3::Second(accepted) => {
+                    let conn =
+                        crate::download_ipc::DownloadIpcConnection::from_connection(accepted?);
                     let state = Arc::clone(&self.state);
                     tokio::spawn(async move {
                         if let Err(err) = handle_connection(state, conn).await {
@@ -123,9 +130,11 @@ impl DownloadDaemon {
                         }
                     });
                 }
-                () = tokio::time::sleep(self.idle_timeout) => {
+                kernal_api::async_engine::FairRace3::Third(()) => {
                     if self.state.jobs.is_empty() {
-                        self.state.logger.log("download daemon stopped after idle timeout");
+                        self.state
+                            .logger
+                            .log("download daemon stopped after idle timeout");
                         break;
                     }
                 }
@@ -263,9 +272,12 @@ async fn handle_connection(
 
                 let mut rx = job.updates.subscribe();
                 let wait_result = if let Some(timeout_ms) = timeout_ms {
-                    tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx.changed())
-                        .await
-                        .ok()
+                    kernal_api::async_engine::timeout(
+                        std::time::Duration::from_millis(timeout_ms),
+                        rx.changed(),
+                    )
+                    .await
+                    .ok()
                 } else {
                     Some(rx.changed().await)
                 };
@@ -410,7 +422,7 @@ async fn attach_job(
         status: RwLock::new(initial_status),
         updates: tx,
         active_clients: AtomicUsize::new(1),
-        cancel_token: CancellationToken::new(),
+        cancel_source: CancellationSource::new(),
         cleanup_pending: AtomicBool::new(false),
     });
 
@@ -468,7 +480,7 @@ fn spawn_download_worker(state: Arc<SharedState>, job: Arc<DownloadJob>, options
             &metadata_dir,
             &options,
             progress,
-            job.cancel_token.clone(),
+            job.cancel_source.token(),
         )
         .await;
 
@@ -559,7 +571,7 @@ async fn detach_client(state: &Arc<SharedState>, job_id: &str) {
         let status = job.status.read().await.clone();
         if !is_terminal(&status) {
             state.logger.log(&format!("download abandoned id={job_id}"));
-            job.cancel_token.cancel();
+            job.cancel_source.cancel();
         } else {
             state.jobs.remove(job_id);
         }

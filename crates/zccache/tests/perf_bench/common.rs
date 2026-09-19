@@ -94,7 +94,7 @@ pub async fn start_daemon() -> (
     PerfCacheRoot,
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<kernal_api::async_engine::Notify>,
 ) {
     let cache_dir = zccache::test_support::temp_cache_dir().unwrap();
     let runtime_roots_sidecar = std::env::var_os("PERF_GUARD_RUNTIME_ROOTS_FILE");

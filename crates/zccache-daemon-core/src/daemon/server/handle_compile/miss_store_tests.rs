@@ -349,7 +349,7 @@ async fn visible_metadata_waits_for_pending_payload_replacement() {
 
 #[test]
 fn failed_async_persist_never_enqueues_an_index_insert() {
-    let (index_tx, mut index_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (index_tx, mut index_rx) = kernal_api::async_engine::unbounded_channel();
     let queued = enqueue_persisted_index(
         PersistOutcome::failed(),
         &index_tx,

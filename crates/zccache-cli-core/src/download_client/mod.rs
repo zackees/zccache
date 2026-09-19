@@ -183,12 +183,19 @@ fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     }
     let mut cmd = std::process::Command::new(bin);
     cmd.args(["--foreground", "--endpoint", endpoint]);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    crate::platform::process::command::hide_window(&mut cmd);
-    cmd.spawn()
-        .map_err(|e| format!("failed to spawn download daemon: {e}"))?;
+    // Canonical daemon launch owns null standard streams and sanitized native
+    // handles. This is ordinary inherited placement, not independent spawning;
+    // the existing no-spawn guard and readiness loop remain authoritative.
+    let _daemon = kernal_api::platform::process::spawn_sync_daemon(
+        &mut cmd,
+        kernal_api::platform::process::DaemonStdio {
+            stdout: kernal_api::platform::process::DaemonStdioSource::Null,
+            stderr: kernal_api::platform::process::DaemonStdioSource::Null,
+        },
+        kernal_api::platform::process::SyncEnvironment::UserBaseline,
+        false,
+    )
+    .map_err(|e| format!("failed to spawn download daemon: {e}"))?;
     Ok(())
 }
 

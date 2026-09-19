@@ -1,4 +1,4 @@
-//! Tests for `apply_client_env` / `apply_client_env_sync` — verify that
+//! Tests for `apply_client_env_builder` / `apply_client_env_sync` — verify that
 //! stale jobserver vars are stripped before the daemon spawns a compiler
 //! or tool subprocess, and that lineage env-vars are propagated.
 
@@ -49,13 +49,36 @@ fn test_lineage() -> super::super::super::lineage::Lineage {
     }
 }
 
-#[test]
-fn apply_client_env_filters_stale_jobserver_vars_for_compiler_spawns() {
+#[tokio::test]
+async fn apply_client_env_filters_stale_jobserver_vars_for_compiler_spawns() {
     let env = jobserver_client_env();
-    let mut cmd = tokio::process::Command::new("env");
-    apply_client_env(&mut cmd, &Some(env), &test_lineage());
-
-    let envs = collect_command_env(cmd.as_std().get_envs());
+    #[cfg(unix)]
+    let builder = kernal_api::SpawnSpec::new("/usr/bin/env");
+    #[cfg(windows)]
+    let builder = kernal_api::SpawnSpec::new(
+        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
+            .join("System32")
+            .join("cmd.exe"),
+    )
+    .args(["/D", "/C", "set"]);
+    let builder = apply_client_env_builder(builder, &Some(env), &test_lineage());
+    let output = crate::daemon::process::async_builder_output_with_priority_timeout(
+        builder,
+        CompilePriority::Normal,
+        std::time::Duration::from_secs(10),
+        "client environment fixture".to_string(),
+    )
+    .await
+    .expect("canonical environment fixture must run");
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).expect("fixture environment is UTF-8");
+    let envs: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|line| {
+            line.split_once('=')
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+        })
+        .collect();
     assert_eq!(env_value(&envs, "PATH"), Some("/usr/bin"));
     assert_eq!(
         env_value(&envs, "CARGO_MANIFEST_DIR"),

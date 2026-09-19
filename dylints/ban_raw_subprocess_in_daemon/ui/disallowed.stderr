@@ -1,4 +1,4 @@
-error: `std::process::Command::status` bypasses running-process; execute the configured command through `running_process::spawn` or `running_process::spawn_tokio`
+error: `std::process::Command::status` bypasses kernal-api; execute the configured command through the daemon process helpers backed by `kernal_api::async_process`
   --> $DIR/disallowed.rs:5:13
    |
 LL |     let _ = command.status();

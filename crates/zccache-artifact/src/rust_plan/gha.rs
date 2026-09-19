@@ -76,7 +76,7 @@ where
     F: FnOnce() -> Result<T, String> + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(work)
+    kernal_api::async_engine::launch_blocking(work)
         .await
         .map_err(|err| RustPlanGhaError::Failure(format!("blocking rust-plan task failed: {err}")))?
         .map_err(RustPlanGhaError::Failure)

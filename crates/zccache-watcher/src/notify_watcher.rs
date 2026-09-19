@@ -1,26 +1,29 @@
-//! Concrete file watcher backed by the `notify` crate.
+//! Concrete file watcher backed by the shared systems facade.
 //!
-//! Creates a `RecommendedWatcher` that converts OS filesystem events into
-//! `WatchEvent`s, filters them through an `IgnoreFilter`, and sends them
-//! over a `tokio::sync::mpsc` channel for consumption by the settle buffer.
+//! Creates a `kernal_api::platform::fs_watch::Watcher` that converts host
+//! filesystem notifications into `WatchEvent`s, filters them through an
+//! `IgnoreFilter`, and sends them over a `kernal_api::async_engine` channel
+//! for consumption by the settle buffer.
 //!
-//! The notify callback runs on a dedicated OS thread. Using
-//! `tokio::sync::mpsc` (not crossbeam) ensures safe crossing from the OS
-//! thread into the async runtime.
+//! The watcher callback runs on a dedicated OS thread owned by the facade's
+//! backend. Using the facade's async channel (not crossbeam) ensures safe
+//! crossing from the OS thread into the async runtime.
 
 use super::ignore::IgnoreFilter;
 use super::WatchEvent;
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use kernal_api::async_engine as mpsc;
+use kernal_api::platform::fs_watch::{
+    ChangeEvent, ChangeKind, RecursiveMode, RenameSide, WatchNotification, Watcher,
+};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
-/// File watcher backed by the `notify` crate.
+/// File watcher backed by the shared systems facade.
 ///
-/// Wraps a `RecommendedWatcher` and exposes `watch`/`unwatch` methods.
+/// Wraps the facade watcher and exposes `watch`/`unwatch` methods.
 /// Events are sent to the unbounded receiver returned by [`NotifyWatcher::new`].
 pub struct NotifyWatcher {
-    watcher: notify::RecommendedWatcher,
+    watcher: Watcher,
 }
 
 impl std::fmt::Debug for NotifyWatcher {
@@ -43,10 +46,25 @@ impl NotifyWatcher {
     ) -> zccache_core::Result<(Self, mpsc::UnboundedReceiver<WatchEvent>)> {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
-            match res {
-                Ok(event) => {
-                    for watch_event in convert_event(&ignore, &event) {
+        let watcher = Watcher::new(move |result: std::io::Result<WatchNotification>| {
+            match result {
+                // kernal-api#76: an incomplete view is a notification, not an
+                // error. Both Windows `ReadDirectoryChangesW` conditions --
+                // a filled buffer and a watch that silently died -- used to
+                // arrive here as `Err`, and an adapter that only matched
+                // `Err` would stop seeing them entirely. `watch_lost` also
+                // means the watch itself is gone, so the caller must re-watch
+                // rather than merely rescan.
+                Ok(notification) => {
+                    if let WatchNotification::RescanRequired(rescan) = &notification {
+                        if rescan.watch_lost() {
+                            tracing::warn!(
+                                paths = ?rescan.paths(),
+                                "watch was lost; paths must be re-watched after the rescan"
+                            );
+                        }
+                    }
+                    for watch_event in convert_notification(&ignore, &notification) {
                         if tx.send(watch_event).is_err() {
                             // Receiver dropped — watcher is shutting down.
                             return;
@@ -58,8 +76,7 @@ impl NotifyWatcher {
                     let _ = tx.send(WatchEvent::Error(e.to_string()));
                 }
             }
-        })
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+        })?;
 
         Ok((Self { watcher }, rx))
     }
@@ -74,9 +91,7 @@ impl NotifyWatcher {
     ///
     /// Returns an error if the path cannot be watched.
     pub fn watch(&mut self, path: &Path) -> zccache_core::Result<()> {
-        self.watcher
-            .watch(path, RecursiveMode::NonRecursive)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        self.watcher.watch(path, RecursiveMode::NonRecursive)?;
         Ok(())
     }
 
@@ -88,9 +103,7 @@ impl NotifyWatcher {
     ///
     /// Returns an error if the path cannot be watched.
     pub fn watch_recursive(&mut self, path: &Path) -> zccache_core::Result<()> {
-        self.watcher
-            .watch(path, RecursiveMode::Recursive)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        self.watcher.watch(path, RecursiveMode::Recursive)?;
         Ok(())
     }
 
@@ -100,33 +113,44 @@ impl NotifyWatcher {
     ///
     /// Returns an error if the path was not being watched.
     pub fn unwatch(&mut self, path: &Path) -> zccache_core::Result<()> {
-        self.watcher
-            .unwatch(path)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        self.watcher.unwatch(path)?;
         Ok(())
     }
 }
 
-/// Convert a `notify::Event` into zero or more `WatchEvent`s.
-fn convert_event(ignore: &IgnoreFilter, event: &Event) -> Vec<WatchEvent> {
-    // Detect overflow/rescan events from inotify (Q_OVERFLOW) and
-    // FSEvents (MUST_SCAN_SUBDIRS). These have EventKind::Other with
-    // Flag::Rescan and empty paths — the path loop below would produce
-    // nothing, silently swallowing the overflow.
-    if event.need_rescan() {
-        return vec![WatchEvent::Overflow];
+/// Convert a facade notification into zero or more `WatchEvent`s.
+///
+/// Split out from the watcher callback so the rescan routing is testable
+/// without standing up a real watcher and racing a real filesystem.
+fn convert_notification(
+    ignore: &IgnoreFilter,
+    notification: &WatchNotification,
+) -> Vec<WatchEvent> {
+    match notification {
+        // Both halves are overflow to this crate: the view is incomplete
+        // either way, and every watched path must be treated as stale. The
+        // `watch_lost` half additionally needs re-watching, which the caller
+        // handles because only it holds the watcher.
+        WatchNotification::RescanRequired(_) => vec![WatchEvent::Overflow],
+        WatchNotification::Change(event) => convert_event(ignore, event),
     }
+}
+
+/// Convert a facade [`ChangeEvent`] into zero or more `WatchEvent`s.
+///
+/// Overflow is deliberately not handled here any more. The facade reports an
+/// incomplete view as its own `WatchNotification::RescanRequired` variant
+/// rather than as an event with a rescan flag and no paths, so it is matched
+/// where notifications arrive. That also removes the failure mode the old
+/// comment warned about: there is no longer an event whose path loop yields
+/// nothing and silently swallows the overflow.
+fn convert_event(ignore: &IgnoreFilter, event: &ChangeEvent) -> Vec<WatchEvent> {
+    let paths = event.paths();
 
     // Handle rename with both paths present.
-    if matches!(
-        event.kind,
-        EventKind::Modify(notify::event::ModifyKind::Name(
-            notify::event::RenameMode::Both
-        ))
-    ) && event.paths.len() >= 2
-    {
-        let from = &event.paths[0];
-        let to = &event.paths[1];
+    if matches!(event.kind(), ChangeKind::NameModified(RenameSide::Both)) && paths.len() >= 2 {
+        let from = &paths[0];
+        let to = &paths[1];
         let from_ignored = ignore.should_ignore(from);
         let to_ignored = ignore.should_ignore(to);
         if from_ignored && to_ignored {
@@ -147,26 +171,30 @@ fn convert_event(ignore: &IgnoreFilter, event: &Event) -> Vec<WatchEvent> {
     }
 
     let mut result = Vec::new();
-    for path in &event.paths {
+    for path in paths {
         if ignore.should_ignore(path) {
             continue;
         }
 
-        let watch_event = match event.kind {
-            EventKind::Create(_) => WatchEvent::Created(path.as_path().into()),
-            EventKind::Remove(_) => WatchEvent::Removed(path.as_path().into()),
-            EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::From)) => {
+        let watch_event = match event.kind() {
+            ChangeKind::Created(_) => WatchEvent::Created(path.as_path().into()),
+            ChangeKind::Removed(_) => WatchEvent::Removed(path.as_path().into()),
+            ChangeKind::NameModified(RenameSide::From) => {
                 // Half of a rename — treat as removal (conservative).
                 WatchEvent::Removed(path.as_path().into())
             }
-            EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::To)) => {
+            ChangeKind::NameModified(RenameSide::To) => {
                 // Half of a rename — treat as creation (conservative).
                 WatchEvent::Created(path.as_path().into())
             }
-            EventKind::Modify(_) => WatchEvent::Modified(path.as_path().into()),
-            EventKind::Access(_) => continue,
-            // Any, Other — conservative: treat as modification.
-            _ => WatchEvent::Modified(path.as_path().into()),
+            ChangeKind::ContentModified
+            | ChangeKind::MetadataModified
+            // A `Both` rename with fewer than two paths never reached the
+            // branch above, and `Unknown` is a rename whose side the host did
+            // not say. Both are modifications, conservatively.
+            | ChangeKind::NameModified(_) => WatchEvent::Modified(path.as_path().into()),
+            ChangeKind::Accessed => continue,
+            ChangeKind::Other => WatchEvent::Modified(path.as_path().into()),
         };
 
         result.push(watch_event);
@@ -178,6 +206,9 @@ fn convert_event(ignore: &IgnoreFilter, event: &Event) -> Vec<WatchEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the fixtures name these: the conversion above reads a kind, it
+    // does not build one.
+    use kernal_api::platform::fs_watch::{EntryKind, RescanRequired};
 
     fn test_filter() -> IgnoreFilter {
         IgnoreFilter::new(vec![".git".to_string(), "target".to_string()])
@@ -186,11 +217,10 @@ mod tests {
     #[test]
     fn convert_create_event() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Create(notify::event::CreateKind::File),
-            paths: vec![Path::new("src/main.rs").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::Created(EntryKind::File),
+            vec![Path::new("src/main.rs").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(
@@ -201,13 +231,10 @@ mod tests {
     #[test]
     fn convert_modify_event() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Content,
-            )),
-            paths: vec![Path::new("src/lib.rs").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::ContentModified,
+            vec![Path::new("src/lib.rs").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(
@@ -218,11 +245,10 @@ mod tests {
     #[test]
     fn convert_remove_event() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Remove(notify::event::RemoveKind::File),
-            paths: vec![Path::new("old.c").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::Removed(EntryKind::File),
+            vec![Path::new("old.c").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Removed(p) if p.as_path() == Path::new("old.c")));
@@ -231,13 +257,10 @@ mod tests {
     #[test]
     fn convert_rename_both() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::Both,
-            )),
-            paths: vec![Path::new("old.c").to_owned(), Path::new("new.c").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::NameModified(RenameSide::Both),
+            vec![Path::new("old.c").to_owned(), Path::new("new.c").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(
@@ -250,13 +273,10 @@ mod tests {
     #[test]
     fn convert_rename_from_becomes_removed() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::From,
-            )),
-            paths: vec![Path::new("gone.c").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::NameModified(RenameSide::From),
+            vec![Path::new("gone.c").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Removed(p) if p.as_path() == Path::new("gone.c")));
@@ -265,13 +285,10 @@ mod tests {
     #[test]
     fn convert_rename_to_becomes_created() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::To,
-            )),
-            paths: vec![Path::new("appeared.c").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::NameModified(RenameSide::To),
+            vec![Path::new("appeared.c").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(
@@ -282,13 +299,10 @@ mod tests {
     #[test]
     fn ignored_paths_filtered_out() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Content,
-            )),
-            paths: vec![Path::new("project/.git/index").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::ContentModified,
+            vec![Path::new("project/.git/index").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert!(result.is_empty());
     }
@@ -296,16 +310,13 @@ mod tests {
     #[test]
     fn ignored_rename_both_filtered() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::Both,
-            )),
-            paths: vec![
+        let event = ChangeEvent::new(
+            ChangeKind::NameModified(RenameSide::Both),
+            vec![
                 Path::new("project/.git/old").to_owned(),
                 Path::new("project/.git/new").to_owned(),
             ],
-            attrs: Default::default(),
-        };
+        );
         let result = convert_event(&filter, &event);
         assert!(result.is_empty());
     }
@@ -314,16 +325,13 @@ mod tests {
     fn rename_from_ignored_to_visible_becomes_created() {
         // Rename from an ignored dir to a visible dir should produce Created(to).
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::Both,
-            )),
-            paths: vec![
+        let event = ChangeEvent::new(
+            ChangeKind::NameModified(RenameSide::Both),
+            vec![
                 Path::new("project/.git/stash").to_owned(),
                 Path::new("src/recovered.c").to_owned(),
             ],
-            attrs: Default::default(),
-        };
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(
@@ -335,16 +343,13 @@ mod tests {
     fn rename_from_visible_to_ignored_becomes_removed() {
         // Rename from a visible dir to an ignored dir should produce Removed(from).
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::Both,
-            )),
-            paths: vec![
+        let event = ChangeEvent::new(
+            ChangeKind::NameModified(RenameSide::Both),
+            vec![
                 Path::new("src/main.rs").to_owned(),
                 Path::new("project/.git/stash").to_owned(),
             ],
-            attrs: Default::default(),
-        };
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(
@@ -355,11 +360,10 @@ mod tests {
     #[test]
     fn access_events_ignored() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Access(notify::event::AccessKind::Read),
-            paths: vec![Path::new("src/main.rs").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::Accessed,
+            vec![Path::new("src/main.rs").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert!(result.is_empty());
     }
@@ -368,13 +372,10 @@ mod tests {
     fn rename_both_with_single_path_falls_through() {
         // Rename Both with < 2 paths should not panic; falls to per-path loop.
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::Both,
-            )),
-            paths: vec![Path::new("only_one.c").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::NameModified(RenameSide::Both),
+            vec![Path::new("only_one.c").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         // Falls through to per-path handling as Modify(Name(Both)), caught by wildcard → Modified.
         assert_eq!(result.len(), 1);
@@ -384,13 +385,7 @@ mod tests {
     #[test]
     fn event_with_empty_paths() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Content,
-            )),
-            paths: vec![],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(ChangeKind::ContentModified, vec![]);
         let result = convert_event(&filter, &event);
         assert!(result.is_empty());
     }
@@ -398,11 +393,7 @@ mod tests {
     #[test]
     fn event_kind_other_becomes_modified() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Other,
-            paths: vec![Path::new("mystery.c").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(ChangeKind::Other, vec![Path::new("mystery.c").to_owned()]);
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Modified(_)));
@@ -411,11 +402,7 @@ mod tests {
     #[test]
     fn event_kind_any_becomes_modified() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Any,
-            paths: vec![Path::new("any.c").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(ChangeKind::Other, vec![Path::new("any.c").to_owned()]);
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Modified(_)));
@@ -424,11 +411,10 @@ mod tests {
     #[test]
     fn remove_directory_event() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Remove(notify::event::RemoveKind::Folder),
-            paths: vec![Path::new("src/old_module").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::Removed(EntryKind::Folder),
+            vec![Path::new("src/old_module").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Removed(_)));
@@ -437,11 +423,10 @@ mod tests {
     #[test]
     fn create_directory_event() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Create(notify::event::CreateKind::Folder),
-            paths: vec![Path::new("src/new_module").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::Created(EntryKind::Folder),
+            vec![Path::new("src/new_module").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Created(_)));
@@ -450,13 +435,10 @@ mod tests {
     #[test]
     fn metadata_change_becomes_modified() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Metadata(
-                notify::event::MetadataKind::Permissions,
-            )),
-            paths: vec![Path::new("script.sh").to_owned()],
-            attrs: Default::default(),
-        };
+        let event = ChangeEvent::new(
+            ChangeKind::MetadataModified,
+            vec![Path::new("script.sh").to_owned()],
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Modified(_)));
@@ -497,28 +479,44 @@ mod tests {
     }
 
     #[test]
-    fn rescan_flag_produces_overflow() {
-        use notify::event::Flag;
-
+    fn a_rescan_produces_overflow() {
         let filter = test_filter();
-        // inotify Q_OVERFLOW and FSEvents MUST_SCAN_SUBDIRS produce
-        // EventKind::Other with Flag::Rescan and empty paths.
-        let event = Event::new(EventKind::Other).set_flag(Flag::Rescan);
-        let result = convert_event(&filter, &event);
+        // Was an `EventKind::Other` carrying `Flag::Rescan`; the facade
+        // reports it as its own variant (kernal-api#76), so this is now a
+        // notification rather than an event with a flag.
+        let notification =
+            WatchNotification::RescanRequired(RescanRequired::new(false, Vec::new()));
+        let result = convert_notification(&filter, &notification);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Overflow));
     }
 
     #[test]
-    fn rescan_flag_with_paths_still_produces_overflow() {
-        use notify::event::Flag;
-
+    fn a_rescan_with_paths_still_produces_overflow() {
         let filter = test_filter();
-        // Even if a rescan event carries paths, we still treat it as overflow
-        // because the semantics are "everything may have changed".
-        let mut event = Event::new(EventKind::Other).set_flag(Flag::Rescan);
-        event.paths = vec![Path::new("src/main.rs").to_owned()];
-        let result = convert_event(&filter, &event);
+        // Even when a rescan names paths, it is overflow: the semantics are
+        // "everything may have changed", not "these changed".
+        let notification = WatchNotification::RescanRequired(RescanRequired::new(
+            false,
+            vec![Path::new("src/main.rs").to_owned()],
+        ));
+        let result = convert_notification(&filter, &notification);
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], WatchEvent::Overflow));
+    }
+
+    /// A lost watch is still overflow to this crate, and must not be dropped
+    /// merely because it also means the watch has to be re-established.
+    /// kernal-api#76's migration note is explicit that an adapter matching
+    /// only on `Err` stops seeing both Windows conditions entirely.
+    #[test]
+    fn a_lost_watch_is_reported_as_overflow_too() {
+        let filter = test_filter();
+        let notification = WatchNotification::RescanRequired(RescanRequired::new(
+            true,
+            vec![Path::new("src").to_owned()],
+        ));
+        let result = convert_notification(&filter, &notification);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], WatchEvent::Overflow));
     }
@@ -526,17 +524,14 @@ mod tests {
     #[test]
     fn mixed_paths_filter_individually() {
         let filter = test_filter();
-        let event = Event {
-            kind: EventKind::Modify(notify::event::ModifyKind::Data(
-                notify::event::DataChange::Content,
-            )),
-            paths: vec![
+        let event = ChangeEvent::new(
+            ChangeKind::ContentModified,
+            vec![
                 Path::new("src/main.rs").to_owned(),
                 Path::new("target/debug/binary").to_owned(),
                 Path::new("src/lib.rs").to_owned(),
             ],
-            attrs: Default::default(),
-        };
+        );
         let result = convert_event(&filter, &event);
         assert_eq!(result.len(), 2);
     }

@@ -51,7 +51,7 @@ pub(crate) fn scan_staged_disk_artifacts(
         return Ok(Vec::new());
     }
     let store_lock = open_store_lock(&root)?;
-    fs2::FileExt::lock_shared(&store_lock)?;
+    let _store_lock_guard = kernal_api::platform::fs::lock_shared(&store_lock)?;
     scan_staged_disk_artifacts_locked(artifact_dir, root.as_path())
 }
 
@@ -123,7 +123,7 @@ pub(crate) fn evict_staged_artifact_keys(
         return Ok(0);
     }
     let store_lock = open_store_lock(&root)?;
-    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let _store_lock_guard = kernal_api::platform::fs::lock_exclusive(&store_lock)?;
     evict_staged_artifact_keys_locked(artifact_dir, root.as_path(), keys)
 }
 
@@ -147,7 +147,7 @@ pub(crate) fn evict_staged_artifact_keys_if_unchanged(
         artifact_dir,
         super::StagedHookPoint::MaintenanceStoreLockPending,
     );
-    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let _store_lock_guard = kernal_api::platform::fs::lock_exclusive(&store_lock)?;
     let mut removed = HashSet::new();
     for (key, expected_generation) in expected.iter().filter(|(key, _)| staged_key_supported(key)) {
         let pointer = pointer_path(artifact_dir, key);
@@ -226,7 +226,7 @@ pub(in crate::daemon::server) fn clear_staged_artifacts(artifact_dir: &Path) -> 
         artifact_dir,
         super::StagedHookPoint::MaintenanceStoreLockPending,
     );
-    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let _store_lock_guard = kernal_api::platform::fs::lock_exclusive(&store_lock)?;
     let mut bytes_removed = 0;
     for entry in fs::read_dir(&root)?.flatten() {
         if entry.file_name() == STORE_LOCK {

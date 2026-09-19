@@ -6,7 +6,7 @@
 //! durable journal environment values are secret-filtered.
 //!
 //! Architecture: a lock-free channel feeding a background `std::thread`.
-//! Serialization happens on the caller's tokio task; the background thread
+//! Serialization happens on the caller's async task; the background thread
 //! does file I/O only. Zero contention on the hot path.
 //!
 //! Module layout (originally a single 2K-LOC file; split per `README.md`):
@@ -88,17 +88,23 @@ pub mod miss_reason {
     ];
 }
 
-tokio::task_local! {
-    static ACTIVE_MISS_REASON: Cell<Option<&'static str>>;
-    static ACTIVE_CONTEXT_KEY: std::cell::RefCell<Option<String>>;
-    static ACTIVE_CHILD_MEMORY: Cell<ChildMemory>;
+kernal_api::task_local! {
+    static ACTIVE_MISS_REASON: Cell<Option<&'static str>> = ACTIVE_MISS_REASON_TLS;
+}
+
+kernal_api::task_local! {
+    static ACTIVE_CONTEXT_KEY: std::cell::RefCell<Option<String>> = ACTIVE_CONTEXT_KEY_TLS;
+}
+
+kernal_api::task_local! {
+    static ACTIVE_CHILD_MEMORY: Cell<ChildMemory> = ACTIVE_CHILD_MEMORY_TLS;
 }
 
 /// Run one request with an isolated miss-attribution slot.
 ///
 /// The caller heap-pins the request future before entering this wrapper.
 /// Compile futures are large in debug builds, and keeping one inline in the
-/// task-local scope can exhaust Tokio's default worker stack on Windows.
+/// task-local scope can exhaust a worker stack on Windows.
 pub async fn capture_miss_reason<F>(
     future: std::pin::Pin<Box<F>>,
 ) -> (F::Output, Option<&'static str>, Option<String>, ChildMemory)
@@ -500,13 +506,13 @@ impl SelfProfileSpans {
 
 /// JSONL compile journal backed by a sync channel and background writer thread.
 ///
-/// The channel is `std::sync::mpsc` (not `tokio::sync::mpsc`) because the
-/// consumer is a plain OS thread doing blocking file I/O — using tokio's
-/// `blocking_recv` here forced the writer through tokio's parking_lot chain
+/// The channel is `std::sync::mpsc` (not an async bounded channel) because the
+/// consumer is a plain OS thread doing blocking file I/O — using a runtime
+/// blocking receive here forced the writer through the runtime parking chain
 /// for every message, costing one context switch per entry (ISSUE-101).
 ///
 /// The sender is wrapped in `Mutex` so the `CompileJournal` handle remains
-/// `Sync` (callers share it as `Arc<CompileJournal>` across tokio tasks and
+/// `Sync` (callers share it as `Arc<CompileJournal>` across async tasks and
 /// real threads — see `tests::test_concurrent_logging` and the daemon's
 /// `ServerState`). `std::sync::mpsc::Sender` is `Send` but not `Sync`, so a
 /// raw field would break those call sites. The lock is uncontended in
@@ -561,7 +567,7 @@ impl CompileJournal {
     /// per-session JSONL file.
     pub fn log(&self, entry: &JournalEntry, session_path: Option<&Path>) {
         if let Some(tx) = &self.sender {
-            // Serialize on caller's thread (tokio task).
+            // Serialize on the caller's thread (async task).
             match serde_json::to_string(entry) {
                 Ok(line) => {
                     if let Ok(tx) = tx.lock() {

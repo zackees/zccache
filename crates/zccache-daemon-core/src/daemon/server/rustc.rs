@@ -698,7 +698,7 @@ pub(super) fn msvc_target_writes_pdb(rustc_args: &crate::depgraph::RustcParsedAr
         // deliberately over-approximates (a windows-gnu host toolchain also
         // returns true) because a declared-but-unproduced pdb is filtered at
         // collection time (see the doc comment above), while host `cfg!` is
-        // not allowed outside zccache-platform (enforce_platform_boundary).
+        // not allowed outside approved adapters (enforce_platform_boundary).
         None => crate::platform::host::is_windows(),
     }
 }

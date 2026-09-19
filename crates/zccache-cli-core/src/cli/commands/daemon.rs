@@ -185,16 +185,30 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
                 return ExitCode::SUCCESS;
             };
 
-            match crate::ipc::force_kill_process(pid) {
-                Ok(()) => {
+            match crate::ipc::force_kill_verified_daemon(pid) {
+                Ok(Some(handle)) => {
                     for _ in 0..50 {
-                        if !crate::ipc::is_process_alive(pid) {
-                            crate::ipc::remove_lock_file();
-                            eprintln!(
-                                "daemon process {pid} terminated after IPC connection failed"
-                            );
-                            wait_for_daemon_teardown(endpoint).await;
-                            return ExitCode::SUCCESS;
+                        // Keep the native control handle that passed the full
+                        // boot/PID/path/hash verification until termination
+                        // is observed. Reopening `pid` here would make a PID
+                        // reuse race destructive.
+                        match handle.has_exited() {
+                            Ok(true) => {
+                                crate::ipc::remove_lock_file();
+                                eprintln!(
+                                    "daemon process {pid} terminated after IPC connection failed"
+                                );
+                                wait_for_daemon_teardown(endpoint).await;
+                                return ExitCode::SUCCESS;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                eprintln!(
+                                    "zccache: sent termination to daemon process {pid}, but its \
+                                     held control handle cannot confirm exit: {error}"
+                                );
+                                return ExitCode::FAILURE;
+                            }
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
@@ -203,10 +217,21 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
                     );
                     return ExitCode::FAILURE;
                 }
+                Ok(None) => {
+                    // RUNNING_PROCESS_DISABLE and old direct-IPC daemons do
+                    // not persist broker identity. A live lock in that state
+                    // is uncertain, not stale: preserve its endpoint and do
+                    // not fall back to a PID reopen/kill.
+                    eprintln!(
+                        "zccache: cannot connect to daemon at {endpoint}; refusing to kill \
+                         locked process {pid} without persisted daemon identity"
+                    );
+                    return ExitCode::FAILURE;
+                }
                 Err(e) => {
                     eprintln!(
-                        "zccache: cannot connect to daemon at {endpoint}, and failed to kill \
-                         locked process {pid}: {e}"
+                        "zccache: cannot connect to daemon at {endpoint}, and verified held \
+                         control could not kill locked process {pid}: {e}"
                     );
                     return ExitCode::FAILURE;
                 }

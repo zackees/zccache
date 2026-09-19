@@ -747,13 +747,14 @@ pub(super) async fn handle_compile_multi(
         session_client_pid(&state, &sid),
         Some(sid.to_string()),
     );
-    let mut cmd = tokio::process::Command::new(&compiler);
+    let mut builder =
+        kernal_api::SpawnSpec::new(compiler.as_path()).current_dir(cwd_path.as_path());
     if let Some(ref rsp) = _rsp_guard {
-        cmd.arg(rsp.at_arg()).current_dir(&cwd_path);
+        builder = builder.arg(rsp.at_arg());
     } else {
-        cmd.args(&compiler_args).current_dir(&cwd_path);
+        builder = builder.args(&compiler_args);
     }
-    apply_client_env(&mut cmd, &client_env, &lineage);
+    let builder = apply_client_env_builder(builder, &client_env, &lineage);
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let built_in_exclusive =
         crate::daemon::server::compile_resource_gate::requires_exclusive_access_for_misses(
@@ -788,9 +789,13 @@ pub(super) async fn handle_compile_multi(
             host_admission,
         )
         .await;
-    let result =
-        super::super::process::tokio_command_output_with_priority(&mut cmd, compiler_priority)
-            .await;
+    let (result, _priority_decision) =
+        super::super::process::async_builder_output_with_priority_decision(
+            builder,
+            compiler_priority,
+            compiler.to_string_lossy().into_owned(),
+        )
+        .await;
     let _resource_admission = compiler_admission.release_compiler_slot();
 
     let output = match result {
@@ -1107,7 +1112,7 @@ pub(super) async fn handle_compile_multi(
         let _pending = pending_writes::register(&state.pending_cache_writes, &key_hex);
         let completion_key = key_hex.clone();
         let pending_state = Arc::clone(&state);
-        tokio::spawn(async move {
+        kernal_api::async_engine::launch(async move {
             #[expect(
                 clippy::expect_used,
                 reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
@@ -1116,7 +1121,7 @@ pub(super) async fn handle_compile_multi(
                 .acquire()
                 .await
                 .expect("persist_semaphore is owned by ServerState and never closed");
-            let written = tokio::task::spawn_blocking(move || {
+            let written = kernal_api::async_engine::launch_blocking(move || {
                 let _guard = guard;
                 let _publication_guard = publication_guard_for_task;
                 let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;
@@ -1134,12 +1139,13 @@ pub(super) async fn handle_compile_multi(
                     }
                 }
             })
+            .detach_on_drop()
             .await;
             if let Err(error) = written {
                 tracing::warn!(%error, "multi-source artifact persistence task failed to join");
             }
             pending_writes::complete(&pending_state.pending_cache_writes, &completion_key);
-        });
+        }).detach();
     }
 
     // Single batched apply_changes call (was 1 per miss): all miss outputs

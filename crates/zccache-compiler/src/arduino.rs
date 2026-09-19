@@ -206,9 +206,8 @@ fn discover_libclang_path() -> Option<NormalizedPath> {
                 }
             }
 
-            crate::platform::executable::clang_library_candidates()
+            clang_library_candidates()
                 .into_iter()
-                .map(NormalizedPath::from)
                 .find(|candidate| candidate.exists())
         })
         .clone()
@@ -236,7 +235,37 @@ fn ensure_libclang_env() -> Result<(), ArduinoError> {
 }
 
 fn libclang_filename() -> std::ffi::OsString {
-    crate::platform::executable::native_library_name(std::ffi::OsStr::new("libclang"))
+    kernal_api::platform::executable::native_library_name(std::ffi::OsStr::new("libclang"))
+}
+
+/// Conventional locations for libclang, in zccache's deliberately frozen
+/// preference order. This is compiler product policy, not a native substrate
+/// capability, so it stays with the compiler as the standalone platform crate is removed.
+fn clang_library_candidates() -> Vec<NormalizedPath> {
+    let candidates: &[&str] = match kernal_api::platform::host::process_target().os {
+        "linux" => &[
+            "/usr/lib/llvm-18/lib/libclang.so",
+            "/usr/lib/llvm-17/lib/libclang.so",
+            "/usr/lib/llvm-16/lib/libclang.so",
+            "/usr/lib/libclang.so",
+            "/usr/local/lib/libclang.so",
+        ],
+        "macos" => &[
+            "/opt/homebrew/opt/llvm/lib/libclang.dylib",
+            "/usr/local/opt/llvm/lib/libclang.dylib",
+            "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib",
+        ],
+        "windows" => &[
+            r"C:\Program Files\LLVM\bin\libclang.dll",
+            r"C:\Program Files\LLVM\lib\libclang.dll",
+            r"C:\Program Files\doxygen\bin\libclang.dll",
+        ],
+        _ => &[],
+    };
+    candidates
+        .iter()
+        .map(|candidate| NormalizedPath::from(*candidate))
+        .collect()
 }
 
 fn collect_existing_declarations(entities: &[Entity<'_>]) -> HashSet<String> {
@@ -412,4 +441,40 @@ fn build_generated_cpp(
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clang_library_candidates_preserve_zccache_product_order() {
+        let expected: &[&str] = match kernal_api::platform::host::process_target().os {
+            "linux" => &[
+                "/usr/lib/llvm-18/lib/libclang.so",
+                "/usr/lib/llvm-17/lib/libclang.so",
+                "/usr/lib/llvm-16/lib/libclang.so",
+                "/usr/lib/libclang.so",
+                "/usr/local/lib/libclang.so",
+            ],
+            "macos" => &[
+                "/opt/homebrew/opt/llvm/lib/libclang.dylib",
+                "/usr/local/opt/llvm/lib/libclang.dylib",
+                "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib",
+            ],
+            "windows" => &[
+                r"C:\Program Files\LLVM\bin\libclang.dll",
+                r"C:\Program Files\LLVM\lib\libclang.dll",
+                r"C:\Program Files\doxygen\bin\libclang.dll",
+            ],
+            _ => &[],
+        };
+        assert_eq!(
+            clang_library_candidates(),
+            expected
+                .iter()
+                .map(|path| NormalizedPath::from(*path))
+                .collect::<Vec<_>>()
+        );
+    }
 }

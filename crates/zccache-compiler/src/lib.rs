@@ -19,9 +19,6 @@
 #![allow(clippy::missing_errors_doc)]
 
 #[cfg(feature = "native")]
-pub(crate) use zccache_platform as platform;
-
-#[cfg(feature = "native")]
 pub mod arduino;
 mod detect;
 #[cfg(feature = "native")]

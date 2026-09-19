@@ -182,7 +182,7 @@ pub(crate) fn allocate_object_id(artifact_dir: &Path) -> io::Result<ArtifactObje
         .create(true)
         .truncate(false)
         .open(lock_path)?;
-    fs2::FileExt::lock_exclusive(&lock)?;
+    let _lock_guard = kernal_api::platform::fs::lock_exclusive(&lock)?;
 
     let counter_path = artifact_dir.join(COUNTER_FILE);
     let last = match read_counter(&counter_path) {
@@ -205,7 +205,8 @@ pub(crate) fn allocate_object_id(artifact_dir: &Path) -> io::Result<ArtifactObje
         let id = ArtifactObjectId(candidate);
         if !path_occupied(artifact_dir, id) {
             write_counter(&counter_path, candidate)?;
-            fs2::FileExt::unlock(&lock)?;
+            // The guard released this on the next line before; returning
+            // drops it, which is the same unlock at the same point.
             return Ok(id);
         }
         candidate = candidate.wrapping_add(1);

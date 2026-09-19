@@ -1,7 +1,5 @@
 //! Helpers for daemon-owned child processes.
 
-use std::io;
-use std::process::Output;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     Arc, OnceLock,
@@ -328,17 +326,6 @@ impl CompilePriority {
             None => Ok(Self::Auto),
         }
     }
-
-    fn platform_priority(self) -> crate::platform::process::priority::Priority {
-        use crate::platform::process::priority::Priority;
-
-        match self {
-            Self::Auto | Self::Normal => Priority::Normal,
-            Self::Low => Priority::Low,
-            Self::Idle => Priority::Idle,
-            Self::High => Priority::High,
-        }
-    }
 }
 
 const CPU_USAGE_UNKNOWN_BITS: u32 = u32::MAX;
@@ -389,25 +376,21 @@ impl CpuUsageMonitor {
     }
 
     fn run_sampler(&'static self) {
-        let mut system = sysinfo::System::new();
-        system.refresh_cpu_usage();
+        // The facade owns the averaging, the clamp, and the host's minimum
+        // sampling interval, so this loop is now only the cadence and the
+        // publish. Its first sample is the baseline and is documented as
+        // unreliable, which is why the sleep comes first.
+        let mut sampler = kernal_api::platform::host_processes::CpuSampler::new();
 
         loop {
-            std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-            system.refresh_cpu_usage();
-            let usage = average_cpu_usage_percent(&system).clamp(0.0, 100.0);
+            std::thread::sleep(
+                kernal_api::platform::host_processes::CpuSampler::minimum_interval(),
+            );
+            let usage = sampler.sample();
             self.last_usage_percent_bits
                 .store(usage.to_bits(), Ordering::Relaxed);
         }
     }
-}
-
-fn average_cpu_usage_percent(system: &sysinfo::System) -> f32 {
-    let cpus = system.cpus();
-    if cpus.is_empty() {
-        return 0.0;
-    }
-    cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32
 }
 
 fn current_cpu_usage_percent() -> Option<f32> {
@@ -532,215 +515,21 @@ pub(crate) struct CompilePriorityParseError {
     value: String,
 }
 
-/// Child creation is delegated to the running-process boundary.
-///
-/// This keeps Windows console policy out of zccache while preserving Tokio's
-/// async pipe and wait interfaces. In particular, it prevents a visible flash
-/// per cache-miss compile in the soldr + rustc + zccache call chain.
-///
-/// The compiler-identity probe (`rustc -vV` in [`super::server`]'s
-/// compiler-hash module) is covered by the same boundary.
-///
-/// Priority remains local post-spawn policy. Owner-death containment is
-/// configured transactionally by running-process on Linux and macOS; Windows
-/// retains zccache's established process-wide kill-on-close Job Object until
-/// the dependency's Windows spawn path can propagate assignment failures.
-///
-/// Wait for an async command after applying a compiler child priority.
-///
-/// Convenience wrapper that pipes `Stdio::null()` for stdin. Callers that
-/// need to forward client stdin use [`tokio_command_output_with_priority_stdin`].
-/// Spawn options for daemon-owned compiler/tool children (soldr#2442 slice 3):
-/// reap the child when the daemon drops the compile future (a client
-/// disconnect / Ctrl-C) and when the daemon process itself dies, so a cancelled
-/// or crashed compile never orphans a rustc process. running-process provides
-/// both primitives: `kill_on_drop` handles a dropped Tokio future, while the
-/// platform owner-death policy binds the child to the daemon process.
-///
-/// Linux and macOS install that containment transactionally in the dependency
-/// spawn boundary. Windows keeps the existing local kill-on-close Job Object,
-/// so it must not request the dependency's second Job Object as well.
-fn owned_child_spawn_options() -> running_process::TokioSpawnOptions {
-    running_process::TokioSpawnOptions {
-        kill_on_drop: true,
-        kill_when_owner_dies: crate::platform::process::spawn::uses_pre_spawn_owner_death(),
-        ..Default::default()
-    }
-}
+#[path = "process_session.rs"]
+mod session;
 
-pub(crate) async fn tokio_command_output_with_priority(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-) -> io::Result<Output> {
-    tokio_command_output_with_priority_stdin(cmd, priority, None).await
-}
-
-/// Compiler-spawn variant that returns the race-free `Auto` decision used for
-/// the child. Callers that emit miss profiles must use this instead of
-/// sampling [`CompilePriority::resolve_for_current_load`] before admission.
-pub(crate) async fn tokio_command_output_with_priority_decision(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-) -> (io::Result<Output>, CompilePriorityDecision) {
-    tokio_command_output_with_priority_stdin_inner(cmd, priority, None, None).await
-}
-
-/// Wait for an async command after applying compiler child priority, killing
-/// the child and returning `TimedOut` when `timeout` elapses.
-pub(crate) async fn tokio_command_output_with_priority_timeout(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-    timeout: std::time::Duration,
-) -> io::Result<Output> {
-    let wait = tokio_command_output_with_priority_stdin(cmd, priority, None);
-    match tokio::time::timeout(timeout, wait).await {
-        Ok(result) => result,
-        Err(_) => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!("child process timed out after {timeout:?}"),
-        )),
-    }
-}
-
-/// Async variant that pipes `stdin_bytes` into the child's stdin when the
-/// slice is `Some` and non-empty. `None` or empty pipes `Stdio::null()`.
-///
-/// The wait flows through the orphan-pipe watchdog in
-/// `crate::daemon::child_watchdog` so a child that leaves a pipe-holding
-/// grandchild cannot park the daemon forever (issue #962).
-pub(crate) async fn tokio_command_output_with_priority_stdin(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-    stdin_bytes: Option<&[u8]>,
-) -> io::Result<Output> {
-    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, None)
-        .await
-        .0
-}
-
-/// Streaming counterpart used by the embedded compile API. Process setup,
-/// priority, job assignment, stdin, and watchdog behavior are identical to
-/// [`tokio_command_output_with_priority_stdin`]; only pipe capture differs.
-pub(crate) async fn tokio_command_output_streaming_with_priority_stdin(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-    stdin_bytes: Option<&[u8]>,
-    sender: tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>,
-) -> io::Result<Output> {
-    tokio_command_output_with_priority_stdin_inner(cmd, priority, stdin_bytes, Some(sender))
-        .await
-        .0
-}
-
-/// Streaming compiler-spawn variant that reports the decision made while its
-/// in-flight ticket was acquired.
-pub(crate) async fn tokio_command_output_streaming_with_priority_decision(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-    sender: tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>,
-) -> (io::Result<Output>, CompilePriorityDecision) {
-    tokio_command_output_with_priority_stdin_inner(cmd, priority, None, Some(sender)).await
-}
-
-async fn tokio_command_output_with_priority_stdin_inner(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-    stdin_bytes: Option<&[u8]>,
-    stream: Option<tokio::sync::mpsc::Sender<crate::daemon::compile_output::RawOutputChunk>>,
-) -> (io::Result<Output>, CompilePriorityDecision) {
-    let (decision, _ticket) = priority.resolve_and_track();
-    let priority = decision.effective;
-    let pipe_stdin = matches!(stdin_bytes, Some(b) if !b.is_empty());
-    // Human-readable program id for the child-wait watchdog diagnostics
-    // (issue #962). Captured before the command is mutated/spawned.
-    let cmd_desc = cmd.as_std().get_program().to_string_lossy().into_owned();
-
-    use std::process::Stdio;
-    use tokio::io::AsyncWriteExt;
-
-    if pipe_stdin {
-        cmd.stdin(Stdio::piped());
-    } else {
-        cmd.stdin(Stdio::null());
-    }
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    let mut child = match spawn_tokio_excluding_materialization(cmd) {
-        Ok(child) => child,
-        Err(error) => return (Err(error), decision),
-    };
-    attach_child_owner_death(&child);
-    apply_priority_to_child(&child, priority);
-    if pipe_stdin {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(stdin_bytes.unwrap_or(&[])).await;
-            let _ = stdin.shutdown().await;
-        }
-    }
-    let result = match stream {
-        Some(sender) => {
-            crate::daemon::child_watchdog::wait_with_output_watchdog_streaming(
-                child, &cmd_desc, sender,
-            )
-            .await
-        }
-        None => crate::daemon::child_watchdog::wait_with_output_watchdog(child, &cmd_desc).await,
-    };
-    (result, decision)
-}
-
-/// Run a leaf tool without the orphan-pipe watchdog used for compilers.
-/// Pure archivers do not spawn descendants, so Tokio can reap them directly.
-pub(crate) async fn tokio_leaf_command_output_with_priority(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-) -> io::Result<Output> {
-    use std::process::Stdio;
-
-    let (decision, _ticket) = priority.resolve_and_track();
-    let priority = decision.effective;
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    let child = spawn_tokio_excluding_materialization(cmd)?;
-    attach_child_owner_death(&child);
-    apply_priority_to_child(&child, priority);
-    child.wait_with_output().await
-}
-
-/// Spawn a daemon-owned child while holding the shared half of the
-/// materialization/spawn lock (zccache#1562). `spawn` returns only after the
-/// child has exec'd (or failed to), so the guard covers the whole fork-to-exec
-/// window in which the child still holds a copy of this process's descriptor
-/// table. Holding it here, at the single choke point every compiler, linker,
-/// archiver, exec-tool, deploy-hook, and async identity-probe child passes
-/// through, keeps every call site covered without touching them.
-fn spawn_tokio_excluding_materialization(
-    cmd: &mut tokio::process::Command,
-) -> io::Result<tokio::process::Child> {
-    let _spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
-    running_process::spawn_tokio(cmd, owned_child_spawn_options())
-}
-
-fn attach_child_owner_death(child: &tokio::process::Child) {
-    if let Err(error) = crate::platform::process::spawn::attach_owner_death(child) {
-        tracing::debug!(%error, "failed to attach child process owner-death primitive");
-    }
-}
-
-fn apply_priority_to_child(child: &tokio::process::Child, priority: CompilePriority) {
-    if let Err(error) =
-        crate::platform::process::priority::apply_to_child(child, priority.platform_priority())
-    {
-        tracing::debug!(
-            ?priority,
-            %error,
-            "failed to set compiler child priority"
-        );
-    }
-}
+pub(crate) use session::{
+    async_builder_output_streaming_with_priority_decision, async_builder_output_with_priority,
+    async_builder_output_with_priority_and_post_exit_grace,
+    async_builder_output_with_priority_decision, async_builder_output_with_priority_stdin,
+    async_builder_output_with_priority_timeout,
+};
 
 #[cfg(test)]
 #[path = "process_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "process_session_tests.rs"]
+mod session_tests;
 // test inside `cargo test` because the test runner's own stdio

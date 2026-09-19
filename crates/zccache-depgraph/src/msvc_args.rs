@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn basic_msvc_compile() {
-        if !crate::platform::host::is_windows() {
+        if !kernal_api::platform::host::target_is_windows() {
             return;
         }
         let parsed = parse_msvc_args(
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn include_dirs() {
-        if !crate::platform::host::is_windows() {
+        if !kernal_api::platform::host::target_is_windows() {
             return;
         }
         let parsed = parse_msvc_args(
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn force_include() {
-        if !crate::platform::host::is_windows() {
+        if !kernal_api::platform::host::target_is_windows() {
             return;
         }
         let parsed = parse_msvc_args(&args(&["/FIpch.h", "/c", "x.cpp"]), Path::new("C:\\p"));
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn dash_prefix_include() {
-        if !crate::platform::host::is_windows() {
+        if !kernal_api::platform::host::target_is_windows() {
             return;
         }
         let parsed = parse_msvc_args(&args(&["-I", "inc", "/c", "x.cpp"]), Path::new("C:\\p"));

@@ -55,17 +55,17 @@ pub(super) async fn run_tool_passthrough(
         }
     };
 
-    let mut cmd = tokio::process::Command::new(tool);
+    let mut builder = kernal_api::SpawnSpec::new(tool);
     if let Some(ref response_file) = response_file {
-        cmd.arg(response_file.at_arg());
+        builder = builder.arg(response_file.at_arg());
     } else {
-        cmd.args(args);
+        builder = builder.args(args.iter().cloned());
     }
-    cmd.current_dir(cwd);
-    apply_client_env(&mut cmd, &env, lineage);
+    builder = builder.current_dir(cwd);
+    builder = apply_client_env_builder(builder, &env, lineage);
 
     let priority = CompilePriority::from_client_env(env.as_deref());
-    match super::super::process::tokio_command_output_with_priority(&mut cmd, priority).await {
+    match super::super::process::async_builder_output_with_priority(builder, priority).await {
         Ok(output) => Response::LinkResult {
             exit_code: output.status.code().unwrap_or(1),
             stdout: Arc::new(output.stdout),
@@ -91,12 +91,19 @@ pub(super) async fn run_archive_tool_passthrough(
     env: Option<Vec<(String, String)>>,
     lineage: &super::super::lineage::Lineage,
 ) -> Response {
-    let mut cmd = tokio::process::Command::new(tool);
-    cmd.args(args);
-    cmd.current_dir(cwd);
-    apply_client_env(&mut cmd, &env, lineage);
+    let builder = apply_client_env_builder(
+        kernal_api::SpawnSpec::new(tool)
+            .args(args.iter().cloned())
+            .current_dir(cwd),
+        &env,
+        lineage,
+    );
     let priority = CompilePriority::from_client_env(env.as_deref());
-    match super::super::process::tokio_leaf_command_output_with_priority(&mut cmd, priority).await {
+    match super::super::process::async_builder_output_with_priority_and_post_exit_grace(
+        builder, priority, None,
+    )
+    .await
+    {
         Ok(output) => Response::LinkResult {
             exit_code: output.status.code().unwrap_or(1),
             stdout: Arc::new(output.stdout),
@@ -127,21 +134,21 @@ pub(super) async fn run_post_link_deploy_hook(
     };
     let extra_args: Vec<&str> = parts.collect();
 
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(&extra_args);
-    cmd.arg(output_path);
+    let mut builder = kernal_api::SpawnSpec::new(program)
+        .args(extra_args)
+        .arg(output_path.as_os_str());
     if let Some(parent) = output_path.parent() {
-        cmd.current_dir(parent);
+        builder = builder.current_dir(parent);
     }
     if let Some(vars) = env {
-        cmd.env_clear();
+        builder = builder.clear_env(true);
         for (key, val) in vars {
             if client_env_var_is_safe_to_replay(key) {
-                cmd.env(key, val);
+                builder = builder.env(key, val);
             }
         }
     }
-    lineage.apply_to_tokio(&mut cmd, env);
+    builder = lineage.apply_to_async_builder(builder, env);
 
     tracing::debug!(
         program = %program,
@@ -150,7 +157,7 @@ pub(super) async fn run_post_link_deploy_hook(
     );
 
     let priority = CompilePriority::from_client_env(env);
-    match super::super::process::tokio_command_output_with_priority(&mut cmd, priority).await {
+    match super::super::process::async_builder_output_with_priority(builder, priority).await {
         Ok(out) if out.status.success() => {
             tracing::debug!(program = %program, "post-link deploy hook succeeded");
         }

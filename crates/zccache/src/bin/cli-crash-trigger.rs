@@ -4,16 +4,23 @@
 //! (matching the production CLI) and then deliberately faults so the
 //! integration test can assert the resulting dump filename includes
 //! both `zccache` and the kind label.
+//!
+//! `drain` faults nothing: a fatal signal becomes a readable dump at the
+//! *next* start (kernal-api#72), and this mode is how a test models it.
 
 fn main() {
     let _guard = zccache::core::crash::install("zccache");
     let mode = std::env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
+        // `install` above already drained; nothing else to do.
+        "drain" => {}
         "panic" => panic!("intentional test panic from cli-crash-trigger"),
         "sigsegv" => unsafe { sadness_generator::raise_segfault() },
         "sigabrt" => unsafe { sadness_generator::raise_abort() },
         other => {
-            eprintln!("cli-crash-trigger: unknown mode '{other}' (expected panic|sigsegv|sigabrt)");
+            eprintln!(
+                "cli-crash-trigger: unknown mode '{other}' (expected panic|sigsegv|sigabrt|drain)"
+            );
             std::process::exit(2);
         }
     }

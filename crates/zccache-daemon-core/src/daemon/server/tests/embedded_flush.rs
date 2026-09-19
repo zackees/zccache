@@ -45,10 +45,10 @@ async fn embedded_flush_persists_queued_index_rows_before_returning() {
     for i in 0..expected {
         let key = format!("{i:064x}");
         let meta = synthetic_index_entry(i as u64 + 1);
-        state
+        assert!(state
             .index_writer_tx
             .send(IndexWriterCommand::Insert(key, meta))
-            .unwrap();
+            .is_ok());
     }
 
     let report = daemon.flush().await;

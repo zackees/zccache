@@ -234,8 +234,8 @@ fn stress_journal_overflow_recovery() {
 fn stress_settle_buffer_high_throughput() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let (raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (raw_tx, raw_rx) = kernal_api::async_engine::unbounded_channel();
+        let (settled_tx, mut settled_rx) = kernal_api::async_engine::unbounded_channel();
 
         let buffer = SettleBuffer::new(Duration::from_millis(10));
         let handle = tokio::spawn(async move {
@@ -566,7 +566,7 @@ fn integration_full_pipeline() {
         let (mut watcher, raw_rx) = NotifyWatcher::new(ignore).unwrap();
         watcher.watch(dir.path()).unwrap();
 
-        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (settled_tx, mut settled_rx) = kernal_api::async_engine::unbounded_channel();
         let buffer = SettleBuffer::new(Duration::from_millis(100));
         let settle_handle = tokio::spawn(async move {
             buffer.run(raw_rx, settled_tx).await;

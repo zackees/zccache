@@ -1,4 +1,9 @@
 # Machine-checked inventory for zccache#1519.
+#
+# The `platform_group` records below are retained historical migration
+# evidence. They are no longer live source mappings: zccache-platform has
+# been replaced by product adapters over kernal-api, and the checker now
+# verifies dependencies plus characterization evidence instead.
 [inventory]
 issue = "zccache#1519"
 consumer_umbrella = "zccache#1518"
@@ -86,7 +91,7 @@ disposition = "extend"
 kernel_capability = "semantic command presentation and containment preparation"
 [[platform_group]]
 source = "crates/zccache-platform/src/platform/process/exit.rs"
-items = ["NativeExit", "ExitOutcome", "outcome", "termination_signal_from_exit_code", "crash_label", "context_label", "context_summary"]
+items = ["NativeExit", "ExitOutcome", "outcome", "termination_signal_from_exit_code", "crash_label"]
 disposition = "extend"
 kernel_capability = "native exit and crash-context classification"
 [[platform_group]]
@@ -152,69 +157,79 @@ disposition = "retain"
 owner = "zccache-ipc"
 reason = "Endpoint display wording and probe policy are product protocol policy."
 
+# `manifests` lists every production manifest that still declares the backend
+# directly, sorted the way the checker enumerates them. An empty list means the
+# migration for that backend is finished: no crate depends on it outside
+# `[dev-dependencies]` any more. The entry stays because empty is load-bearing
+# -- re-adding the backend to any manifest is then reported as an unmapped
+# production dependency, which is the conversation this inventory exists to
+# force.
 [[backend_dependency]]
 name = "tokio"
 disposition = "extend"
 kernel_capability = "runtime, task, clock, channel, I/O, and blocking-work facade"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-artifact/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-download/Cargo.toml", "crates/zccache-fscache/Cargo.toml", "crates/zccache-ipc/Cargo.toml", "crates/zccache-platform/Cargo.toml", "crates/zccache-watcher/Cargo.toml"]
+manifests = ["crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-download/Cargo.toml", "crates/zccache-ipc/Cargo.toml", "crates/zccache/Cargo.toml"]
 [[backend_dependency]]
 name = "tokio-util"
 disposition = "extend"
 kernel_capability = "cancellation facade"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-download/Cargo.toml"]
+manifests = []
 [[backend_dependency]]
 name = "running-process"
 disposition = "reuse"
 kernel_capability = "private native process and broker substrate"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-ipc/Cargo.toml", "crates/zccache-protocol/Cargo.toml"]
+manifests = []
 [[backend_dependency]]
 name = "interprocess"
 disposition = "extend"
 kernel_capability = "private local transport implementation"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-ipc/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+manifests = []
 [[backend_dependency]]
 name = "crash-handler"
 disposition = "extend"
 kernel_capability = "crash capture and native exit report"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+manifests = []
 [[backend_dependency]]
 name = "memmap2"
 disposition = "extend"
 kernel_capability = "mapped-file access"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-hash/Cargo.toml"]
+manifests = []
 [[backend_dependency]]
 name = "fs2"
 disposition = "extend"
 kernel_capability = "advisory file locks"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-artifact/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-fingerprint/Cargo.toml"]
+manifests = []
 [[backend_dependency]]
 name = "blake3"
 disposition = "extend"
 kernel_capability = "fast content hashing and file identity"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-artifact/Cargo.toml", "crates/zccache-cli-core/Cargo.toml", "crates/zccache-daemon-core/Cargo.toml", "crates/zccache-depgraph/Cargo.toml", "crates/zccache-download/Cargo.toml", "crates/zccache-hash/Cargo.toml", "crates/zccache-ipc/Cargo.toml"]
+manifests = []
 [[backend_dependency]]
 name = "libc"
 disposition = "extend"
 kernel_capability = "private Unix OS implementation"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+manifests = ["crates/zccache/Cargo.toml"]
 [[backend_dependency]]
 name = "windows-sys"
 disposition = "extend"
 kernel_capability = "private Windows OS implementation"
-manifests = ["crates/zccache/Cargo.toml", "crates/zccache-platform/Cargo.toml"]
+manifests = ["crates/zccache/Cargo.toml"]
 
 [[characterization]]
 contract = "embedded runtime ownership, cancellation, forced shutdown, admission, flush, and child cleanup"
 tests = ["crates/zccache-daemon-core/src/embedded/tests.rs", "crates/zccache-daemon-core/src/embedded/contract_tests.rs", "crates/zccache/tests/daemon_lifecycle/embedded_service_test.rs"]
 [[characterization]]
 contract = "process containment, bounded probe, detached launch, priority, jobserver, and executable identity"
-tests = ["crates/zccache-daemon-core/src/daemon/process_tests.rs", "crates/zccache-cli-core/src/cli/runtime/tests.rs", "crates/zccache-platform/src/platform/process/tests.rs"]
+tests = ["crates/zccache-daemon-core/src/daemon/process_tests.rs", "crates/zccache-cli-core/src/cli/runtime/tests.rs", "crates/zccache-daemon-core/src/platform.rs"]
+[[characterization]]
+contract = "SpawnSpec/ProcessSession child lifecycle: stdin feeding, output capture/streaming, stall kill, post-exit drain, and child peak/tree RSS sampling"
+tests = ["crates/zccache-daemon-core/src/daemon/process_session_tests.rs", "crates/zccache-daemon-core/src/embedded/contract_tests.rs"]
 [[characterization]]
 contract = "local IPC peer security, endpoint retirement, broker identity/probe, manifest, route, and refusal behavior"
-tests = ["crates/zccache-ipc/src/mod_tests.rs", "crates/zccache-ipc/src/transport/tests.rs", "crates/zccache-platform/src/platform/ipc/tests.rs"]
+tests = ["crates/zccache-ipc/src/mod_tests.rs", "crates/zccache-ipc/src/mod_tests/identity.rs", "crates/zccache-ipc/src/transport/tests.rs", "crates/zccache-ipc/src/transport/probe.rs", "crates/zccache-ipc/src/broker.rs", "crates/zccache-ipc/src/platform.rs"]
 [[characterization]]
 contract = "frozen frame bytes, payload protocol 0x7A63, and single-round-trip path"
 tests = ["crates/zccache/tests/wire/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/wire/daemon_wire_prost_roundtrip.rs"]
 [[characterization]]
 contract = "filesystem identity, links, permissions, replacement, stored mtimes, and hardlink-safe materialization"
-tests = ["crates/zccache-daemon-core/src/daemon/server/persist/tests.rs", "crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs", "crates/zccache-platform/src/platform/fs/README.md"]
+tests = ["crates/zccache-daemon-core/src/daemon/server/persist/tests.rs", "crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs", "crates/zccache-artifact/src/rust_plan/tests/restore_errors.rs"]

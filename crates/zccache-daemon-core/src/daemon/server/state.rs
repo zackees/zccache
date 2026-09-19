@@ -35,7 +35,7 @@ const STAGING_ABANDONED_MIN_AGE: std::time::Duration = std::time::Duration::from
 /// daemon's compiler outputs.
 pub(super) struct StagingRoot {
     path: NormalizedPath,
-    lock: Option<std::fs::File>,
+    lock: Option<kernal_api::platform::fs::OwnedFileLock>,
 }
 
 impl StagingRoot {
@@ -44,7 +44,6 @@ impl StagingRoot {
         configured_parent: Option<&Path>,
         instance: u64,
     ) -> std::io::Result<Self> {
-        use fs2::FileExt;
         use std::io::Write;
 
         let nonce = std::time::SystemTime::now()
@@ -56,7 +55,7 @@ impl StagingRoot {
             .unwrap_or_else(|| cache_dir.join("staging"));
         let path = parent.join(format!("{}-{instance}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&path)?;
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -65,11 +64,11 @@ impl StagingRoot {
         // Never wait behind a cleaner that observed this just-created
         // directory before we acquired its lock. Failing daemon startup is
         // safer than returning a staging root a concurrent cleaner unlinked.
-        file.try_lock_exclusive()?;
-        writeln!(file, "{}", std::process::id())?;
+        let lock = kernal_api::platform::fs::try_lock_exclusive_owned(file)?;
+        writeln!(lock.file(), "{}", std::process::id())?;
         Ok(Self {
             path: path.into(),
-            lock: Some(file),
+            lock: Some(lock),
         })
     }
 
@@ -85,8 +84,6 @@ impl StagingRoot {
     /// lockless case, so tests can exercise both sides of the age gate
     /// without sleeping.
     fn cleanup_abandoned_older_than(&self, min_age: std::time::Duration) -> std::io::Result<usize> {
-        use fs2::FileExt;
-
         let Some(parent) = self.path.parent() else {
             return Ok(0);
         };
@@ -120,10 +117,12 @@ impl StagingRoot {
                 }
                 Err(_) => continue,
             };
-            if lock.try_lock_exclusive().is_err() {
+            // Taking the lock is the probe: if a live daemon holds it, this
+            // root is not abandoned. Release it again before deleting.
+            let Ok(probe) = kernal_api::platform::fs::try_lock_exclusive(&lock) else {
                 continue;
-            }
-            FileExt::unlock(&lock)?;
+            };
+            drop(probe);
             drop(lock);
             std::fs::remove_dir_all(&path)?;
             removed += 1;
@@ -154,7 +153,6 @@ fn staging_dir_is_older_than(path: &Path, min_age: std::time::Duration) -> bool 
 impl Drop for StagingRoot {
     fn drop(&mut self) {
         if let Some(lock) = self.lock.take() {
-            let _ = fs2::FileExt::unlock(&lock);
             drop(lock);
         }
         let _ = std::fs::remove_dir_all(self.path.as_path());
@@ -186,7 +184,7 @@ impl Drop for StagingRoot {
 /// and which the integration suite does — would be refused. `Drop` remains as
 /// the crash backstop.
 pub(super) struct CacheRootWriterLock {
-    lock: std::sync::Mutex<Option<std::fs::File>>,
+    lock: std::sync::Mutex<Option<kernal_api::platform::fs::OwnedFileLock>>,
 }
 
 impl CacheRootWriterLock {
@@ -196,17 +194,16 @@ impl CacheRootWriterLock {
     /// holds the root; `lifecycle::cache_root_error` preserves that kind, so
     /// callers can tell contention from a genuine filesystem fault.
     pub(super) fn acquire(cache_dir: &Path) -> std::io::Result<Self> {
-        use fs2::FileExt;
         use std::io::Write;
 
         std::fs::create_dir_all(cache_dir)?;
-        let mut file = std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(cache_dir.join(CACHE_ROOT_WRITER_LOCK_FILE))?;
-        if file.try_lock_exclusive().is_err() {
+        let Ok(lock) = kernal_api::platform::fs::try_lock_exclusive_owned(file) else {
             crate::core::lifecycle::write_event_in_cache_root(
                 cache_dir,
                 "daemon_cache_root_contended",
@@ -224,13 +221,13 @@ impl CacheRootWriterLock {
                 std::io::ErrorKind::WouldBlock,
                 "another live daemon already holds this cache root as its writer",
             ));
-        }
+        };
         // Best-effort provenance for whoever inspects the lock file; the lock
         // itself is what enforces exclusion, so a failed write is not fatal.
-        let _ = file.set_len(0);
-        let _ = writeln!(file, "{}", std::process::id());
+        let _ = lock.file().set_len(0);
+        let _ = writeln!(lock.file(), "{}", std::process::id());
         Ok(Self {
-            lock: std::sync::Mutex::new(Some(file)),
+            lock: std::sync::Mutex::new(Some(lock)),
         })
     }
 
@@ -245,8 +242,10 @@ impl CacheRootWriterLock {
             .lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(file) = guard.take() {
-            let _ = fs2::FileExt::unlock(&file);
+        if let Some(lock) = guard.take() {
+            // Dropping releases; `unlock` would too, but the handle is not
+            // wanted back here.
+            drop(lock);
         }
     }
 }
@@ -285,12 +284,9 @@ pub(super) struct SharedState {
     /// IPC endpoint this daemon bound. Reported through `zccache status` so
     /// wrappers can verify they reached the intended daemon identity.
     pub(super) endpoint: String,
-    /// running-process BackendHandle identity served on the same direct
-    /// daemon endpoint for the minimal broker-adoption path. Slice 24
-    /// of zccache#782: migrated to the `protocol_v2::backend_handle`
-    /// namespace (upstream re-export of the cross-version-stable type).
-    pub(super) backend_identity:
-        running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    /// Frozen v1 identity-probe responder served on the same direct daemon
+    /// endpoint; it proves this daemon's `DaemonIdentity`.
+    pub(super) backend_probe: kernal_api::daemon_identity::ProbeResponder,
     /// Active daemon/socket namespace label.
     pub(super) daemon_namespace: String,
     /// Cache root this daemon was created with.
@@ -338,7 +334,7 @@ pub(super) struct SharedState {
     /// Directories currently being watched (avoid duplicate watches).
     pub(super) watched_dirs: Mutex<HashSet<NormalizedPath>>,
     /// Shutdown signal — shared so request handlers can trigger shutdown.
-    pub(super) shutdown: Arc<Notify>,
+    pub(super) shutdown: Arc<kernal_api::async_engine::Notify>,
     /// Epoch seconds of last client activity (for idle timeout).
     pub(super) last_activity: AtomicU64,
     /// Metadata-cache consumers active from request entry through hit
@@ -441,7 +437,7 @@ pub(super) struct SharedState {
     pub(super) disk_maintenance: Mutex<()>,
     /// Shared by publishers and exclusively owned by maintenance/Clear from
     /// cache-file mutation through index/live-map mutation.
-    pub(super) artifact_publication: Arc<tokio::sync::RwLock<()>>,
+    pub(super) artifact_publication: Arc<kernal_api::async_engine::RwLock<()>>,
     /// Reuses one shared OS staged-store lock for all active staged deliveries
     /// in this daemon and cache root. The final lease drop releases it, letting
     /// cross-process maintenance acquire the exclusive lock.
@@ -457,7 +453,7 @@ pub(super) struct SharedState {
     /// `num_cpus` on CI, overridable via `ZCCACHE_MAX_PARALLEL_COMPILES`.
     /// `None` when the override is `0` (or `unlimited`) — preserves the
     /// historical uncapped behavior for users who want it.
-    pub(super) compile_concurrency: Option<Arc<tokio::sync::Semaphore>>,
+    pub(super) compile_concurrency: Option<Arc<kernal_api::async_engine::Semaphore>>,
     /// Shared admission for ordinary compiler children and exclusive
     /// admission for unusually memory-intensive C/Rust amalgamations.
     pub(super) compile_resource_gate: super::compile_resource_gate::CompileResourceGate,
@@ -488,12 +484,12 @@ pub(super) struct SharedState {
     /// writes) from the periodic index snapshot, so a slow flush no longer
     /// holds a persist permit while other artifacts wait. See
     /// `tests/persist_pool_bench.rs` for the data motivating this split.
-    pub(super) index_writer_tx: tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    pub(super) index_writer_tx: kernal_api::async_engine::UnboundedSender<IndexWriterCommand>,
     /// Notify the index-writer to drain its WAL and exit on graceful shutdown.
     /// Without this, the writer would only see the channel close after every
     /// `Arc<SharedState>` ref (including those held by spawned persist tasks)
     /// drops — which can race with runtime abort and lose unflushed entries.
-    pub(super) index_writer_shutdown: Arc<Notify>,
+    pub(super) index_writer_shutdown: Arc<kernal_api::async_engine::Notify>,
     /// Whether the background artifact loading has completed.
     pub(super) artifacts_loaded: AtomicBool,
     /// Whether the background compiler-hash-cache load has completed.
@@ -582,7 +578,7 @@ pub(super) struct SharedState {
     /// the first caller spawns the tool and inserts; subsequent callers wait
     /// on the same `Notify` and re-attempt the cache lookup once it fires,
     /// guaranteeing the tool runs exactly once for the herd.
-    pub(super) in_flight_exec: DashMap<String, Arc<Notify>>,
+    pub(super) in_flight_exec: DashMap<String, Arc<kernal_api::async_engine::Notify>>,
     /// Pending cache-write registry (issue #610, DD-025 condition 1).
     ///
     /// Keyed by `artifact_key_hex` — every cold-miss path that defers its
@@ -657,7 +653,11 @@ mod staging_tests {
     /// test having to sleep.
     fn backdate(path: &Path, by: Duration) {
         let when = std::time::SystemTime::now() - by;
-        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when)).unwrap();
+        kernal_api::platform::fs::set_file_mtime(
+            path,
+            kernal_api::platform::fs::FileTime::from_system_time(when),
+        )
+        .unwrap();
     }
 
     /// #1162 finding 1: `index.bin` is last-writer-wins, so a second writer on

@@ -22,9 +22,9 @@ dylint_linting::declare_pre_expansion_lint! {
     /// ### What it does
     ///
     /// Enforces the zccache#1365 source boundary: host-platform selection and
-    /// native OS APIs may only appear inside the `zccache-platform` leaf
-    /// crate. Every other production source denies host cfg/cfg_attr/cfg!,
-    /// native imports, and direct concrete-module references.
+    /// native OS APIs may only appear inside a narrow product-owned adapter.
+    /// Every other production source denies host cfg/cfg_attr/cfg!, native
+    /// imports, and direct concrete-module references.
     ///
     /// The lint runs **pre-expansion**, so inactive host branches (Windows
     /// code compiled on Linux CI, and vice versa) are inspected too. The
@@ -36,8 +36,8 @@ dylint_linting::declare_pre_expansion_lint! {
     /// ### Why is this bad?
     ///
     /// Host mechanics are selected throughout the workspace instead of at one
-    /// boundary. One selector in `crates/zccache-platform/src/lib.rs` plus
-    /// five neutral facades keeps that decision in one place.
+    /// boundary. Kernal-api owns native selection; the three zccache adapter
+    /// modules own only product endpoint, daemon, and CLI policy.
     ///
     /// ### Example
     ///
@@ -47,14 +47,14 @@ dylint_linting::declare_pre_expansion_lint! {
     /// ```
     ///
     /// Use instead: move the native code behind a neutral
-    /// `crate::platform::…` facade in zccache-platform.
+    /// `kernal_api::platform::…` facade or an approved product adapter.
     pub ENFORCE_PLATFORM_BOUNDARY,
     Deny,
-    "confine host-platform selection and native APIs to zccache-platform"
+    "confine host-platform selection and native APIs to approved zccache adapters"
 }
 
 /// Host predicate names that select the host platform. These are forbidden
-/// outside zccache-platform even when spelled inside `any`/`all`/`not`.
+/// outside approved product adapters even when spelled inside `any`/`all`/`not`.
 const FORBIDDEN_KEYS: &[&str] = &[
     "windows",
     "unix",
@@ -68,10 +68,10 @@ const FORBIDDEN_KEYS: &[&str] = &[
     "target_pointer_width",
 ];
 
-/// Native API roots forbidden outside zccache-platform.
+/// Native API roots forbidden outside approved product adapters.
 const NATIVE_ROOTS: &[&str] = &["libc", "windows_sys"];
 
-/// Concrete platform module names — private to zccache-platform.
+/// Concrete platform module names — private to kernal-api.
 const CONCRETE_MODULES: &[&str] = &["platform_win", "platform_linux", "platform_macos"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -85,14 +85,8 @@ enum Kind {
 /// A compiled file's position relative to the platform boundary.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scope {
-    /// The one cfg_select! host selector in the platform crate root.
-    Selector,
-    /// A concrete host tree (platform_win/platform_linux/platform_macos):
-    /// host cfg and native APIs live here.
-    Concrete,
-    /// Neutral facade files inside zccache-platform: no host cfg, no native
-    /// imports, no concrete names; `platform_imp` is the only bridge.
-    Facade,
+    /// Product-owned adapter around canonical kernal-api capabilities.
+    Adapter,
     /// The lint's own fixtures: full checks.
     Ui,
     /// Ordinary production source: full checks.
@@ -107,17 +101,14 @@ fn classify(path: &str) -> Scope {
     if path.starts_with("ui/") || path.starts_with("dylints/enforce_platform_boundary/ui/") {
         return Scope::Ui;
     }
-    if path.starts_with("crates/zccache-platform/src/platform_win")
-        || path.starts_with("crates/zccache-platform/src/platform_linux")
-        || path.starts_with("crates/zccache-platform/src/platform_macos")
-    {
-        return Scope::Concrete;
-    }
-    if path == "crates/zccache-platform/src/lib.rs" {
-        return Scope::Selector;
-    }
-    if path.starts_with("crates/zccache-platform/src/") {
-        return Scope::Facade;
+    if matches!(
+        path,
+        "crates/zccache-ipc/src/platform.rs"
+            | "crates/zccache-daemon-core/src/platform.rs"
+            | "crates/zccache-cli-core/src/platform.rs"
+            | "crates/zccache/src/platform.rs"
+    ) {
+        return Scope::Adapter;
     }
     if path.starts_with("crates/") {
         // Dev-only test helpers are a non-production target.
@@ -177,15 +168,15 @@ fn message(kind: Kind, normalized: &str) -> String {
     match kind {
         Kind::AttrCfg | Kind::CfgMacro => format!(
             "host-platform cfg selection ({normalized}) is not allowed here; \
-             host selection belongs in crates/zccache-platform/src/lib.rs cfg_select!"
+             host selection belongs in kernal-api or an approved product adapter"
         ),
         Kind::NativeImport => format!(
-            "native path ({normalized}) is not allowed here; move native code into a \
-             concrete platform tree (platform_win, platform_linux, platform_macos)"
+            "native path ({normalized}) is not allowed here; move native code into \
+             kernal-api or an approved product adapter"
         ),
         Kind::ModuleRef => format!(
             "reference to concrete platform module ({normalized}) is not allowed here; \
-             concrete modules stay private to zccache-platform"
+             concrete modules stay private to kernal-api"
         ),
     }
 }
@@ -203,14 +194,7 @@ fn record_with(ecx: &EarlyContext<'_>, span: Span, kind: Kind, normalized: &str)
     };
     let scope = classify(&path);
     match scope {
-        Scope::OutOfScope | Scope::Concrete | Scope::Selector => return,
-        Scope::Facade => {
-            if kind == Kind::ModuleRef && normalized == "platform_imp" {
-                return;
-            }
-            emit_lint(ecx, span, kind, normalized);
-            return;
-        }
+        Scope::OutOfScope | Scope::Adapter => return,
         Scope::Ui => {
             emit_lint(ecx, span, kind, normalized);
             return;

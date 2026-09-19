@@ -27,22 +27,31 @@ use zccache::daemon::lineage::{
 
 /// Spawn a tiny "print one env var" child and return its stdout.
 fn capture_child_env(
-    apply: impl FnOnce(&mut tokio::process::Command),
+    apply: impl FnOnce(kernal_api::SpawnSpec) -> kernal_api::SpawnSpec,
     var: &str,
 ) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("/bin/sh");
-    cmd.args(["-c", &format!("printf '%s' \"${{{var}}}\"")]);
-    apply(&mut cmd);
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    let builder = kernal_api::SpawnSpec::new("/bin/sh")
+        .args(["-c", &format!("printf '%s' \"${{{var}}}\"")])
+        .stdout(kernal_api::StreamMode::Piped)
+        .stderr(kernal_api::StreamMode::Piped);
+    let spec = apply(builder);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("build runtime");
     let output = rt
-        .block_on(async { cmd.spawn().expect("spawn").wait_with_output().await })
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                spec.spawn()
+                    .await
+                    .expect("spawn")
+                    .wait_with_output_bounded(64 * 1024)
+                    .await
+            })
+            .await
+        })
+        .expect("lineage fixture deadline")
         .expect("wait");
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -61,27 +70,43 @@ fn lineage_env_reaches_real_child() {
         session_id: Some("test-session".into()),
     };
 
-    let originator =
-        capture_child_env(|cmd| lineage.apply_to_tokio(cmd, None), ENV_ORIGINATOR).unwrap();
+    let originator = capture_child_env(
+        |cmd| lineage.apply_to_async_builder(cmd, None),
+        ENV_ORIGINATOR,
+    )
+    .unwrap();
     assert_eq!(originator, "zccache:12345");
 
-    let chain = capture_child_env(|cmd| lineage.apply_to_tokio(cmd, None), ENV_LINEAGE).unwrap();
+    let chain =
+        capture_child_env(|cmd| lineage.apply_to_async_builder(cmd, None), ENV_LINEAGE).unwrap();
     assert_eq!(chain, "99>12345");
 
-    let daemon_pid =
-        capture_child_env(|cmd| lineage.apply_to_tokio(cmd, None), ENV_DAEMON_PID).unwrap();
+    let daemon_pid = capture_child_env(
+        |cmd| lineage.apply_to_async_builder(cmd, None),
+        ENV_DAEMON_PID,
+    )
+    .unwrap();
     assert_eq!(daemon_pid, "12345");
 
-    let parent_pid =
-        capture_child_env(|cmd| lineage.apply_to_tokio(cmd, None), ENV_PARENT_PID).unwrap();
+    let parent_pid = capture_child_env(
+        |cmd| lineage.apply_to_async_builder(cmd, None),
+        ENV_PARENT_PID,
+    )
+    .unwrap();
     assert_eq!(parent_pid, "12345");
 
-    let client_pid =
-        capture_child_env(|cmd| lineage.apply_to_tokio(cmd, None), ENV_CLIENT_PID).unwrap();
+    let client_pid = capture_child_env(
+        |cmd| lineage.apply_to_async_builder(cmd, None),
+        ENV_CLIENT_PID,
+    )
+    .unwrap();
     assert_eq!(client_pid, "99");
 
-    let session_id =
-        capture_child_env(|cmd| lineage.apply_to_tokio(cmd, None), ENV_SESSION_ID).unwrap();
+    let session_id = capture_child_env(
+        |cmd| lineage.apply_to_async_builder(cmd, None),
+        ENV_SESSION_ID,
+    )
+    .unwrap();
     assert_eq!(session_id, "test-session");
 }
 
@@ -103,13 +128,13 @@ fn nested_spawn_extends_chain() {
     };
 
     let chain = capture_child_env(
-        |cmd| {
+        |mut cmd| {
             // Replicate apply_client_env: clear, replay env, overlay lineage.
-            cmd.env_clear();
+            cmd = cmd.clear_env(true);
             for (k, v) in &build_env {
-                cmd.env(k, v);
+                cmd = cmd.env(k, v);
             }
-            daemon_lineage.apply_to_tokio(cmd, Some(&build_env));
+            daemon_lineage.apply_to_async_builder(cmd, Some(&build_env))
         },
         ENV_LINEAGE,
     )
@@ -119,12 +144,12 @@ fn nested_spawn_extends_chain() {
     // The outer originator must NOT be overwritten — it identifies the
     // outermost contained owner that running-process-style scanners look for.
     let originator = capture_child_env(
-        |cmd| {
-            cmd.env_clear();
+        |mut cmd| {
+            cmd = cmd.clear_env(true);
             for (k, v) in &build_env {
-                cmd.env(k, v);
+                cmd = cmd.env(k, v);
             }
-            daemon_lineage.apply_to_tokio(cmd, Some(&build_env));
+            daemon_lineage.apply_to_async_builder(cmd, Some(&build_env))
         },
         ENV_ORIGINATOR,
     )

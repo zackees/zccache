@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use kernal_api::platform::fs::{PatternSet, PatternSetBuilder};
 use zccache_core::NormalizedPath;
 
 use super::error::{FingerprintError, Result};
@@ -38,37 +38,31 @@ pub fn walk_files(
 
     let mut files = Vec::new();
 
-    let walker = jwalk::WalkDir::new(&root)
-        .follow_links(false)
-        .skip_hidden(false)
-        .sort(true)
-        .process_read_dir(move |_depth, _path, _state, children| {
-            // Prune excluded directories so they are never descended into.
-            children.retain(|entry| {
-                if let Ok(ref e) = entry {
-                    if e.file_type.is_dir() {
-                        if let Some(name) = e.file_name.to_str() {
-                            if exclude_set.contains(name) {
-                                return false;
-                            }
-                        }
-                    }
-                }
-                true
-            });
+    // Prune excluded directories so they are never descended into. The facade
+    // asks about each candidate directory itself rather than handing us its
+    // parent's children, so the name test reads off the candidate directly.
+    let walker = kernal_api::platform::fs::DirectoryWalk::new(root.clone())
+        .follow_symbolic_links(false)
+        .include_hidden_entries(true)
+        .sorted(true)
+        .prune_directories(move |directory| {
+            directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_none_or(|name| !exclude_set.contains(name))
         });
 
-    for entry in walker {
+    for entry in walker.walk() {
         let entry = entry.map_err(|e| FingerprintError::Scan {
             path: root.clone().into(),
-            message: format!("jwalk error: {e}"),
+            message: format!("directory walk error: {e}"),
         })?;
 
-        if !entry.file_type.is_file() {
+        if !entry.is_file() {
             continue;
         }
 
-        let abs = entry.path();
+        let abs = entry.path().to_path_buf();
 
         // Filter by extension.
         if !extensions.is_empty() {
@@ -114,14 +108,14 @@ fn normalize_slashes(rel: &Path) -> String {
     result
 }
 
-fn build_globset(patterns: &[&str]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
+fn build_globset(patterns: &[&str]) -> Result<PatternSet> {
+    // The facade validates the whole set at `build` rather than each pattern
+    // as it is added, so the offending pattern moves from this error's
+    // structured `path` field into its message -- `globset`'s own error
+    // names it, so it is still reported, just not separately addressable.
+    let mut builder = PatternSetBuilder::new();
     for pattern in patterns {
-        let glob = Glob::new(pattern).map_err(|e| FingerprintError::Scan {
-            path: NormalizedPath::from(*pattern),
-            message: format!("invalid glob pattern: {e}"),
-        })?;
-        builder.add(glob);
+        builder = builder.add_pattern(pattern);
     }
     builder.build().map_err(|e| FingerprintError::Scan {
         path: NormalizedPath::new(""),
@@ -131,16 +125,12 @@ fn build_globset(patterns: &[&str]) -> Result<GlobSet> {
 
 /// Extract directory-level patterns from exclude globs for short-circuiting.
 /// E.g., `.git/**` → match directory `.git`; `target/**` → match directory `target`.
-fn build_dir_exclude_set(exclude: &[&str]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
+fn build_dir_exclude_set(exclude: &[&str]) -> Result<PatternSet> {
+    let mut builder = PatternSetBuilder::new();
     for pattern in exclude {
         // If pattern ends with "/**" we can skip the directory entirely.
         if let Some(prefix) = pattern.strip_suffix("/**") {
-            let glob = Glob::new(prefix).map_err(|e| FingerprintError::Scan {
-                path: NormalizedPath::from(*pattern),
-                message: format!("invalid glob pattern: {e}"),
-            })?;
-            builder.add(glob);
+            builder = builder.add_pattern(prefix);
         }
     }
     builder.build().map_err(|e| FingerprintError::Scan {
@@ -236,50 +226,45 @@ pub fn walk_files_glob(
     let prune_dir_exclude_set = dir_exclude_set.clone();
     let prune_include_prefixes = include_dir_prefixes;
 
-    let walker = jwalk::WalkDir::new(&root)
-        .follow_links(false)
-        .skip_hidden(false)
-        .sort(true)
-        .process_read_dir(move |_depth, _path, _state, children| {
+    let walker = kernal_api::platform::fs::DirectoryWalk::new(root.clone())
+        .follow_symbolic_links(false)
+        .include_hidden_entries(true)
+        .sorted(true)
+        .prune_directories(move |directory| {
             let has_exclude = !prune_dir_exclude_set.is_empty();
             let has_include = prune_include_prefixes.is_some();
             if !has_exclude && !has_include {
-                return;
+                return true;
             }
-            children.retain(|entry| {
-                if let Ok(ref e) = entry {
-                    if e.file_type.is_dir() {
-                        let abs = e.path();
-                        if let Ok(rel) = abs.strip_prefix(&prune_root) {
-                            if rel.components().next().is_some() {
-                                let rel_str = normalize_slashes(rel);
-                                if has_exclude && prune_dir_exclude_set.is_match(&rel_str) {
-                                    return false;
-                                }
-                                if let Some(ref prefixes) = prune_include_prefixes {
-                                    if !dir_matches_include_prefixes(&rel_str, prefixes) {
-                                        return false;
-                                    }
-                                }
-                            }
-                        }
-                    }
+            let Ok(rel) = directory.strip_prefix(&prune_root) else {
+                return true;
+            };
+            if rel.components().next().is_none() {
+                return true;
+            }
+            let rel_str = normalize_slashes(rel);
+            if has_exclude && prune_dir_exclude_set.is_match(&rel_str) {
+                return false;
+            }
+            if let Some(ref prefixes) = prune_include_prefixes {
+                if !dir_matches_include_prefixes(&rel_str, prefixes) {
+                    return false;
                 }
-                true
-            });
+            }
+            true
         });
 
-    for entry in walker {
+    for entry in walker.walk() {
         let entry = entry.map_err(|e| FingerprintError::Scan {
             path: root.clone().into(),
-            message: format!("jwalk error: {e}"),
+            message: format!("directory walk error: {e}"),
         })?;
 
-        if !entry.file_type.is_file() {
+        if !entry.is_file() {
             continue;
         }
 
-        let abs = entry.path();
+        let abs = entry.path().to_path_buf();
         let rel = abs
             .strip_prefix(&root)
             .map_err(|_| FingerprintError::Scan {

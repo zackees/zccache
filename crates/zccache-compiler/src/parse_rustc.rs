@@ -27,9 +27,9 @@ pub enum RustcHost {
 #[cfg(feature = "native")]
 impl RustcHost {
     fn current() -> Self {
-        if crate::platform::host::is_windows() {
+        if kernal_api::platform::host::target_is_windows() {
             Self::Windows
-        } else if crate::platform::host::is_macos() {
+        } else if kernal_api::platform::host::target_is_macos() {
             Self::Macos
         } else {
             Self::Linux

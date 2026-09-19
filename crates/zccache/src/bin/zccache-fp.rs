@@ -1,5 +1,5 @@
 #[global_allocator]
-static GLOBAL: mimalloc_pprof::MiMalloc = mimalloc_pprof::MiMalloc;
+static GLOBAL: kernal_api::allocator::Allocator = kernal_api::allocator::Allocator::new();
 
 use std::path::Path;
 use std::process::ExitCode;

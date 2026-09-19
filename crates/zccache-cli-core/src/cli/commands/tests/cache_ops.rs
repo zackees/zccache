@@ -24,9 +24,9 @@ fn seed_staged_fixture(artifact_dir: &std::path::Path, key_hex: &str, payload: &
     let output = StagedOutputFixture {
         index: 0,
         size: payload.len() as u64,
-        digest_hex: blake3::hash(payload).to_hex().to_string(),
+        digest_hex: kernal_api::hash::blake3_bytes(payload).to_hex().to_string(),
     };
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(key_hex.as_bytes());
     hasher.update(&output.index.to_le_bytes());
     hasher.update(&output.size.to_le_bytes());
@@ -313,7 +313,7 @@ fn warm_waits_for_the_staged_store_lock_before_materializing() {
     // Stand in for daemon maintenance holding the store exclusively.
     let staged = zccache_artifact::staged_lock::staged_root(&artifact_dir);
     let gc_lock = zccache_artifact::staged_lock::open_store_lock(staged.as_path()).unwrap();
-    fs2::FileExt::lock_exclusive(&gc_lock).unwrap();
+    let gc_lock_guard = kernal_api::platform::fs::lock_exclusive(&gc_lock).unwrap();
 
     // The outcome travels through the channel, not just a unit tick, so that an
     // early `Err` return (which would also unblock the recv and look exactly
@@ -334,6 +334,9 @@ fn warm_waits_for_the_staged_store_lock_before_materializing() {
         );
     }
 
+    // Releasing the guard is what unblocks `warm`; the lock lives on the
+    // guard now, so dropping the `File` alone would not release it.
+    drop(gc_lock_guard);
     drop(gc_lock);
 
     let outcome = rx

@@ -68,7 +68,7 @@ impl CacheKeyBuilder {
     /// Panics if compiler or source hash is not set.
     #[must_use]
     pub fn build(self) -> ContentHash {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = kernal_api::hash::Blake3Hasher::new();
 
         // Domain separation tag
         hasher.update(b"zccache-cache-key-v2\0");
@@ -126,7 +126,7 @@ mod tests {
         source: ContentHash,
         dependencies: &[(&str, ContentHash)],
     ) -> ContentHash {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = kernal_api::hash::Blake3Hasher::new();
         hasher.update(b"zccache-cache-key-v1");
         hasher.update(compiler.as_bytes());
         hasher.update(source.as_bytes());

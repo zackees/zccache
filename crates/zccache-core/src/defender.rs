@@ -63,7 +63,7 @@ pub fn compute_exclusion_paths(cache_root: &Path) -> Vec<PathBuf> {
 /// elevation for the Defender flow because the flow is a no-op there.
 #[must_use]
 pub fn is_elevated() -> bool {
-    crate::platform::host::is_elevated()
+    crate::host::is_elevated()
 }
 
 /// True when `ZCCACHE_QUIET` is set to a non-empty value other than `"0"`.
@@ -189,7 +189,7 @@ pub struct ExclusionStatus {
 }
 
 pub fn query_excluded(paths: &[PathBuf]) -> Result<Vec<ExclusionStatus>, DefenderError> {
-    let excluded = crate::platform::host::defender_exclusions().map_err(map_native_error)?;
+    let excluded = crate::host::defender_exclusions().map_err(map_native_error)?;
     Ok(paths
         .iter()
         .map(|path| ExclusionStatus {
@@ -201,31 +201,27 @@ pub fn query_excluded(paths: &[PathBuf]) -> Result<Vec<ExclusionStatus>, Defende
 
 pub fn add_exclusions(paths: &[PathBuf]) -> Result<(), DefenderError> {
     for path in paths {
-        crate::platform::host::add_defender_exclusion(path).map_err(map_native_error)?;
+        crate::host::add_defender_exclusion(path).map_err(map_native_error)?;
     }
     Ok(())
 }
 
 pub fn remove_exclusions(paths: &[PathBuf]) -> Result<(), DefenderError> {
     for path in paths {
-        crate::platform::host::remove_defender_exclusion(path).map_err(map_native_error)?;
+        crate::host::remove_defender_exclusion(path).map_err(map_native_error)?;
     }
     Ok(())
 }
 
-fn map_native_error(error: crate::platform::host::DefenderError) -> DefenderError {
+fn map_native_error(error: crate::host::DefenderError) -> DefenderError {
     match error {
-        crate::platform::host::DefenderError::Unsupported => DefenderError::Unsupported,
-        crate::platform::host::DefenderError::PowerShellNotFound => {
-            DefenderError::PowerShellNotFound
-        }
-        crate::platform::host::DefenderError::CommandFailed { exit_code, stderr } => {
+        crate::host::DefenderError::Unsupported => DefenderError::Unsupported,
+        crate::host::DefenderError::PowerShellNotFound => DefenderError::PowerShellNotFound,
+        crate::host::DefenderError::CommandFailed { exit_code, stderr } => {
             DefenderError::PowerShellFailed { exit_code, stderr }
         }
-        crate::platform::host::DefenderError::OutputParse(message) => {
-            DefenderError::OutputParse(message)
-        }
-        crate::platform::host::DefenderError::Io(error) => DefenderError::Io(error),
+        crate::host::DefenderError::OutputParse(message) => DefenderError::OutputParse(message),
+        crate::host::DefenderError::Io(error) => DefenderError::Io(error),
     }
 }
 
@@ -323,7 +319,7 @@ mod tests {
 
     #[test]
     fn non_windows_is_elevated_true() {
-        if crate::platform::host::is_windows() {
+        if crate::host::is_windows() {
             return;
         }
         // Non-Windows always reports elevated so the Defender flow no-ops
@@ -333,7 +329,7 @@ mod tests {
 
     #[test]
     fn non_windows_query_returns_unsupported() {
-        if crate::platform::host::is_windows() {
+        if crate::host::is_windows() {
             return;
         }
         let err = query_excluded(&[PathBuf::from("/tmp/x")]).unwrap_err();

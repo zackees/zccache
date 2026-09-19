@@ -45,7 +45,7 @@ fn restore_env(name: &str, value: Option<&std::ffi::OsString>) {
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<kernal_api::async_engine::Notify>,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();

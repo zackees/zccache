@@ -1,8 +1,9 @@
 # `ipc::transport`
 
-Product IPC framing over the neutral `zccache-platform::ipc` byte-stream
+Product IPC framing over the zccache-owned endpoint policy and canonical
+`kernal-api` byte-stream
 facade. Unix sockets, Windows named pipes, endpoint security, peer identity,
-connection retry, and listener pooling are owned by `zccache-platform`.
+connection retry, and listener pooling are owned by `zccache-ipc`.
 
 Public paths under `crate::transport::<Name>` remain stable.
 

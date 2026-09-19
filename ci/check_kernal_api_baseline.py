@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
-import re
 import sys
 import tomllib
 
 
 ROOT = Path(__file__).resolve().parent.parent
 INVENTORY = ROOT / "docs" / "architecture" / "kernal-api-migration.toml"
-PLATFORM_ROOT = ROOT / "crates" / "zccache-platform" / "src" / "platform"
 BACKENDS = {"tokio", "tokio-util", "running-process", "interprocess", "crash-handler", "memmap2", "fs2", "blake3", "libc", "windows-sys"}
-# The facade exposes both free functions and associated methods.  Keep this
-# deliberately lexical: the inventory is a drift detector, not a Rust parser,
-# and every externally visible declaration starts with `pub` in these modules.
-PUBLIC_ITEM = re.compile(
-    r"^\s*pub\s+(?:async\s+)?(?:const\s+)?(?:fn|struct|enum|trait|type|const)\s+([A-Za-z_][A-Za-z0-9_]*)"
-)
 VALID_DISPOSITIONS = {"reuse", "extend", "move", "retain"}
 VALID_BASELINE_STATUSES = {"captured"}
 CAPTURE_PROVENANCE_FIELDS = {"capture", "captured_at", "host", "revision", "toolchain"}
@@ -30,10 +21,6 @@ REQUIRED_BASELINE_ARTIFACTS = {
     "tokio-reverse-features.txt",
     "running-process-reverse-features.txt",
 }
-
-
-def public_items(path: Path) -> set[str]:
-    return {match.group(1) for line in path.read_text(encoding="utf-8").splitlines() if (match := PUBLIC_ITEM.match(line))}
 
 
 def production_dependencies(manifest: Path) -> set[str]:
@@ -58,7 +45,6 @@ def evidence_label_value(provenance: str, label: str) -> str | None:
 
 def check(root: Path = ROOT) -> list[str]:
     inventory_path = root / INVENTORY.relative_to(ROOT)
-    platform_root = root / PLATFORM_ROOT.relative_to(ROOT)
     data = tomllib.loads(inventory_path.read_text(encoding="utf-8"))
     errors: list[str] = []
     baseline = data.get("baseline", {})
@@ -114,52 +100,6 @@ def check(root: Path = ROOT) -> list[str]:
                             )
                     if "Status: captured" not in provenance:
                         errors.append(f"baseline capture status missing: {capture}")
-    mapped_by_source: dict[str, set[str]] = defaultdict(set)
-    mapped_item_groups: dict[tuple[str, str], tuple[str | None, int]] = {}
-    for group_index, group in enumerate(data.get("platform_group", []), start=1):
-        source = group.get("source", "")
-        disposition = group.get("disposition")
-        if disposition not in VALID_DISPOSITIONS:
-            errors.append(f"invalid disposition for {source}: {disposition!r}")
-        if disposition == "retain" and (not group.get("owner") or not group.get("reason")):
-            errors.append(f"retained mapping lacks owner or reason: {source}")
-        if disposition != "retain" and not group.get("kernel_capability"):
-            errors.append(f"kernel mapping lacks capability: {source}")
-        for item in group.get("items", []):
-            previous = mapped_item_groups.get((source, item))
-            if previous is not None:
-                previous_disposition, previous_index = previous
-                if previous_disposition != disposition:
-                    errors.append(
-                        "duplicate mapped public platform item has conflicting dispositions: "
-                        f"{source}: {item} (groups {previous_index} and {group_index}: "
-                        f"{previous_disposition!r} vs {disposition!r})"
-                    )
-                else:
-                    errors.append(
-                        f"duplicate mapped public platform item: {source}: {item} "
-                        f"(groups {previous_index} and {group_index})"
-                    )
-            else:
-                mapped_item_groups[(source, item)] = (disposition, group_index)
-            mapped_by_source[source].add(item)
-
-    for source in sorted(platform_root.rglob("*.rs")):
-        if source.name == "tests.rs":
-            continue
-        relative = source.relative_to(root).as_posix()
-        actual = public_items(source)
-        if not actual:
-            continue
-        mapped = mapped_by_source.pop(relative, set())
-        missing, stale = sorted(actual - mapped), sorted(mapped - actual)
-        if missing:
-            errors.append(f"unmapped public platform items in {relative}: {', '.join(missing)}")
-        if stale:
-            errors.append(f"stale platform mapping in {relative}: {', '.join(stale)}")
-    for source, items in sorted(mapped_by_source.items()):
-        errors.append(f"inventory source is absent or non-public: {source}: {', '.join(sorted(items))}")
-
     expected: set[tuple[str, str]] = set()
     backend_mappings: dict[tuple[str, str], tuple[str | None, int]] = {}
     for dependency_index, dependency in enumerate(data.get("backend_dependency", []), start=1):

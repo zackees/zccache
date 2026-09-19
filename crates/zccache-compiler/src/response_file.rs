@@ -279,7 +279,7 @@ pub fn write_response_file_if_needed(
     tmp_dir: &Path,
     family_hint: crate::CompilerFamily,
 ) -> std::io::Result<Option<TempResponseFile>> {
-    if !crate::platform::host::is_windows() {
+    if !kernal_api::platform::host::target_is_windows() {
         return Ok(None);
     }
     let estimated_len: usize = args.iter().map(|a| a.len() + 3).sum();

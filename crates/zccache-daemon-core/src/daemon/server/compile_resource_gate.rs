@@ -14,7 +14,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use kernal_api::async_engine::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::compiler::CompilerFamily;
 
@@ -122,7 +122,7 @@ impl HostAdmissionPermit {
 
 /// Fair shared/exclusive admission around real compiler execution.
 ///
-/// Tokio's write-preferring lock prevents newly arriving ordinary compiles
+/// The canonical write-preferring lock prevents newly arriving ordinary compiles
 /// from starving an amalgamation after it reaches the queue.
 #[derive(Clone, Default)]
 pub(super) struct CompileResourceGate {
@@ -609,7 +609,7 @@ mod tests {
     async fn compiler_slot_can_be_released_while_resource_admission_remains_live() {
         use std::time::Duration;
 
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let semaphore = Arc::new(kernal_api::async_engine::Semaphore::new(1));
         let queue = Arc::new(crate::daemon::server::compile_progress::CompileQueueGauge::default());
         let resource_gate = CompileResourceGate::default();
         let (compile, _) =

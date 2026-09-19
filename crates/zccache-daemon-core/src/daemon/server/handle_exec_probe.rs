@@ -128,7 +128,7 @@ fn compose_exec_probe_key(
     let mut env_pairs: Vec<(String, String)> = input_env.to_vec();
     env_pairs.sort();
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(EXEC_PROBE_KEY_DOMAIN);
 
     hasher.update(b"name=");

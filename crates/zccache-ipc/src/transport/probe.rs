@@ -1,159 +1,88 @@
-//! Running-process `BackendHandle` identity probe served on the same
-//! endpoint as the zccache daemon wire. Disambiguates probe frames from
-//! direct zccache traffic (including the retired v25 header) and the FrameV1
-//! zccache lane.
+//! Frozen v1 daemon identity probe served on the same endpoint as the
+//! zccache daemon wire. Disambiguates probe frames from direct zccache
+//! traffic (including the retired v25 header) and the FrameV1 zccache lane.
 //!
-//! ## Slice 17 of #500 — v1 envelope retention decision
-//!
-//! This module touches three v1 envelope-layer symbols:
-//!
-//! | Symbol                                            | Decision       | Rationale |
-//! |---------------------------------------------------|----------------|-----------|
-//! | `running_process::broker::protocol::ENVELOPE_VERSION` | **keep on v1** | The probe path itself is a v1 protocol artifact (`BackendHandle` lives on the v1 broker namespace); the v2 broker uses Frame streaming (`OPEN/DATA/CLOSE/…`) instead of the v1 envelope shape. There is no v2 envelope to migrate this to. |
-//! | `running_process::broker::protocol::MAX_FRAME_BYTES`  | **keep on v1** | Same reasoning — this is the cap on the v1 envelope body length; the v2 streaming layer has its own per-stream windowing primitives. |
-//! | `running_process::broker::protocol::Frame`           | **keep on v1** | The probe message is itself a v1 `Frame` payload (kind `FRAME_KIND_REQUEST`, payload protocol `BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL`). Migrating the *probe* to v2 is a separate, larger migration that replaces the whole probe contract with a v2-streaming equivalent (tracked in zccache#782 Phase B). |
-//!
-//! The slice 17 decision is therefore "no code change to envelope
-//! references in this file" — the v1 path stays valid as a parallel
-//! lane per #470's coexistence table; the v2 streaming protocol
-//! replaces it when the backend-handle-probe path itself is migrated
-//! to a v2 control verb in a later phase. This module-level docblock
-//! exists so a future reader doesn't grep for these symbols looking
-//! for a "missing v2 migration" — the decision is documented here.
+//! The probe contract (envelope, nonce proof, identity encoding) is owned by
+//! `kernal_api::daemon_identity::ProbeResponder`. zccache only decides which
+//! leading bytes belong to its own legacy wire
+//! ([`zccache_protocol::wire_frame::buffer_starts_running_process_frame`]) and
+//! buffers enough of the connection for the responder to classify it.
 
 use bytes::{Buf, BytesMut};
-use prost::Message as _;
+use kernal_api::daemon_frame_v1::{DAEMON_FRAME_V1_MAX_BODY_BYTES, DAEMON_FRAME_V1_VERSION};
+use kernal_api::daemon_identity::{LegacyPrefix, ProbeMuxResult, ProbeResponder};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::error::IpcError;
 
 use super::framing::ensure_buffered;
 
+/// v1 header: one version byte plus a little-endian `u32` body length.
+const FRAME_V1_HEADER_BYTES: usize = 5;
+
 pub(super) async fn try_serve_backend_handle_probe<R, W>(
     reader: &mut R,
     writer: &mut W,
     read_buf: &mut BytesMut,
-    daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
+    responder: &ProbeResponder,
 ) -> Result<bool, IpcError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     ensure_buffered(reader, read_buf, 8).await?;
-    if read_buf.is_empty() {
+    if read_buf.is_empty() || read_buf[0] != DAEMON_FRAME_V1_VERSION {
         return Ok(false);
     }
 
-    let running_process_version = running_process::broker::protocol::ENVELOPE_VERSION;
-    if read_buf[0] != running_process_version {
-        return Ok(false);
-    }
-
-    if matches!(
-        zccache_protocol::wire_frame::buffer_starts_running_process_frame(read_buf),
-        Some(false)
-    ) {
-        return Ok(false);
-    }
+    let legacy_prefix =
+        match zccache_protocol::wire_frame::buffer_starts_running_process_frame(read_buf) {
+            Some(false) => return Ok(false),
+            Some(true) => LegacyPrefix::NotLegacy,
+            None => LegacyPrefix::NeedMoreBytes,
+        };
 
     let body_len =
         u32::from_le_bytes([read_buf[1], read_buf[2], read_buf[3], read_buf[4]]) as usize;
-    if body_len > running_process::broker::protocol::MAX_FRAME_BYTES {
+    if body_len > DAEMON_FRAME_V1_MAX_BODY_BYTES {
         return Err(IpcError::Endpoint(format!(
-            "running-process BackendHandle probe frame too large: {body_len} bytes"
+            "daemon identity probe frame too large: {body_len} bytes"
         )));
     }
-    ensure_buffered(reader, read_buf, 5 + body_len).await?;
+    ensure_buffered(reader, read_buf, FRAME_V1_HEADER_BYTES + body_len).await?;
 
-    // Decode from a peek so non-probe frames (e.g. the zccache FrameV1
-    // request lane, which shares this framing) stay buffered for the
-    // dispatching `recv_wire` decoder.
-    let frame = running_process::broker::protocol::Frame::decode(&read_buf[5..5 + body_len])
-        .map_err(|err| IpcError::Endpoint(format!("BackendHandle probe decode failed: {err}")))?;
-    if !is_backend_handle_probe_request(&frame) {
-        if frame.payload_protocol == zccache_protocol::wire_frame::ZCCACHE_FRAME_PAYLOAD_PROTOCOL {
-            return Ok(false);
+    // Non-probe frames (the zccache FrameV1 request lane shares this framing)
+    // are never consumed here, so the dispatching `recv_wire` decoder sees them.
+    match responder.poll(read_buf, legacy_prefix) {
+        Ok(ProbeMuxResult::ProbeReply { reply, consumed }) => {
+            read_buf.advance(consumed);
+            writer.write_all(&reply).await?;
+            writer.flush().await?;
+            Ok(true)
         }
-        return Err(IpcError::Endpoint(
-            "unexpected running-process frame on zccache daemon endpoint".to_string(),
-        ));
+        Ok(
+            ProbeMuxResult::ProductFrame { .. }
+            | ProbeMuxResult::Legacy
+            | ProbeMuxResult::NeedMoreBytes,
+        ) => Ok(false),
+        Err(err) => Err(IpcError::Endpoint(format!(
+            "daemon identity probe rejected on zccache daemon endpoint: {err}"
+        ))),
     }
-    read_buf.advance(5 + body_len);
-
-    let response = backend_handle_probe_response(&frame, daemon)?;
-    write_running_process_frame(writer, &response).await?;
-    Ok(true)
-}
-
-fn is_backend_handle_probe_request(frame: &running_process::broker::protocol::Frame) -> bool {
-    use running_process::broker::protocol::{FrameKind, PayloadEncoding};
-    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
-
-    frame.envelope_version == 1
-        && FrameKind::try_from(frame.kind) == Ok(FrameKind::Request)
-        && frame.payload_protocol == BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL
-        && PayloadEncoding::try_from(frame.payload_encoding) == Ok(PayloadEncoding::None)
-        && frame.payload.len() == 32
-}
-
-fn backend_handle_probe_response(
-    request: &running_process::broker::protocol::Frame,
-    daemon: &running_process::broker::protocol_v2::backend_handle::DaemonProcess,
-) -> Result<running_process::broker::protocol::Frame, IpcError> {
-    use running_process::broker::protocol::{Frame, FrameKind, PayloadEncoding};
-    use running_process::broker::protocol_v2::backend_handle::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
-
-    let mut payload = Vec::with_capacity(32 + 128);
-    payload.extend_from_slice(&request.payload);
-    daemon.encode_probe_identity(&mut payload).map_err(|err| {
-        IpcError::Endpoint(format!("BackendHandle identity encode failed: {err}"))
-    })?;
-
-    Ok(Frame {
-        envelope_version: 1,
-        kind: FrameKind::Response as i32,
-        payload_protocol: BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL,
-        payload,
-        request_id: request.request_id,
-        payload_encoding: PayloadEncoding::None as i32,
-        deadline_unix_ms: 0,
-        traceparent: request.traceparent.clone(),
-        tracestate: request.tracestate.clone(),
-    })
-}
-
-async fn write_running_process_frame<W>(
-    writer: &mut W,
-    frame: &running_process::broker::protocol::Frame,
-) -> Result<(), IpcError>
-where
-    W: AsyncWrite + Unpin,
-{
-    let mut body = Vec::new();
-    frame.encode(&mut body).map_err(|err| {
-        IpcError::Endpoint(format!("BackendHandle response encode failed: {err}"))
-    })?;
-    if body.len() > running_process::broker::protocol::MAX_FRAME_BYTES {
-        return Err(IpcError::Endpoint(format!(
-            "BackendHandle response frame too large: {} bytes",
-            body.len()
-        )));
-    }
-    writer
-        .write_all(&[running_process::broker::protocol::ENVELOPE_VERSION])
-        .await?;
-    writer.write_all(&(body.len() as u32).to_le_bytes()).await?;
-    writer.write_all(&body).await?;
-    writer.flush().await?;
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use kernal_api::daemon_frame_v1::{DaemonFrameCodec, DaemonFrameDecode};
+    use kernal_api::daemon_identity::{DaemonEndpoint, DaemonIdentity, DaemonIdentityHashPolicy};
     use prost::Message;
-    use running_process::broker::protocol::Endpoint;
 
     use super::*;
+
+    /// Frozen v1 identity-probe payload protocol (running-process
+    /// `BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL`), spelled here only so the test
+    /// can play the prober's role.
+    const PROBE_PAYLOAD_PROTOCOL: u32 = 0xB232;
 
     /// The daemon identity shape decoded by brokers released before BLAKE3.
     #[derive(Clone, PartialEq, Message)]
@@ -168,20 +97,33 @@ mod tests {
 
     #[test]
     fn probe_reply_leaves_the_legacy_sha256_identity_empty() {
-        let mut daemon = crate::current_process_identity_blake3(Endpoint {
-            namespace_id: "zccache-ipc-test".to_owned(),
-            path: "zccache-ipc-test.sock".to_owned(),
-        })
+        let current = DaemonIdentity::current_process_with_hash_policy(
+            DaemonEndpoint::new("zccache-ipc-test", "zccache-ipc-test.sock"),
+            None,
+            DaemonIdentityHashPolicy::Blake3Only,
+        )
         .expect("current daemon identity");
-        daemon.exe_path = std::path::PathBuf::from("missing-after-daemon-start");
+        let mut record = current.to_record();
+        record.executable_path = std::path::PathBuf::from("missing-after-daemon-start");
+        let responder = crate::backend_probe_responder(DaemonIdentity::from_record(record));
+
         let nonce = vec![0xa5; 32];
-        let request = running_process::broker::protocol::Frame {
-            payload: nonce.clone(),
-            ..Default::default()
+        let request = DaemonFrameCodec::encode_request(PROBE_PAYLOAD_PROTOCOL, nonce.clone(), 7)
+            .expect("encode probe request");
+        let reply = match responder.poll(&request, LegacyPrefix::NotLegacy) {
+            Ok(ProbeMuxResult::ProbeReply { reply, consumed }) => {
+                assert_eq!(consumed, request.len());
+                reply
+            }
+            other => panic!("expected a probe reply, got {other:?}"),
         };
-        let reply = backend_handle_probe_response(&request, &daemon).expect("probe response");
-        assert_eq!(&reply.payload[..32], nonce.as_slice());
-        let legacy = LegacyDaemonProcess::decode(&reply.payload[32..])
+        let frame = match DaemonFrameCodec::decode(&reply).expect("decode probe reply") {
+            DaemonFrameDecode::Frame { frame, .. } => frame,
+            DaemonFrameDecode::NeedMoreBytes => panic!("probe reply must be complete"),
+        };
+        let payload = frame.payload();
+        assert_eq!(&payload[..32], nonce.as_slice());
+        let legacy = LegacyDaemonProcess::decode(&payload[32..])
             .expect("stable broker decodes probe identity");
 
         assert_eq!(legacy.exe_sha256.len(), 32);

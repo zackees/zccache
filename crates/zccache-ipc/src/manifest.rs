@@ -41,8 +41,9 @@
 
 use std::path::{Path, PathBuf};
 
-use running_process::broker::builders::CacheManifestBuilder;
-use running_process::broker::protocol::CacheRootKind;
+use kernal_api::daemon_registration::{
+    CacheManifestBuilder, CacheRootKind, DaemonRegistrationError,
+};
 
 use zccache_core::NormalizedPath;
 
@@ -104,7 +105,7 @@ pub fn publish_manifest(cache_dir: &NormalizedPath) -> Option<PathBuf> {
 pub fn publish_manifest_in(
     registry_dir: &Path,
     cache_dir: &NormalizedPath,
-) -> Result<PathBuf, running_process::broker::manifest::ManifestError> {
+) -> Result<PathBuf, DaemonRegistrationError> {
     build_manifest_builder(cache_dir).publish_in(registry_dir)
 }
 
@@ -124,8 +125,7 @@ pub fn publish_manifest_in(
 /// function preserves the existing exact-version policy already shipped by
 /// the `zccache install-servicedef` CLI subcommand.
 pub fn publish_service_definition(daemon_binary: &Path) -> Option<PathBuf> {
-    use running_process::broker::builders::ServiceDefinitionBuilder;
-    use running_process::broker::server::service_definition_dir;
+    use kernal_api::daemon_registration::{service_definition_directory, ServiceDefinitionBuilder};
 
     if super::running_process_disabled() {
         return None;
@@ -161,7 +161,7 @@ pub fn publish_service_definition(daemon_binary: &Path) -> Option<PathBuf> {
     .label("package", "zccache")
     .label("consumer", "zccache")
     .label("running-process-tracker", "zackees/running-process#435")
-    .install_in(&service_definition_dir())
+    .install_in(service_definition_directory())
     {
         Ok(path) => {
             tracing::debug!(servicedef = %path.display(), "installed running-process service definition");
@@ -181,8 +181,6 @@ fn path_string(path: &NormalizedPath) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use running_process::broker::manifest::read_manifest;
-    use running_process::broker::protocol::CacheRoot;
 
     fn isolate_daemon_state_env() -> crate::test_env::EnvVarGuard {
         crate::test_env::EnvVarGuard::set_all(&[
@@ -191,8 +189,12 @@ mod tests {
         ])
     }
 
-    fn roots_by_kind(roots: &[CacheRoot]) -> Vec<(i32, String)> {
-        roots.iter().map(|r| (r.kind, r.path.clone())).collect()
+    fn roots_by_kind<'a>(
+        roots: impl ExactSizeIterator<Item = kernal_api::daemon_registration::CacheRoot<'a>>,
+    ) -> Vec<(CacheRootKind, String)> {
+        roots
+            .map(|root| (root.kind(), root.path().to_owned()))
+            .collect()
     }
 
     #[test]
@@ -203,20 +205,17 @@ mod tests {
             .build()
             .expect("seal manifest");
 
-        assert_eq!(manifest.service_name, "zccache");
-        assert_eq!(manifest.service_version, zccache_core::VERSION);
-        assert_eq!(manifest.broker_instance, "shared");
+        assert_eq!(manifest.service_name(), "zccache");
+        assert_eq!(manifest.service_version(), zccache_core::VERSION);
+        assert_eq!(manifest.broker_instance(), "shared");
 
-        let kinds: Vec<i32> = manifest.roots.iter().map(|r| r.kind).collect();
-        assert!(
-            kinds.contains(&(CacheRootKind::CacheData as i32)),
-            "artifact"
-        );
-        assert!(kinds.contains(&(CacheRootKind::CacheIndex as i32)), "index");
-        assert!(kinds.contains(&(CacheRootKind::CacheLogs as i32)), "log");
-        assert!(kinds.contains(&(CacheRootKind::CacheLocks as i32)), "lock");
-        assert!(kinds.contains(&(CacheRootKind::CacheTmp as i32)), "temp");
-        assert_eq!(manifest.roots.len(), 5);
+        let kinds: Vec<CacheRootKind> = manifest.roots().map(|root| root.kind()).collect();
+        assert!(kinds.contains(&CacheRootKind::CacheData), "artifact");
+        assert!(kinds.contains(&CacheRootKind::CacheIndex), "index");
+        assert!(kinds.contains(&CacheRootKind::CacheLogs), "log");
+        assert!(kinds.contains(&CacheRootKind::CacheLocks), "lock");
+        assert!(kinds.contains(&CacheRootKind::CacheTmp), "temp");
+        assert_eq!(kinds.len(), 5);
     }
 
     #[test]
@@ -230,15 +229,16 @@ mod tests {
 
         // read_manifest recomputes the self_sha256 digest, so a successful
         // load proves the CacheManifestBuilder sealed the manifest correctly.
-        let loaded = read_manifest(&written).expect("read + verify sealed manifest");
-        assert_eq!(loaded.service_name, "zccache");
+        let loaded = kernal_api::daemon_registration::CacheManifest::read(&written)
+            .expect("read + verify sealed manifest");
+        assert_eq!(loaded.service_name(), "zccache");
 
         let original = roots_by_kind(
-            &build_manifest_builder(&cache_dir)
+            build_manifest_builder(&cache_dir)
                 .build()
                 .expect("seal manifest")
-                .roots,
+                .roots(),
         );
-        assert_eq!(roots_by_kind(&loaded.roots), original);
+        assert_eq!(roots_by_kind(loaded.roots()), original);
     }
 }

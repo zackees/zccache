@@ -1122,15 +1122,16 @@ fn write_cached_output_preserves_cache_mtime_on_hardlink() {
     let content = b"cached rlib data";
     seed_persisted_blob(&cache, content);
 
-    let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0); // 2001-09-09
-    filetime::set_file_mtime(&cache, old_time).unwrap();
+    let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0); // 2001-09-09
+    kernal_api::platform::fs::set_file_mtime(&cache, old_time).unwrap();
 
     write_cached_output(&out, &cache, content).unwrap();
 
     // Output is a hardlink to cache, so its mtime is the cache mtime.
     // After the iter7 touch_mtime no-op, that mtime is NOT bumped.
-    let out_mtime =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&out).unwrap());
+    let out_mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&out).unwrap(),
+    );
     assert_eq!(
         out_mtime.unix_seconds(),
         old_time.unix_seconds(),
@@ -1152,7 +1153,7 @@ fn write_cached_output_preserves_mtime_on_existing_hardlink() {
     // First delivery: creates hardlink
     write_cached_output(&out, &cache, content).unwrap();
 
-    let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0);
+    let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0);
     set_materialized_mtime(&out, old_time).unwrap();
 
     // See the comment in write_cached_output_skips_when_already_hardlinked:
@@ -1172,8 +1173,9 @@ fn write_cached_output_preserves_mtime_on_existing_hardlink() {
     // Second delivery: same_file keeps the linked mtime.
     write_cached_output(&out, &cache, content).unwrap();
 
-    let out_mtime =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&out).unwrap());
+    let out_mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&out).unwrap(),
+    );
     assert_eq!(
         out_mtime.unix_seconds(),
         old_time.unix_seconds(),
@@ -1205,30 +1207,33 @@ fn write_cached_output_floor_detaches_instead_of_corrupting_shared_blob() {
         return;
     }
 
-    let old_time = filetime::FileTime::from_unix_time(1_000_000_000, 0);
+    let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0);
     set_materialized_mtime(&out, old_time).unwrap();
-    let blob_time_before =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&cache).unwrap());
+    let blob_time_before = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&cache).unwrap(),
+    );
 
     // A newer sibling artifact in the same directory forces the #466/#467
     // floor to kick in on the next materialization of `out`.
     std::fs::write(&sibling, b"newer sibling").unwrap();
-    let newer_time = filetime::FileTime::from_unix_time(2_000_000_000, 0);
-    filetime::set_file_mtime(&sibling, newer_time).unwrap();
+    let newer_time = kernal_api::platform::fs::FileTime::from_unix_time(2_000_000_000, 0);
+    kernal_api::platform::fs::set_file_mtime(&sibling, newer_time).unwrap();
 
     // Second delivery: same_file path, floor must apply.
     write_cached_output(&out, &cache, content).unwrap();
 
-    let out_mtime =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&out).unwrap());
+    let out_mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&out).unwrap(),
+    );
     assert_eq!(
         out_mtime.unix_seconds(),
         newer_time.unix_seconds(),
         "output mtime must be floored up to the newer sibling"
     );
 
-    let blob_time_after =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&cache).unwrap());
+    let blob_time_after = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&cache).unwrap(),
+    );
     assert_eq!(
         blob_time_after.unix_seconds(),
         blob_time_before.unix_seconds(),
@@ -1253,9 +1258,10 @@ fn write_cached_output_fallback_has_fresh_mtime() {
     let content = b"data from memory";
     write_cached_output(&out, &cache, content).unwrap();
 
-    let out_mtime =
-        filetime::FileTime::from_last_modification_time(&std::fs::metadata(&out).unwrap());
-    let now = filetime::FileTime::now();
+    let out_mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(
+        &std::fs::metadata(&out).unwrap(),
+    );
+    let now = kernal_api::platform::fs::FileTime::now();
     let diff = now.unix_seconds() - out_mtime.unix_seconds();
 
     assert!(

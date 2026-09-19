@@ -2,9 +2,9 @@
 
 use super::{coalesce_wait, CoalesceOutcome};
 use dashmap::DashMap;
+use kernal_api::async_engine::Notify;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
 
 async fn guarded(future: impl std::future::Future<Output = CoalesceOutcome>) -> CoalesceOutcome {
     tokio::time::timeout(Duration::from_secs(30), future)

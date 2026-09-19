@@ -122,7 +122,7 @@ pub fn release_cwd() {
 /// project-local cache), and the whole point of [`release_cwd`] is to
 /// chdir OUT of any workspace so its directory handle is released.
 fn zccache_home_dir() -> Option<std::path::PathBuf> {
-    crate::platform::host::home_dir().map(|home| home.join(".zccache"))
+    crate::platform::host::home_dir().map(|home| home.join(".zccache").into_path_buf())
 }
 
 /// Detach inherited stdio (stdin/stdout/stderr) by re-opening them to the

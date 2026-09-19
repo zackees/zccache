@@ -24,7 +24,7 @@ use zccache::protocol::{Request, Response};
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<kernal_api::async_engine::Notify>,
     tempfile::TempDir,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();

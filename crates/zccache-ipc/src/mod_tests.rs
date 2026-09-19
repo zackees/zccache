@@ -443,7 +443,7 @@ fn daemon_namespace_moves_endpoint_and_lock_file() {
             .join(format!("daemon-soldr-dev-{v}.sock"))
             .to_string_lossy()
             .into_owned();
-        if zccache_platform::ipc::Endpoint::file_path_is_portable(&direct) {
+        if crate::platform::ipc::Endpoint::file_path_is_portable(&direct) {
             assert_eq!(endpoint, direct);
         } else {
             assert_eq!(
@@ -528,7 +528,7 @@ fn private_daemon_name_derives_endpoint_from_cache_root() {
 #[test]
 fn pipe_name_keeps_safe_username_endpoint_unchanged() {
     let v = zccache_core::config::versioned_subdir();
-    let endpoint = zccache_platform::ipc::Endpoint::select("", pipe_name("zackees", None));
+    let endpoint = crate::platform::ipc::Endpoint::select("", pipe_name("zackees", None));
     assert_eq!(endpoint.as_str(), format!(r"\\.\pipe\zccache-zackees-{v}"));
 }
 
@@ -536,7 +536,7 @@ fn pipe_name_keeps_safe_username_endpoint_unchanged() {
 #[test]
 fn pipe_name_sanitizes_username_spaces() {
     let endpoint =
-        zccache_platform::ipc::Endpoint::select("", pipe_name("Zach Vorhies", None)).to_string();
+        crate::platform::ipc::Endpoint::select("", pipe_name("Zach Vorhies", None)).to_string();
     assert!(endpoint.starts_with(r"\\.\pipe\zccache-Zach_Vorhies-"));
     assert!(!endpoint.contains(' '));
 }
@@ -565,7 +565,7 @@ fn cache_dir_endpoint_falls_back_to_short_unix_socket_path() {
     let endpoint = endpoint_for_cache_dir(&cache_dir, Some("soldr-dev"));
 
     assert!(
-        zccache_platform::ipc::Endpoint::file_path_is_portable(&endpoint),
+        crate::platform::ipc::Endpoint::file_path_is_portable(&endpoint),
         "endpoint too long: {endpoint}"
     );
     assert!(endpoint.starts_with("/tmp/zccache-"));
@@ -652,14 +652,14 @@ fn exe_stem_matches_strips_exe_suffix_on_windows() {
 
 /// Regression test for issue #132: a stale `daemon.lock` restored from a
 /// CI cache can carry a PID that's been recycled by an unrelated process
-/// on a fresh runner. `check_running_daemon` must NOT report that process
-/// as our daemon — otherwise `zccache stop` would `force_kill_process`
-/// the unrelated process.
+/// on a fresh runner. `check_running_daemon` must retain a live but
+/// unverified process for direct-IPC discovery, while daemon-specific kill
+/// authorization still fails closed.
 ///
-/// We use the test's own PID, which is guaranteed alive but is clearly
-/// not zccache-daemon, then assert the lock file is treated as stale.
+/// We use the test's own PID, which is guaranteed alive but has no persisted
+/// daemon identity, then assert the lock file is not destructively retired.
 #[test]
-fn stale_lock_with_recycled_pid_is_rejected() {
+fn live_lock_without_backend_identity_is_not_destructively_retired() {
     let root = tempfile::tempdir().unwrap();
     let cache_dir = root.path().join("zc");
     let _env = EnvGuard::set_cache_dir(&cache_dir);
@@ -668,14 +668,37 @@ fn stale_lock_with_recycled_pid_is_rejected() {
     write_lock_file(std::process::id()).unwrap();
     assert!(lock.exists());
 
-    // The test process is alive but is not zccache-daemon — must be rejected.
-    // (On macOS we can't read the exe path, so this test relaxes there: see
-    // `daemon_exe_for_pid` for the platform fallback.)
-    #[cfg(any(target_os = "linux", windows))]
-    {
-        assert!(check_running_daemon().is_none());
-        assert!(!lock.exists(), "stale lock file should have been removed");
-    }
+    // A live PID with no persisted full identity is compatible with the
+    // legacy/direct IPC path. Treating it as stale would retire a serving
+    // endpoint before that path can probe it.
+    assert_eq!(check_running_daemon(), Some(std::process::id()));
+    assert!(
+        lock.exists(),
+        "uncertain live identity must not lose its lock"
+    );
+}
+
+#[test]
+fn daemon_pid_verification_fails_closed_without_persisted_identity() {
+    let cache = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set_cache_dir(cache.path());
+
+    assert!(
+        !verify_daemon_pid(std::process::id()),
+        "a live PID alone must never authorize stale-daemon recovery"
+    );
+}
+
+#[test]
+fn verified_force_kill_refuses_missing_persisted_identity() {
+    let cache = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set_cache_dir(cache.path());
+
+    // This must not fall back to force_kill_pid: the current test process is
+    // live, so such a fallback would make the regression destructive.
+    assert!(force_kill_verified_daemon(std::process::id())
+        .expect("missing identity is an uncertainty, not an error")
+        .is_none());
 }
 
 // ─── #640 probe_existing_daemon ───────────────────────────────────────
@@ -789,17 +812,19 @@ fn fake_identity(
     pid: u32,
     started_at_unix_ms: u64,
     boot_id: &str,
-) -> running_process::broker::protocol_v2::backend_handle::DaemonProcess {
-    running_process::broker::protocol_v2::backend_handle::DaemonProcess {
-        pid,
-        exe_path: std::path::PathBuf::from("zccache-daemon"),
-        exe_hash: [0u8; 32],
-        legacy_exe_sha256: [0u8; 32],
-        boot_id: boot_id.to_string(),
-        ipc_endpoint: running_process_endpoint("test-endpoint"),
-        started_at_unix_ms,
-        idle_timeout_secs: None,
-    }
+) -> kernal_api::daemon_identity::DaemonIdentity {
+    kernal_api::daemon_identity::DaemonIdentity::from_record(
+        kernal_api::daemon_identity::DaemonIdentityRecord {
+            pid,
+            executable_path: std::path::PathBuf::from("zccache-daemon"),
+            blake3_digest: [0u8; 32],
+            legacy_sha256_digest: [0u8; 32],
+            boot_id: boot_id.to_string(),
+            endpoint: running_process_endpoint("test-endpoint"),
+            started_at_unix_ms,
+            idle_timeout_secs: None,
+        },
+    )
 }
 
 #[test]

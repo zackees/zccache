@@ -169,7 +169,6 @@ pub const fn default_request_id(request: &crate::Request) -> &'static str {
 /// Unset/`auto` now selects v16 prost for wrapper, session, fingerprint, and
 /// exec clients. Invalid values are rejected rather than silently selecting
 /// another wire format.
-#[must_use]
 pub fn full_family_wire_format_from_env() -> Result<WireFormat, String> {
     Ok(match full_family_wire_selection_from_env()? {
         ClientWireSelection::FrameV1 => WireFormat::FrameV1,
@@ -181,14 +180,12 @@ pub fn full_family_wire_format_from_env() -> Result<WireFormat, String> {
 ///
 /// `Auto` stays distinct for callers that need to retain the user's explicit
 /// selection intent.
-#[must_use]
 pub fn full_family_wire_selection_from_env() -> Result<ClientWireSelection, String> {
     full_family_wire_selection_from_env_value(std::env::var(WIRE_FORMAT_ENV).ok().as_deref())
 }
 
 /// Value-based form of [`full_family_wire_selection_from_env`] for tests and
 /// embedders that already own their environment snapshot.
-#[must_use]
 pub fn full_family_wire_selection_from_env_value(
     value: Option<&str>,
 ) -> Result<ClientWireSelection, String> {

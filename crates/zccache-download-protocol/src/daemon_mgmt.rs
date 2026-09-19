@@ -19,8 +19,21 @@ fn endpoint_for_cache_dir(cache_dir: &std::path::Path) -> String {
         .to_string_lossy()
         .into_owned();
     let suffix = zccache_core::stable_path_id(cache_dir);
-    crate::platform::ipc::Endpoint::select(file_path, format!("zccache-download-{suffix}"))
-        .to_string()
+    select_endpoint(file_path, format!("zccache-download-{suffix}"))
+}
+
+/// Apply the download daemon's frozen product endpoint spelling policy.
+///
+/// The Unix file path and Windows pipe leaf are deliberately selected here,
+/// beside the protocol that persists and consumes them. kernal-api supplies
+/// only the canonical compile-target predicate; it does not choose product
+/// endpoint names or add the Windows pipe prefix on zccache's behalf.
+fn select_endpoint(file_path: String, pipe_name: String) -> String {
+    if kernal_api::platform::host::target_is_windows() {
+        format!(r"\\.\pipe\{pipe_name}")
+    } else {
+        file_path
+    }
 }
 
 /// Path to the daemon PID lock file.
@@ -95,7 +108,7 @@ mod tests {
         let versioned = cache_dir.join(zccache_core::config::versioned_subdir());
 
         let endpoint = default_endpoint();
-        let expected = crate::platform::ipc::Endpoint::select(
+        let expected = select_endpoint(
             versioned
                 .join("download-daemon.sock")
                 .to_string_lossy()
@@ -105,7 +118,7 @@ mod tests {
                 zccache_core::stable_path_id(&versioned)
             ),
         );
-        assert_eq!(endpoint, expected.as_str());
+        assert_eq!(endpoint, expected);
 
         assert_eq!(lock_file_path(), versioned.join("download-daemon.lock"));
     }
@@ -117,5 +130,18 @@ mod tests {
         let new = root.path().join("v2.0.0");
 
         assert_ne!(endpoint_for_cache_dir(&old), endpoint_for_cache_dir(&new));
+    }
+
+    #[test]
+    fn endpoint_selection_preserves_the_platform_crate_spelling_contract() {
+        let selected = select_endpoint(
+            "/tmp/zccache-download.sock".to_owned(),
+            "zccache-download-hash".to_owned(),
+        );
+        if kernal_api::platform::host::target_is_windows() {
+            assert_eq!(selected, r"\\.\pipe\zccache-download-hash");
+        } else {
+            assert_eq!(selected, "/tmp/zccache-download.sock");
+        }
     }
 }

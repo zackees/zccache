@@ -1,11 +1,9 @@
+use kernal_api::platform::fs::FileLock;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use zccache_core::NormalizedPath;
-
-// fs2::FileExt trait methods are called via UFCS below to avoid
-// ambiguity with std::fs::File inherent methods added in Rust 1.89.
 
 use super::error::Result;
 
@@ -31,43 +29,37 @@ fn open_lock_file(cache_path: &Path) -> io::Result<File> {
         .open(&path)
 }
 
-// Use UFCS to call fs2 trait methods, avoiding ambiguity with
-// std::fs::File inherent methods added in Rust 1.89.
+// The facade returns a guard that unlocks on drop, so these return the guard
+// rather than a bool: the lock's lifetime is now the guard's, and a caller
+// that dropped it on the floor would release the lock immediately. The
+// callers below bind it for exactly as long as they held the `File` before.
 
-fn try_lock_shared(file: &File) -> io::Result<()> {
-    fs2::FileExt::try_lock_shared(file)
-}
-
-fn try_lock_exclusive(file: &File) -> io::Result<()> {
-    fs2::FileExt::try_lock_exclusive(file)
-}
-
-fn acquire_shared(file: &File, timeout: Duration) -> bool {
-    if try_lock_shared(file).is_ok() {
-        return true;
+fn acquire_shared(file: &File, timeout: Duration) -> Option<FileLock<'_>> {
+    if let Ok(guard) = kernal_api::platform::fs::try_lock_shared(file) {
+        return Some(guard);
     }
     let start = Instant::now();
     while start.elapsed() < timeout {
         std::thread::sleep(RETRY_INTERVAL);
-        if try_lock_shared(file).is_ok() {
-            return true;
+        if let Ok(guard) = kernal_api::platform::fs::try_lock_shared(file) {
+            return Some(guard);
         }
     }
-    false
+    None
 }
 
-fn acquire_exclusive(file: &File, timeout: Duration) -> bool {
-    if try_lock_exclusive(file).is_ok() {
-        return true;
+fn acquire_exclusive(file: &File, timeout: Duration) -> Option<FileLock<'_>> {
+    if let Ok(guard) = kernal_api::platform::fs::try_lock_exclusive(file) {
+        return Some(guard);
     }
     let start = Instant::now();
     while start.elapsed() < timeout {
         std::thread::sleep(RETRY_INTERVAL);
-        if try_lock_exclusive(file).is_ok() {
-            return true;
+        if let Ok(guard) = kernal_api::platform::fs::try_lock_exclusive(file) {
+            return Some(guard);
         }
     }
-    false
+    None
 }
 
 /// Run a closure while holding a shared (read) lock on the cache path.
@@ -88,19 +80,23 @@ where
         }
     };
 
-    let _acquired = lock_file.as_ref().map(|file| {
-        if !acquire_shared(file, DEFAULT_LOCK_TIMEOUT) {
+    let acquired = lock_file.as_ref().and_then(|file| {
+        let guard = acquire_shared(file, DEFAULT_LOCK_TIMEOUT);
+        if guard.is_none() {
             tracing::warn!(
                 path = %cache_path.display(),
                 "shared lock timeout after {}s, proceeding without lock",
                 DEFAULT_LOCK_TIMEOUT.as_secs()
             );
         }
+        guard
     });
 
     let result = f();
 
-    // Lock released on File drop.
+    // The guard borrows the file, so it is released first; the lock is gone
+    // by the time the handle closes, as it was before.
+    drop(acquired);
     drop(lock_file);
 
     result
@@ -124,19 +120,23 @@ where
         }
     };
 
-    let _acquired = lock_file.as_ref().map(|file| {
-        if !acquire_exclusive(file, DEFAULT_LOCK_TIMEOUT) {
+    let acquired = lock_file.as_ref().and_then(|file| {
+        let guard = acquire_exclusive(file, DEFAULT_LOCK_TIMEOUT);
+        if guard.is_none() {
             tracing::warn!(
                 path = %cache_path.display(),
                 "exclusive lock timeout after {}s, proceeding without lock",
                 DEFAULT_LOCK_TIMEOUT.as_secs()
             );
         }
+        guard
     });
 
     let result = f();
 
-    // Lock released on File drop.
+    // The guard borrows the file, so it is released first; the lock is gone
+    // by the time the handle closes, as it was before.
+    drop(acquired);
     drop(lock_file);
 
     result
@@ -165,8 +165,12 @@ mod tests {
         let file1 = open_lock_file(&cache).unwrap();
         let file2 = open_lock_file(&cache).unwrap();
 
-        assert!(try_lock_shared(&file1).is_ok());
-        assert!(try_lock_shared(&file2).is_ok());
+        // Both guards are bound: dropping the first inline would make the
+        // second succeed trivially, and the point is that they coexist.
+        let _first =
+            kernal_api::platform::fs::try_lock_shared(&file1).expect("first shared holder");
+        let _second = kernal_api::platform::fs::try_lock_shared(&file2)
+            .expect("a second shared holder must be allowed alongside the first");
     }
 
     #[test]
@@ -177,7 +181,10 @@ mod tests {
         let cache_path = dir.path().join("fp.json");
 
         let exclusive = open_lock_file(&cache_path).unwrap();
-        assert!(try_lock_exclusive(&exclusive).is_ok());
+        // Bind the guard: it releases on drop, so asserting on it inline
+        // would unlock before the assertion's semicolon.
+        let exclusive_guard = kernal_api::platform::fs::try_lock_exclusive(&exclusive)
+            .expect("exclusive lock must be available");
 
         let cache_path2 = cache_path.clone();
         let barrier = Arc::new(Barrier::new(2));
@@ -187,12 +194,13 @@ mod tests {
             let file = open_lock_file(&cache_path2).unwrap();
             barrier2.wait();
             // Should fail to acquire shared lock immediately.
-            assert!(try_lock_shared(&file).is_err());
+            assert!(kernal_api::platform::fs::try_lock_shared(&file).is_err());
         });
 
         barrier.wait();
         std::thread::sleep(Duration::from_millis(50));
-        drop(exclusive); // Release.
+        drop(exclusive_guard); // Release.
+        drop(exclusive);
         handle.join().unwrap();
     }
 
@@ -202,13 +210,18 @@ mod tests {
         let cache = dir.path().join("fp.json");
 
         let file1 = open_lock_file(&cache).unwrap();
-        assert!(try_lock_exclusive(&file1).is_ok());
+        let first = kernal_api::platform::fs::try_lock_exclusive(&file1)
+            .expect("first holder takes the lock");
 
         let file2 = open_lock_file(&cache).unwrap();
-        assert!(try_lock_exclusive(&file2).is_err());
+        assert!(kernal_api::platform::fs::try_lock_exclusive(&file2).is_err());
 
+        drop(first);
         drop(file1);
-        assert!(try_lock_exclusive(&file2).is_ok());
+        drop(
+            kernal_api::platform::fs::try_lock_exclusive(&file2)
+                .expect("the lock is free once the first holder releases"),
+        );
     }
 
     #[test]
@@ -237,10 +250,17 @@ mod tests {
 
         {
             let file = open_lock_file(&cache).unwrap();
-            assert!(try_lock_exclusive(&file).is_ok());
+            // Held for the whole inner scope, so what the outer assertion
+            // observes is the *drop* releasing it rather than the lock never
+            // having been taken.
+            let _held = kernal_api::platform::fs::try_lock_exclusive(&file)
+                .expect("exclusive lock must be available");
         }
 
         let file = open_lock_file(&cache).unwrap();
-        assert!(try_lock_exclusive(&file).is_ok());
+        drop(
+            kernal_api::platform::fs::try_lock_exclusive(&file)
+                .expect("the lock must be free once the previous holder's scope ended"),
+        );
     }
 }

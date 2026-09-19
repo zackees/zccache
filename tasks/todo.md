@@ -1,3 +1,42 @@
+# Pin kernal-api from crates.io (drop `_vender/kernal-api`) — done
+
+Goal: `feat/complete-kernal-integration` depends on a published, exact
+kernal-api with no `_vender` path. The branch had been built on the closed
+kernal-api#258, whose running-process re-exports kernal-api#263 forbids and
+whose ~60 owned platform items main never merged.
+
+- [x] kernal-api facades, merged on green: daemon identity/control (#328),
+      process session knobs (#331), race macros + `task_local!` (#330),
+      broker client (#329) -> released 0.1.16.
+- [x] kernal-api ports of #258's owned items: fs (#336), ipc (#333),
+      process/host + memory readers (#335), async_engine + allocator (#334).
+- [x] Final gaps found by building zccache against main (#337): `Mutex` with
+      Arc-retaining owned guards, `Notify` futures, `Task::detach_on_drop`,
+      `RuntimeBuilder::max_blocking_threads`, `VerifiedDaemon::has_exited`,
+      `SyncEnvironment::UserBaseline`, `DirectoryWalk::parallelism`,
+      `ProcessOutputFault::new` -> released 0.1.17.
+- [x] B0-B5 zccache migration: frame codec, identity/probe/control, process
+      sessions (+ child RSS sampling), daemon launch, broker client.
+- [x] Restore the two behaviors the migration lost: daemons start from the
+      user's login environment (`UserBaseline`); `mtime_replay` walks on a
+      dedicated pool (soldr#2760).
+- [x] B6 Pin `kernal-api = { version = "=0.1.17", default-features = false }`,
+      remove `_vender` and its workspace exclude, regenerate the lockfile.
+
+## Review
+
+Validation against the crates.io release (no path/patch override; the
+lockfile resolves `kernal-api 0.1.17` from the registry, no `_vender` entry):
+workspace check 0, workspace clippy `-D warnings` 0, `./test` 2734 passed /
+0 failed, wire characterization 45 passed with no golden bytes changed,
+`ci/check_kernal_api_baseline.py` 0. Dylint could not run on this host
+(dylint-driver needs `libz.so.1`); CI runs it.
+
+Lessons: build the consumer against the producer's real main *before* cutting
+a release -- the first attempt assumed four surfaces were the whole gap and
+found ~60 more only at compile time. A probe patch that makes the consumer
+compile is a fast, exact gap list.
+
 # kernal-api#13 portable Rustc policy
 
 - [x] RED missing output-plan seam; GREEN 384 compiler tests after extraction.

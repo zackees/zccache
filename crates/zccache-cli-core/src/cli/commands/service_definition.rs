@@ -29,10 +29,10 @@
 //! When zccache flips slice 25 (delete v1 broker surface) the v1
 //! write goes away with it.
 
-use running_process::broker::builders::ServiceDefinitionBuilder;
-use running_process::broker::protocol::ServiceDefinition;
-use running_process::broker::protocol_v2;
-use running_process::broker::server::service_definition_dir;
+use kernal_api::daemon_registration::{
+    service_definition_directory, ServiceDefinition, ServiceDefinitionBuilder,
+};
+use kernal_api::daemon_registration_v2 as registration_v2;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -65,7 +65,7 @@ pub(crate) struct InstalledServiceDefinition {
 /// a v2 broker discovers the same zccache daemon a v1 broker would.
 fn zccache_service_definition_v2(
     daemon_binary: &Path,
-) -> io::Result<protocol_v2::ServiceDefinition> {
+) -> io::Result<registration_v2::ServiceDefinition> {
     let binary = std::fs::canonicalize(daemon_binary)?;
     let binary_dir = binary.parent().ok_or_else(|| {
         io::Error::new(
@@ -74,13 +74,13 @@ fn zccache_service_definition_v2(
         )
     })?;
 
-    Ok(protocol_v2::ServiceDefinitionBuilder::shared_broker(
+    Ok(registration_v2::ServiceDefinitionBuilder::shared_broker(
         ZCCACHE_SERVICE_NAME,
         binary.display().to_string(),
     )
     .per_version_binary_dir(binary_dir.display().to_string())
     .min_version(crate::core::VERSION)
-    .version_allow_list([crate::core::VERSION])
+    .allow_version(crate::core::VERSION)
     .label("vendor", "zackees")
     .label("package", "zccache")
     .label("consumer", "zccache")
@@ -120,7 +120,7 @@ pub(crate) fn zccache_service_definition(daemon_binary: &Path) -> io::Result<Ser
 pub(crate) fn install_service_definition(
     daemon_binary: &Path,
 ) -> io::Result<InstalledServiceDefinition> {
-    install_service_definition_to_dir(service_definition_dir(), daemon_binary)
+    install_service_definition_to_dir(service_definition_directory(), daemon_binary)
 }
 
 /// Install the service definition into an explicit directory (used by the
@@ -160,7 +160,7 @@ pub(crate) fn install_service_definition_to_dir(
     // primary during the rollout. zccache#782 slice 25 collapses this
     // to v2-only.
     let v2_path = match zccache_service_definition_v2(daemon_binary) {
-        Ok(def_v2) => match protocol_v2::write_service_definition_v2(service_root, &def_v2) {
+        Ok(def_v2) => match registration_v2::write_service_definition(service_root, &def_v2) {
             Ok(path) => Some(path),
             Err(err) => {
                 tracing::warn!(
@@ -209,8 +209,8 @@ pub(crate) fn run_install_servicedef(
             println!(
                 "installed {} (service `{}`, daemon `{}`)",
                 installed.path.display(),
-                installed.definition.service_name,
-                installed.definition.binary_path,
+                installed.definition.service_name(),
+                installed.definition.binary_path(),
             );
             match &installed.v2_path {
                 Some(v2_path) => {
@@ -232,8 +232,6 @@ pub(crate) fn run_install_servicedef(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use running_process::broker::protocol::BrokerIsolation;
-    use running_process::broker::server::ServiceDefinitionLoader;
     use tempfile::TempDir;
 
     fn fake_daemon_binary(root: &Path) -> PathBuf {
@@ -253,21 +251,18 @@ mod tests {
 
         let definition = zccache_service_definition(&daemon).expect("definition");
 
-        assert_eq!(definition.service_name, "zccache");
-        assert_eq!(definition.isolation, BrokerIsolation::SharedBroker as i32);
-        assert_eq!(definition.min_version, crate::core::VERSION);
-        assert_eq!(definition.version_allow_list, [crate::core::VERSION]);
+        assert_eq!(definition.service_name(), "zccache");
+        assert!(definition.is_shared_broker());
+        assert_eq!(definition.min_version(), crate::core::VERSION);
         assert_eq!(
-            definition
-                .labels
-                .get("running-process-tracker")
-                .map(String::as_str),
+            definition.allowed_versions().collect::<Vec<_>>(),
+            [crate::core::VERSION]
+        );
+        assert_eq!(
+            definition.label("running-process-tracker"),
             Some("zackees/running-process#435"),
         );
-        assert_eq!(
-            definition.labels.get("consumer").map(String::as_str),
-            Some("zccache"),
-        );
+        assert_eq!(definition.label("consumer"), Some("zccache"));
     }
 
     #[test]
@@ -280,9 +275,8 @@ mod tests {
             .expect("install service definition");
 
         assert_eq!(installed.path, service_root.join("zccache.servicedef"));
-        let loaded = ServiceDefinitionLoader::new(&service_root)
-            .load("zccache")
-            .expect("load service definition");
+        let loaded = ServiceDefinition::read(&service_root, "zccache")
+            .expect("load facade-owned service definition");
         assert_eq!(loaded, installed.definition);
     }
 
@@ -293,8 +287,6 @@ mod tests {
     /// once it has a loader.
     #[test]
     fn install_also_writes_v2_servicedef() {
-        use prost::Message;
-
         let temp = TempDir::new().expect("tempdir");
         let service_root = temp.path().join("services");
         let daemon = fake_daemon_binary(temp.path());
@@ -305,30 +297,24 @@ mod tests {
         let v2_path = installed.v2_path.expect("v2 path must be present");
         assert_eq!(v2_path, service_root.join("zccache.servicedef.v2"));
 
-        let bytes = std::fs::read(&v2_path).expect("read v2 file");
-        let decoded = protocol_v2::ServiceDefinition::decode(bytes.as_slice())
-            .expect("v2 ServiceDefinition decodes");
-
-        assert_eq!(decoded.service_name, "zccache");
-        assert_eq!(decoded.binary_path, installed.definition.binary_path);
-        assert_eq!(
-            decoded.isolation,
-            protocol_v2::BrokerIsolation::SharedBroker as i32,
-            "v2 must mirror v1's shared_broker isolation"
+        let expected = zccache_service_definition_v2(&daemon).expect("v2 definition");
+        assert_eq!(expected.service_name(), "zccache");
+        assert_eq!(expected.binary_path(), installed.definition.binary_path());
+        assert!(
+            expected.is_shared_broker(),
+            "v2 must mirror v1 shared-broker isolation"
         );
-        assert_eq!(decoded.min_version, crate::core::VERSION);
-        assert_eq!(decoded.version_allow_list, vec![crate::core::VERSION]);
+        assert_eq!(expected.min_version(), crate::core::VERSION);
         assert_eq!(
-            decoded.labels.get("consumer").map(String::as_str),
-            Some("zccache")
+            expected.allowed_versions().collect::<Vec<_>>(),
+            [crate::core::VERSION]
         );
+        assert_eq!(expected.label("consumer"), Some("zccache"));
         assert_eq!(
-            decoded
-                .labels
-                .get("running-process-tracker")
-                .map(String::as_str),
+            expected.label("running-process-tracker"),
             Some("zackees/running-process#435")
         );
+        assert!(!std::fs::read(&v2_path).expect("read v2 file").is_empty());
     }
 
     #[test]

@@ -12,8 +12,8 @@ publish = false
 
 [dependencies]
 zccache-core = { workspace = true }
-zccache-platform = { workspace = true }
 zccache-download = { workspace = true }
+kernal-api = { workspace = true }
 
 bincode = { workspace = true }
 bytes = { workspace = true }

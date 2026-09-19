@@ -3,8 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
-use tokio_util::sync::CancellationToken;
+use kernal_api::async_engine::{CancellationSource, CancellationToken, Semaphore};
 
 use super::{
     EmbeddedError, ExternalWorkPermit, HostAdmissionClassifier, HostIdentity, MaintenanceOwnership,
@@ -81,6 +80,13 @@ impl ZccacheService {
             Some(limit) => Some(Arc::new(Semaphore::new(limit))),
             None => None,
         };
+        let runtime_handle = config
+            .runtime
+            .handle
+            .as_ref()
+            .map(facade_runtime_handle)
+            .transpose()
+            .map_err(EmbeddedError::Start)?;
         let endpoint = embedded_endpoint(&config.host);
         let cache_root =
             crate::core::config::effective_cache_root_from_top_level(&config.cache_root);
@@ -93,7 +99,7 @@ impl ZccacheService {
             endpoint,
             cache_root,
             options.staging_root.as_ref(),
-            config.runtime.handle.clone(),
+            runtime_handle.clone(),
             maintenance_policy,
             options.maintenance_ownership == MaintenanceOwnership::Embedded,
             host_admission_classifier,
@@ -105,16 +111,15 @@ impl ZccacheService {
             .host_in_flight
             .map(crate::daemon::process::register_host_in_flight_counter)
             .map(Arc::new);
-        let audit_sink =
-            crate::audit_writer::AuditSink::start(&config.audit, config.runtime.handle.clone())
-                .map_err(|err| EmbeddedError::Start(err.to_string()))?
-                .map(Arc::new);
+        let audit_sink = crate::audit_writer::AuditSink::start(&config.audit, runtime_handle)
+            .map_err(|err| EmbeddedError::Start(err.to_string()))?
+            .map(Arc::new);
         Ok(Self {
             daemon: Arc::new(daemon),
             shutdown: Arc::new(AtomicBool::new(false)),
             host_cancellation: config.cancellation,
-            force_cancellation: CancellationToken::new(),
-            admission_shutdown: CancellationToken::new(),
+            force_cancellation: CancellationSource::new(),
+            admission_shutdown: CancellationSource::new(),
             compile_permits,
             _host_inflight_guard: host_inflight_guard,
             audit_sink,
@@ -145,27 +150,61 @@ impl ZccacheService {
         let Some(semaphore) = &self.compile_permits else {
             return Ok(ExternalWorkPermit { _permit: None });
         };
-        let permit = Arc::clone(semaphore).acquire_owned();
+        let permit = semaphore.acquire();
         let permit = match &self.host_cancellation {
             Some(token) => {
-                tokio::select! {
-                    biased;
-                    () = self.force_cancellation.cancelled() => return Err(EmbeddedError::Cancelled),
-                    () = token.cancelled() => return Err(EmbeddedError::Cancelled),
-                    () = self.admission_shutdown.cancelled() => return Err(EmbeddedError::ShutDown),
-                    permit = permit => permit,
+                let force_cancellation = self.force_cancellation.token();
+                let admission_shutdown = self.admission_shutdown.token();
+                let force = force_cancellation.cancelled();
+                let host = token.cancelled();
+                let shutdown = admission_shutdown.cancelled();
+                let mut force = std::pin::pin!(force);
+                let mut host = std::pin::pin!(host);
+                let mut shutdown = std::pin::pin!(shutdown);
+                let mut permit = std::pin::pin!(permit);
+                match kernal_api::biased_race!(
+                    (force.as_mut()),
+                    (host.as_mut()),
+                    (shutdown.as_mut()),
+                    (permit.as_mut()),
+                )
+                .await
+                {
+                    kernal_api::async_engine::BiasedRace4::First(())
+                    | kernal_api::async_engine::BiasedRace4::Second(()) => {
+                        return Err(EmbeddedError::Cancelled);
+                    }
+                    kernal_api::async_engine::BiasedRace4::Third(()) => {
+                        return Err(EmbeddedError::ShutDown);
+                    }
+                    kernal_api::async_engine::BiasedRace4::Fourth(permit) => permit,
                 }
             }
             None => {
-                tokio::select! {
-                    biased;
-                    () = self.force_cancellation.cancelled() => return Err(EmbeddedError::Cancelled),
-                    () = self.admission_shutdown.cancelled() => return Err(EmbeddedError::ShutDown),
-                    permit = permit => permit,
+                let force_cancellation = self.force_cancellation.token();
+                let admission_shutdown = self.admission_shutdown.token();
+                let force = force_cancellation.cancelled();
+                let shutdown = admission_shutdown.cancelled();
+                let mut force = std::pin::pin!(force);
+                let mut shutdown = std::pin::pin!(shutdown);
+                let mut permit = std::pin::pin!(permit);
+                match kernal_api::biased_race!(
+                    (force.as_mut()),
+                    (shutdown.as_mut()),
+                    (permit.as_mut()),
+                )
+                .await
+                {
+                    kernal_api::async_engine::BiasedRace3::First(()) => {
+                        return Err(EmbeddedError::Cancelled);
+                    }
+                    kernal_api::async_engine::BiasedRace3::Second(()) => {
+                        return Err(EmbeddedError::ShutDown);
+                    }
+                    kernal_api::async_engine::BiasedRace3::Third(permit) => permit,
                 }
             }
-        }
-        .map_err(|_| EmbeddedError::ShutDown)?;
+        };
         if self.force_cancellation.is_cancelled()
             || self
                 .host_cancellation
@@ -186,20 +225,41 @@ impl ZccacheService {
     where
         F: std::future::Future<Output = std::result::Result<T, String>>,
     {
+        let mut compile = std::pin::pin!(compile);
         match &self.host_cancellation {
             Some(token) => {
-                tokio::select! {
-                    biased;
-                    () = self.force_cancellation.cancelled() => Err(EmbeddedError::Cancelled),
-                    () = token.cancelled() => Err(EmbeddedError::Cancelled),
-                    result = compile => result.map_err(EmbeddedError::Compile),
+                let force_cancellation = self.force_cancellation.token();
+                let force = force_cancellation.cancelled();
+                let host = token.cancelled();
+                let mut force = std::pin::pin!(force);
+                let mut host = std::pin::pin!(host);
+                match kernal_api::biased_race!(
+                    (force.as_mut()),
+                    (host.as_mut()),
+                    (compile.as_mut()),
+                )
+                .await
+                {
+                    kernal_api::async_engine::BiasedRace3::First(())
+                    | kernal_api::async_engine::BiasedRace3::Second(()) => {
+                        Err(EmbeddedError::Cancelled)
+                    }
+                    kernal_api::async_engine::BiasedRace3::Third(result) => {
+                        result.map_err(EmbeddedError::Compile)
+                    }
                 }
             }
             None => {
-                tokio::select! {
-                    biased;
-                    () = self.force_cancellation.cancelled() => Err(EmbeddedError::Cancelled),
-                    result = compile => result.map_err(EmbeddedError::Compile),
+                let force_cancellation = self.force_cancellation.token();
+                let force = force_cancellation.cancelled();
+                let mut force = std::pin::pin!(force);
+                match kernal_api::biased_race!((force.as_mut()), (compile.as_mut())).await {
+                    kernal_api::async_engine::BiasedRace2::First(()) => {
+                        Err(EmbeddedError::Cancelled)
+                    }
+                    kernal_api::async_engine::BiasedRace2::Second(result) => {
+                        result.map_err(EmbeddedError::Compile)
+                    }
                 }
             }
         }
@@ -226,4 +286,16 @@ fn sanitize_identity(value: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Bridge the host's Tokio handle -- the public `RuntimeHooks` contract soldr
+/// and fbuild build against -- to the kernal-api handle zccache launches its
+/// background work through. Entering the handle makes it the ambient runtime,
+/// which is exactly what the facade's `RuntimeHandle::current` captures.
+fn facade_runtime_handle(
+    handle: &tokio::runtime::Handle,
+) -> std::result::Result<kernal_api::async_engine::RuntimeHandle, String> {
+    let _entered = handle.enter();
+    kernal_api::async_engine::RuntimeHandle::current()
+        .map_err(|error| format!("host runtime handle is not usable: {error:?}"))
 }

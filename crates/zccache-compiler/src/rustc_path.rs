@@ -13,7 +13,7 @@ pub enum RustcPathSyntax {
 impl RustcPathSyntax {
     #[cfg(feature = "native")]
     pub(crate) fn current() -> Self {
-        if crate::platform::host::is_windows() {
+        if kernal_api::platform::host::target_is_windows() {
             Self::Windows
         } else {
             Self::Unix

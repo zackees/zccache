@@ -200,7 +200,7 @@ fn read_only_maintenance_scan_does_not_exclude_cache_hit_leases() {
     let artifacts = DashMap::new();
     let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
     let dep_graph = DepGraph::new();
-    let publication_barrier = Arc::new(tokio::sync::RwLock::new(()));
+    let publication_barrier = Arc::new(kernal_api::async_engine::RwLock::new(()));
     let environment = GatedScanEnvironment {
         now: SystemTime::UNIX_EPOCH + 100 * DAY,
         calls: std::sync::atomic::AtomicUsize::new(0),
@@ -247,9 +247,9 @@ fn issue_1148_live_and_persisted_access_control_full_expiry() {
     std::fs::write(&payload_path, vec![0_u8; 4096]).unwrap();
     let now = SystemTime::now();
     let old = now - 31 * DAY;
-    let old_time = filetime::FileTime::from_system_time(old);
-    filetime::set_file_mtime(&meta_path, old_time).unwrap();
-    filetime::set_file_mtime(&payload_path, old_time).unwrap();
+    let old_time = kernal_api::platform::fs::FileTime::from_system_time(old);
+    kernal_api::platform::fs::set_file_mtime(&meta_path, old_time).unwrap();
+    kernal_api::platform::fs::set_file_mtime(&payload_path, old_time).unwrap();
 
     let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
     let dep_graph = DepGraph::new();
@@ -675,11 +675,11 @@ async fn artifact_lookup_lease_orders_access_insert_before_gc_remove() {
         .state
         .artifacts
         .insert(key.clone(), CachedArtifact::from_index(meta.clone()));
-    daemon
+    assert!(daemon
         .state
         .index_writer_tx
         .send(IndexWriterCommand::Insert(key.clone(), meta))
-        .unwrap();
+        .is_ok());
     let lookup = lookup_artifact_with_disk_fallback(&daemon.state, &key)
         .expect("live artifact should acquire a publication lease");
     let maintenance_daemon = Arc::clone(&daemon);
@@ -1082,7 +1082,7 @@ async fn the_periodic_sweep_reclaims_a_dead_instances_depfile_dir() {
     let live = depfiles.join(format!("{}-0", std::process::id()));
     std::fs::create_dir_all(&live).unwrap();
 
-    sweep_stale_depfile_dirs().await;
+    sweep_stale_depfile_dirs(None).await;
 
     assert!(
         !dead.exists(),
