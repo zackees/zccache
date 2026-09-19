@@ -498,6 +498,11 @@ jobs:
       - name: Build wheels from downloaded artifacts
         run: python -m ci.release_workflow build-wheels --artifact-download-dir artifact-downloads
 
+      # PyPI caps the project at 10 GB. Refuse wheels that embed debug info
+      # or blow the size budget before they can be uploaded.
+      - name: Check wheel contents and size budget
+        run: python ci/wheel_check.py dist/wheels/*.whl
+
       - uses: actions/upload-artifact@v7
         with:
           name: pypi-wheels

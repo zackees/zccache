@@ -113,7 +113,10 @@ impl CompileStartGate {
     }
 }
 
-const COMPILE_GATE_TIMEOUT: Duration = Duration::from_secs(15);
+// A readiness wait, not a perf budget: it covers service start plus the
+// real clang's probing spawns, which on the windows-11-arm64 20260914 runner
+// image routinely exceed 15 s. Assertions about ordering stay unchanged.
+const COMPILE_GATE_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn complete_within_gate_timeout<F>(future: F, operation: &'static str) -> F::Output
 where

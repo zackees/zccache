@@ -75,7 +75,10 @@ fn daemon_owned_child_dies_when_helper_owner_is_killed() {
         .expect("spawn owner-death helper process");
     let mut owner = KillAndWaitGuard(Some(owner));
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // A readiness wait, not a perf budget: the helper re-executes this test
+    // binary, which then starts PowerShell to publish the PID. Process startup
+    // on the windows-11-arm64 20260914 runner image routinely exceeds 10 s.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let child_pid = loop {
         if let Ok(contents) = std::fs::read_to_string(&pid_file) {
             if let Ok(pid) = contents.trim().parse::<u32>() {
