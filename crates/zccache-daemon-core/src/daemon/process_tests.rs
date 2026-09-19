@@ -644,7 +644,10 @@ fn semantic_session_start_future_is_send_without_a_caller_held_lock() {
 /// On Windows `<nul set /p =text` is the newline-free `printf`, but `set /p`
 /// reading EOF sets ERRORLEVEL 1, and `cmd /C` exits with the last command's
 /// ERRORLEVEL — so the fixture must end in an explicit `exit 0` to model the
-/// successful compiler the Unix `sh -c printf` fixture already is.
+/// successful compiler the Unix `sh -c printf` fixture already is. `set /p`
+/// also echoes every character up to the `&` separator, so each prompt is
+/// glued to its `&` and the stderr redirect precedes the command: a space
+/// before `&` (or a trailing `1>&2`) would leak a trailing space into the output.
 fn stdout_stderr_success_fixture() -> kernal_api::SpawnSpec {
     #[cfg(unix)]
     let builder = kernal_api::SpawnSpec::new("sh").args(["-c", "printf stdout; printf stderr >&2"]);
@@ -657,7 +660,7 @@ fn stdout_stderr_success_fixture() -> kernal_api::SpawnSpec {
     .args([
         "/D",
         "/C",
-        "<nul set /p =stdout & <nul set /p =stderr 1>&2 & exit 0",
+        "<nul set /p =stdout& 1>&2 <nul set /p =stderr& exit 0",
     ]);
     builder
 }

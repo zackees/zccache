@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use clang::{Clang, Entity, EntityKind, Index};
@@ -208,7 +208,6 @@ fn discover_libclang_path() -> Option<NormalizedPath> {
 
             clang_library_candidates()
                 .into_iter()
-                .map(NormalizedPath::from)
                 .find(|candidate| candidate.exists())
         })
         .clone()
@@ -242,7 +241,7 @@ fn libclang_filename() -> std::ffi::OsString {
 /// Conventional locations for libclang, in zccache's deliberately frozen
 /// preference order. This is compiler product policy, not a native substrate
 /// capability, so it stays with the compiler as the standalone platform crate is removed.
-fn clang_library_candidates() -> Vec<PathBuf> {
+fn clang_library_candidates() -> Vec<NormalizedPath> {
     let candidates: &[&str] = match kernal_api::platform::host::process_target().os {
         "linux" => &[
             "/usr/lib/llvm-18/lib/libclang.so",
@@ -263,7 +262,10 @@ fn clang_library_candidates() -> Vec<PathBuf> {
         ],
         _ => &[],
     };
-    candidates.iter().map(PathBuf::from).collect()
+    candidates
+        .iter()
+        .map(|candidate| NormalizedPath::from(*candidate))
+        .collect()
 }
 
 fn collect_existing_declarations(entities: &[Entity<'_>]) -> HashSet<String> {
@@ -469,7 +471,10 @@ mod tests {
         };
         assert_eq!(
             clang_library_candidates(),
-            expected.iter().map(PathBuf::from).collect::<Vec<_>>()
+            expected
+                .iter()
+                .map(|path| NormalizedPath::from(*path))
+                .collect::<Vec<_>>()
         );
     }
 }

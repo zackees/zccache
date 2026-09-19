@@ -18,7 +18,7 @@ pub(crate) fn resolve_cargo_home(explicit: Option<&str>) -> Result<NormalizedPat
     }
     let home = crate::platform::host::home_dir()
         .ok_or_else(|| "cannot determine home directory (set HOME or CARGO_HOME)".to_string())?;
-    Ok(NormalizedPath::from(home).join(".cargo"))
+    Ok(home.join(".cargo"))
 }
 
 /// Directory where cargo-registry archives are stored.

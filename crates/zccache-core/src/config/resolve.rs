@@ -404,9 +404,7 @@ pub fn staging_dir_override() -> Option<NormalizedPath> {
 }
 
 fn dirs_fallback() -> NormalizedPath {
-    crate::host::home_dir()
-        .map(NormalizedPath::from)
-        .unwrap_or_else(|| ".".into())
+    crate::host::home_dir().unwrap_or_else(|| ".".into())
 }
 
 pub(super) fn cache_dir_from_env_value(value: Option<OsString>) -> Option<NormalizedPath> {

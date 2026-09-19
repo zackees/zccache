@@ -94,48 +94,57 @@ fn point_native_spool_at_this_cache_dir() {
 /// The facade records the fault in the faulting platform's own namespace and
 /// does not record which namespace that was, so this decodes per host.
 fn signal_label(fault_code: i64) -> String {
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        // Linux/Android: the raw `siginfo_t.ssi_signo`.
-        match fault_code {
-            4 => "SIGILL".to_string(),
-            6 => "SIGABRT".to_string(),
-            7 => "SIGBUS".to_string(),
-            8 => "SIGFPE".to_string(),
-            11 => "SIGSEGV".to_string(),
-            5 => "SIGTRAP".to_string(),
-            other => format!("SIG{other}"),
-        }
+    // Host selection goes through kernal-api's const target predicates, not a
+    // `cfg`, so the platform-boundary lint keeps it out of product code.
+    if super::host::is_windows() {
+        windows_exception_label(fault_code)
+    } else if super::host::is_macos() {
+        macos_fault_label(fault_code)
+    } else {
+        unix_signal_label(fault_code)
     }
-    #[cfg(target_os = "macos")]
-    {
-        // The facade documents that this value is a Mach exception kind for a
-        // hardware fault but a raw Unix signal number for the SIGABRT
-        // predecessor chain, and that the two collide at 6. Naming one of them
-        // would be a guess, so the ambiguous code says so instead of picking.
-        match fault_code {
-            6 => "SIGABRT-or-EXC_BREAKPOINT".to_string(),
-            1 => "EXC_BAD_ACCESS".to_string(),
-            2 => "EXC_BAD_INSTRUCTION".to_string(),
-            3 => "EXC_ARITHMETIC".to_string(),
-            10 => "SIGBUS".to_string(),
-            11 => "SIGSEGV".to_string(),
-            other => format!("MACH{other}"),
-        }
+}
+
+/// Linux/Android: the raw `siginfo_t.ssi_signo`.
+fn unix_signal_label(fault_code: i64) -> String {
+    match fault_code {
+        4 => "SIGILL".to_string(),
+        6 => "SIGABRT".to_string(),
+        7 => "SIGBUS".to_string(),
+        8 => "SIGFPE".to_string(),
+        11 => "SIGSEGV".to_string(),
+        5 => "SIGTRAP".to_string(),
+        other => format!("SIG{other}"),
     }
-    #[cfg(windows)]
-    {
-        // NTSTATUS, sign-extended: `STATUS_ACCESS_VIOLATION` arrives as
-        // -1073741819, not 0xC0000005, so compare the reinterpreted bits.
-        match fault_code as i32 as u32 {
-            0xC000_0005 => "ACCESS_VIOLATION".to_string(),
-            0xC000_001D => "ILLEGAL_INSTRUCTION".to_string(),
-            0xC000_008E => "FLT_DIVIDE_BY_ZERO".to_string(),
-            0xC000_0094 => "INT_DIVIDE_BY_ZERO".to_string(),
-            0xC000_00FD => "STACK_OVERFLOW".to_string(),
-            0x8000_0003 => "BREAKPOINT".to_string(),
-            other => format!("EXCEPTION_{other:08X}"),
-        }
+}
+
+/// The facade documents that this value is a Mach exception kind for a
+/// hardware fault but a raw Unix signal number for the SIGABRT predecessor
+/// chain, and that the two collide at 6. Naming one of them would be a guess,
+/// so the ambiguous code says so instead of picking.
+fn macos_fault_label(fault_code: i64) -> String {
+    match fault_code {
+        6 => "SIGABRT-or-EXC_BREAKPOINT".to_string(),
+        1 => "EXC_BAD_ACCESS".to_string(),
+        2 => "EXC_BAD_INSTRUCTION".to_string(),
+        3 => "EXC_ARITHMETIC".to_string(),
+        10 => "SIGBUS".to_string(),
+        11 => "SIGSEGV".to_string(),
+        other => format!("MACH{other}"),
+    }
+}
+
+/// NTSTATUS, sign-extended: `STATUS_ACCESS_VIOLATION` arrives as
+/// -1073741819, not 0xC0000005, so compare the reinterpreted bits.
+fn windows_exception_label(fault_code: i64) -> String {
+    match fault_code as i32 as u32 {
+        0xC000_0005 => "ACCESS_VIOLATION".to_string(),
+        0xC000_001D => "ILLEGAL_INSTRUCTION".to_string(),
+        0xC000_008E => "FLT_DIVIDE_BY_ZERO".to_string(),
+        0xC000_0094 => "INT_DIVIDE_BY_ZERO".to_string(),
+        0xC000_00FD => "STACK_OVERFLOW".to_string(),
+        0x8000_0003 => "BREAKPOINT".to_string(),
+        other => format!("EXCEPTION_{other:08X}"),
     }
 }
 

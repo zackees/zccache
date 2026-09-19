@@ -6,7 +6,9 @@
 //! kernal-api.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use crate::NormalizedPath;
 
 pub use kernal_api::platform::host::{
     available_parallelism, target_is_linux as is_linux, target_is_macos as is_macos,
@@ -22,14 +24,14 @@ pub fn arch() -> &'static str {
 }
 
 /// Preserve zccache's environment-first home namespace selection.
-pub fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<NormalizedPath> {
     std::env::var_os("HOME")
         .or_else(|| {
             is_windows()
                 .then(|| std::env::var_os("USERPROFILE"))
                 .flatten()
         })
-        .map(PathBuf::from)
+        .map(NormalizedPath::new)
 }
 
 /// Opaque raw host inputs for native-CPU cache-key salting.
@@ -115,7 +117,7 @@ pub enum DefenderError {
     Io(std::io::Error),
 }
 
-pub fn defender_exclusions() -> Result<Vec<PathBuf>, DefenderError> {
+pub fn defender_exclusions() -> Result<Vec<NormalizedPath>, DefenderError> {
     if !is_windows() {
         return Err(DefenderError::Unsupported);
     }
@@ -129,7 +131,7 @@ pub fn defender_exclusions() -> Result<Vec<PathBuf>, DefenderError> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
+        .map(NormalizedPath::new)
         .collect())
 }
 

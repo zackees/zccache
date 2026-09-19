@@ -10,11 +10,14 @@ const CAPS_CACHE_LIMIT: usize = 4096;
 /// zccache's conservative cache-materialization policy. This is not a claim
 /// about every filesystem's native maximum: at this threshold zccache copies
 /// rather than risking a cache payload link count that a target rejects.
-#[cfg(windows)]
-const ZCCACHE_HARDLINK_LIMIT: u64 = 1023;
-/// zccache's conservative cache-materialization policy on Unix hosts.
-#[cfg(not(windows))]
-const ZCCACHE_HARDLINK_LIMIT: u64 = 65_000;
+/// Windows hosts cap at 1023; Unix hosts at 65,000.
+const ZCCACHE_HARDLINK_LIMIT: u64 = if kernal_api::platform::host::target_is_windows() {
+    WINDOWS_HARDLINK_LIMIT
+} else {
+    UNIX_HARDLINK_LIMIT
+};
+const WINDOWS_HARDLINK_LIMIT: u64 = 1023;
+const UNIX_HARDLINK_LIMIT: u64 = 65_000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::daemon::server) enum FileIdWidth {
@@ -226,10 +229,14 @@ mod tests {
 
     #[test]
     fn hardlink_ceiling_is_zccache_product_policy() {
-        #[cfg(windows)]
-        assert_eq!(ZCCACHE_HARDLINK_LIMIT, 1023);
-        #[cfg(not(windows))]
-        assert_eq!(ZCCACHE_HARDLINK_LIMIT, 65_000);
+        assert_eq!(WINDOWS_HARDLINK_LIMIT, 1023);
+        assert_eq!(UNIX_HARDLINK_LIMIT, 65_000);
+        let expected = if kernal_api::platform::host::target_is_windows() {
+            WINDOWS_HARDLINK_LIMIT
+        } else {
+            UNIX_HARDLINK_LIMIT
+        };
+        assert_eq!(ZCCACHE_HARDLINK_LIMIT, expected);
     }
 
     #[test]
