@@ -59,7 +59,7 @@ def test_native_python_job_builds_every_extension_separately() -> None:
     build = _step(native, "Build native Python test artifacts")
 
     assert "runs-on: ubuntu-latest" in native
-    assert "zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771" in native
+    assert "zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90" in native
     assert "toolchain: 1.95.0" in native
     expected_builds = (
         "soldr cargo build --release -p zccache --features zccache-bin --bin zccache",

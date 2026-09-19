@@ -446,36 +446,91 @@ runs:
         fi
 
         # Use --strip-debug to drop DWARF sections without removing the
-        # function-name symbol table that profilers read. With
-        # [profile.release] split-debuginfo = "packed" the binary already
-        # ships without embedded debug info on Linux/macOS, so this is mostly
-        # belt-and-suspenders. Fall back to plain `strip` when the
-        # cross-tool doesn't support the flag.
+        # function-name symbol table that profilers read. Debug info ships
+        # separately as packed sidecars (see "Stage debug-symbol sidecars").
+        #
+        # The strip tool must match the target architecture: a host x86_64
+        # `strip` cannot read aarch64 ELF, and the old silent `|| true`
+        # fallback shipped ~55 MB of DWARF in every aarch64-linux binary and
+        # wheel from 1.13.x on, until PyPI's 10 GB project cap refused 1.14.2.
+        # Resolve a matching strip and fail loudly instead.
         case "${{ inputs.target }}" in
           *pc-windows-msvc)
             echo "Skipping strip for Windows MSVC artifacts"
             ;;
           *)
-            STRIP="${{ inputs.strip }}"
-            if [ -z "$STRIP" ]; then
-              STRIP="strip"
-            fi
-            do_strip() {
-              if "$STRIP" --strip-debug "$1" 2>/dev/null; then
+            TARGET="${{ inputs.target }}"
+            TARGET_ARCH="${TARGET%%-*}"
+            resolve_strip() {
+              if [ -n "${{ inputs.strip }}" ]; then
+                echo "${{ inputs.strip }}"
                 return 0
               fi
-              "$STRIP" "$1" 2>/dev/null || true
+              case "$TARGET" in
+                *-linux-*)
+                  if [ "$TARGET_ARCH" = "$(uname -m)" ]; then
+                    command -v strip
+                    return
+                  fi
+                  local candidate
+                  for candidate in \
+                    $(command -v "$TARGET_ARCH-linux-gnu-strip" 2>/dev/null) \
+                    ${SOLDR_CACHE_DIR:+$(ls "$SOLDR_CACHE_DIR"/bin/syslib/*/*/*/package/bin/"$TARGET_ARCH"-*-strip 2>/dev/null)} \
+                    $(command -v llvm-strip 2>/dev/null) \
+                    $(ls /usr/bin/llvm-strip-* 2>/dev/null | sort -V | tail -n 1); do
+                    if [ -x "$candidate" ]; then
+                      echo "$candidate"
+                      return 0
+                    fi
+                  done
+                  return 1
+                  ;;
+                *)
+                  command -v strip
+                  ;;
+              esac
             }
-            if command -v "$STRIP" &> /dev/null; then
-              do_strip staging/zccache${{ inputs.binary_ext }}
-              do_strip staging/zccache-fp${{ inputs.binary_ext }}
-              if [ "${{ inputs.include_python }}" = "true" ]; then
-                for native in staging/python/zccache/_native.* \
-                              staging/python/zccache/fingerprint/_native.* \
-                              staging/python/zccache/watcher/_native.*; do
-                  [ -e "$native" ] && do_strip "$native"
-                done
-              fi
+            if ! STRIP="$(resolve_strip)"; then
+              echo "::error::No strip tool for $TARGET on $(uname -m); refusing to ship unstripped binaries"
+              exit 1
+            fi
+            echo "Using strip: $STRIP"
+            do_strip() {
+              case "$TARGET" in
+                *-linux-*)
+                  "$STRIP" --strip-debug "$1" || {
+                    echo "::error::$STRIP --strip-debug failed on $1"
+                    exit 1
+                  }
+                  # .debug_gdb_scripts is rustc's few-byte GDB pretty-printer
+                  # loader, not DWARF; --strip-debug keeps it by design (the
+                  # same exemption as ci/wheel_check.py). grep without -q reads
+                  # all input, so pipefail cannot see a SIGPIPE'd readelf.
+                  leftover="$(readelf -SW "$1" | grep -oE ' \.z?debug_[a-z_]+' | grep -v 'debug_gdb_scripts' || true)"
+                  if [ -n "$leftover" ]; then
+                    echo "::error::$1 still contains debug sections after stripping:" $leftover
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  # Apple strip has no --strip-debug; keep the prior fallback.
+                  if ! "$STRIP" --strip-debug "$1" 2>/dev/null; then
+                    "$STRIP" "$1" 2>/dev/null || true
+                  fi
+                  ;;
+              esac
+              ls -l "$1"
+            }
+            do_strip staging/zccache${{ inputs.binary_ext }}
+            do_strip staging/zccache-fp${{ inputs.binary_ext }}
+            if [ "${{ inputs.include_python }}" = "true" ]; then
+              for native in staging/python/zccache/_native.* \
+                            staging/python/zccache/fingerprint/_native.* \
+                            staging/python/zccache/watcher/_native.*; do
+                if [ -e "$native" ]; then
+                  do_strip "$native"
+                fi
+              done
             fi
             ;;
         esac
