@@ -33,7 +33,7 @@
 
 use std::path::Path;
 
-use filetime::FileTime;
+use kernal_api::platform::fs::{DirectoryWalk, FileTime};
 use rayon::prelude::*;
 use zccache_core::NormalizedPath;
 
@@ -165,57 +165,45 @@ fn walk_candidates(
     root: &Path,
     resolved_excludes: Vec<NormalizedPath>,
 ) -> Result<Vec<(NormalizedPath, String)>> {
-    let walker = jwalk::WalkDir::new(root)
-        .follow_links(false)
-        .skip_hidden(false)
-        // soldr#2760: jwalk's default `RayonDefaultPool` spawns onto the
-        // *ambient* rayon pool and carries a 1-second `busy_timeout` that
-        // *aborts the walk* when that pool can't service it in time —
-        // surfacing as a hard failure purely because the machine was busy,
-        // not because anything was actually wrong. `RayonNewPool(0)`
-        // reports `timeout() == None` so the abort can never fire, at the
-        // cost of one throwaway pool per `snapshot()` call (mirrors
-        // soldr-cache's `save_inventory::walk_parallelism`).
-        .parallelism(jwalk::Parallelism::RayonNewPool(0))
-        .process_read_dir(move |_depth, dir_path, _read_dir_state, children| {
-            children.retain(|entry| match entry {
-                Ok(entry) => {
-                    let name = entry.file_name.to_string_lossy();
-                    if entry.depth > 0 && (name == ".git" || name == "node_modules") {
-                        return false;
-                    }
-                    if entry.file_type.is_dir() {
-                        let candidate = NormalizedPath::new(dir_path.join(&entry.file_name));
-                        if resolved_excludes.iter().any(|excluded| excluded == &candidate) {
-                            return false;
-                        }
-                    }
-                    true
-                }
-                Err(_) => true,
-            });
+    // The facade offers each candidate directory (never the root itself) to
+    // the prune predicate before reading it, which is the old `depth > 0`
+    // rule for `.git` / `node_modules`.
+    let walker = DirectoryWalk::new(root.to_path_buf())
+        .follow_symbolic_links(false)
+        .include_hidden_entries(true)
+        .prune_directories(move |directory| {
+            if directory
+                .file_name()
+                .is_some_and(|name| name == ".git" || name == "node_modules")
+            {
+                return false;
+            }
+            let candidate = NormalizedPath::new(directory);
+            !resolved_excludes
+                .iter()
+                .any(|excluded| excluded == &candidate)
         });
 
     let mut candidates = Vec::new();
-    for entry in walker {
+    for entry in walker.walk() {
         let entry = entry.map_err(|err| FingerprintError::Scan {
             path: NormalizedPath::new(root),
-            message: format!("jwalk error: {err}"),
+            message: format!("directory walk error: {err}"),
         })?;
 
         // Symlinks are skipped, not followed: an absent manifest entry only
         // ever means "no mtime replayed", i.e. a conservative rebuild.
-        if !entry.file_type.is_file() {
+        if !entry.is_file() {
             continue;
         }
 
         let abs = entry.path();
         let rel = abs.strip_prefix(root).map_err(|_| FingerprintError::Scan {
-            path: NormalizedPath::new(&abs),
+            path: NormalizedPath::new(abs),
             message: "path is not under root".to_string(),
         })?;
         let relative = rel_to_posix(rel);
-        candidates.push((NormalizedPath::new(&abs), relative));
+        candidates.push((NormalizedPath::new(abs), relative));
     }
     Ok(candidates)
 }
@@ -319,15 +307,13 @@ pub fn read_manifest(path: &Path) -> Result<MtimeManifest> {
 ///    hashing — otherwise [`ReplayOutcome::SizeMismatch`].
 /// 4. The blake3 hash must match `entry.blake3` (case-insensitively) —
 ///    otherwise [`ReplayOutcome::Modified`].
-/// 5. Setting the mtime (and atime, to the same value) must succeed —
+/// 5. Setting the mtime (the access time is left alone) must succeed —
 ///    otherwise [`ReplayOutcome::Modified`].
 ///
 /// Every error path leaves the file's current mtime untouched and returns
 /// something other than [`ReplayOutcome::Applied`].
 pub fn replay_one(workspace: &Path, entry: &MtimeEntry) -> ReplayOutcome {
-    replay_one_with(workspace, entry, |path, atime, mtime| {
-        filetime::set_file_times(path, atime, mtime)
-    })
+    replay_one_with(workspace, entry, kernal_api::platform::fs::set_file_mtime)
 }
 
 /// `replay_one` with the mtime-setting step injected, so tests can force a
@@ -335,7 +321,7 @@ pub fn replay_one(workspace: &Path, entry: &MtimeEntry) -> ReplayOutcome {
 fn replay_one_with(
     workspace: &Path,
     entry: &MtimeEntry,
-    set_times: impl Fn(&Path, FileTime, FileTime) -> std::io::Result<()>,
+    set_time: impl Fn(&Path, FileTime) -> std::io::Result<()>,
 ) -> ReplayOutcome {
     if !is_safe_relative_path(&entry.path) {
         return ReplayOutcome::Missing;
@@ -365,7 +351,7 @@ fn replay_one_with(
         entry.mtime_ns.div_euclid(1_000_000_000),
         entry.mtime_ns.rem_euclid(1_000_000_000) as u32,
     );
-    if set_times(&target, time, time).is_err() {
+    if set_time(&target, time).is_err() {
         return ReplayOutcome::Modified;
     }
     ReplayOutcome::Applied
