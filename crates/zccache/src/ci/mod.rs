@@ -251,16 +251,16 @@ pub fn configure_process_group(cmd: &mut Command) {
 /// Preserve the CI runner's product-specific tree-kill fallback. Kernal-api
 /// owns Unix group termination; Windows retains `taskkill /T` because a
 /// console process group is not a retained tree-control capability there.
-fn force_process_group(pid: u32) {
-    crate::platform::force_process_group(pid);
+fn force_process_group(child: &Child) {
+    crate::platform::force_process_group(child);
 }
 
 /// Kill `child` and every descendant. Best-effort: errors are swallowed
 /// because we are already on the failure path.
 pub fn kill_process_tree(child: &mut Child) {
-    let pid = child.id();
-
-    force_process_group(pid);
+    // Before reaping: the group kill proves its target through the
+    // still-unreaped child.
+    force_process_group(child);
 
     // Reap the direct child to avoid a zombie even on platforms where the
     // group-kill above did the heavy lifting.

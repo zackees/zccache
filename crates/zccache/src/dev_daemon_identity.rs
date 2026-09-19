@@ -57,7 +57,7 @@ pub fn initialize() -> io::Result<()> {
             .map(|hash| *hash.as_bytes())
             .map_err(|error| {
                 io::Error::new(
-                    error.kind(),
+                    error.io_error_kind().unwrap_or(io::ErrorKind::Other),
                     format!(
                         "cannot hash development zccache executable {}: {error}",
                         current_exe.display()

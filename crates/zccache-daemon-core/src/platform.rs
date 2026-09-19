@@ -92,8 +92,7 @@ pub(crate) mod process {
         }
 
         pub(crate) fn outcome(status: &std::process::ExitStatus) -> ExitOutcome {
-            let trampoline_code =
-                kernal_api::platform::process::trampoline_exit_code(*status);
+            let trampoline_code = kernal_api::platform::process::trampoline_exit_code(*status);
             let termination_signal = (!kernal_api::platform::host::target_is_windows())
                 .then(|| {
                     trampoline_code

@@ -30,7 +30,7 @@ pub(crate) mod fs {
 
 #[cfg(feature = "cli")]
 pub(crate) mod host {
-    pub(crate) use zccache_core::host::{is_windows, os};
+    pub(crate) use zccache_core::host::{home_dir, is_windows, os};
 
     pub(crate) fn defender_supported() -> bool {
         is_windows()

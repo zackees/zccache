@@ -104,7 +104,7 @@ fn activate_rustup_toolchain(root: &Path) {
 
     let mut candidates: Vec<NormalizedPath> =
         vec![NormalizedPath::new(project_cargo_home.join("bin"))];
-    if let Some(home) = if zccache::platform::host::is_windows() {
+    if let Some(home) = if kernal_api::platform::host::target_is_windows() {
         env::var("USERPROFILE").ok()
     } else {
         env::var("HOME").ok()
@@ -116,7 +116,7 @@ fn activate_rustup_toolchain(root: &Path) {
 
     for cargo_bin in candidates {
         if cargo_bin.is_dir() {
-            let sep = if zccache::platform::host::is_windows() {
+            let sep = if kernal_api::platform::host::target_is_windows() {
                 ";"
             } else {
                 ":"
@@ -233,7 +233,7 @@ fn main() -> ExitCode {
     // Cross-compile check: on Windows, verify code also compiles for Linux.
     // Catches #[cfg(windows)]-gated code called from cross-platform tests/code,
     // which local-only clippy/check cannot detect.
-    if zccache::platform::host::is_windows() {
+    if kernal_api::platform::host::target_is_windows() {
         let target = "x86_64-unknown-linux-musl";
         if is_target_installed(target) {
             let mut xcheck_cmd = build_cmd(
