@@ -23,7 +23,8 @@ pub(crate) mod host {
 pub(crate) mod process {
     pub(crate) mod inspect {
         pub(crate) fn executable_path(pid: u32) -> Option<std::path::PathBuf> {
-            kernal_api::platform::process::executable_path_for_pid(pid).ok()
+            let process = kernal_api::platform::process::ProcessLiveness::open(pid).ok()?;
+            kernal_api::platform::process::executable_path(&process).ok()
         }
     }
 }
@@ -294,12 +295,12 @@ pub(crate) mod ipc {
                             )
                         })?;
                 }
-                return Ok(Self {
+                Ok(Self {
                     inner: kernal_api::platform::ipc::LocalSocketListener::bind_owner_only(
                         std::path::Path::new(endpoint.as_str()),
                     )?,
                     tightened_parent,
-                });
+                })
             }
             #[cfg(windows)]
             {
@@ -332,7 +333,7 @@ pub(crate) mod ipc {
             #[cfg(unix)]
             {
                 let (stream, peer) = self.inner.accept().await?;
-                return Ok((Stream::Unix(stream), PeerIdentity::from_credentials(peer)));
+                Ok((Stream::Unix(stream), PeerIdentity::from_credentials(peer)))
             }
             #[cfg(windows)]
             loop {

@@ -284,11 +284,9 @@ pub(super) struct SharedState {
     /// IPC endpoint this daemon bound. Reported through `zccache status` so
     /// wrappers can verify they reached the intended daemon identity.
     pub(super) endpoint: String,
-    /// running-process BackendHandle identity served on the same direct
-    /// daemon endpoint for the minimal broker-adoption path. Slice 24
-    /// of zccache#782: migrated to the `protocol_v2::backend_handle`
-    /// namespace (upstream re-export of the cross-version-stable type).
-    pub(super) backend_identity: kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
+    /// Frozen v1 identity-probe responder served on the same direct daemon
+    /// endpoint; it proves this daemon's `DaemonIdentity`.
+    pub(super) backend_probe: kernal_api::daemon_identity::ProbeResponder,
     /// Active daemon/socket namespace label.
     pub(super) daemon_namespace: String,
     /// Cache root this daemon was created with.

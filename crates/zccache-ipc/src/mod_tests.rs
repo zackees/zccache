@@ -812,17 +812,19 @@ fn fake_identity(
     pid: u32,
     started_at_unix_ms: u64,
     boot_id: &str,
-) -> kernal_api::broker::protocol_v2::backend_handle::DaemonProcess {
-    kernal_api::broker::protocol_v2::backend_handle::DaemonProcess {
-        pid,
-        exe_path: std::path::PathBuf::from("zccache-daemon"),
-        exe_hash: [0u8; 32],
-        legacy_exe_sha256: [0u8; 32],
-        boot_id: boot_id.to_string(),
-        ipc_endpoint: running_process_endpoint("test-endpoint"),
-        started_at_unix_ms,
-        idle_timeout_secs: None,
-    }
+) -> kernal_api::daemon_identity::DaemonIdentity {
+    kernal_api::daemon_identity::DaemonIdentity::from_record(
+        kernal_api::daemon_identity::DaemonIdentityRecord {
+            pid,
+            executable_path: std::path::PathBuf::from("zccache-daemon"),
+            blake3_digest: [0u8; 32],
+            legacy_sha256_digest: [0u8; 32],
+            boot_id: boot_id.to_string(),
+            endpoint: running_process_endpoint("test-endpoint"),
+            started_at_unix_ms,
+            idle_timeout_secs: None,
+        },
+    )
 }
 
 #[test]

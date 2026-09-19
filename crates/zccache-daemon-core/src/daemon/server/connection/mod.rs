@@ -315,7 +315,7 @@ pub(super) async fn handle_connection(
     state: Arc<SharedState>,
 ) -> Result<(), crate::ipc::IpcError> {
     if conn
-        .try_serve_backend_handle_probe(&state.backend_identity)
+        .try_serve_backend_handle_probe(&state.backend_probe)
         .await?
     {
         state.last_activity.store(now_secs(), Ordering::Relaxed);

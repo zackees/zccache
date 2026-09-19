@@ -96,7 +96,7 @@ pub(super) fn cache_root_error(
 /// Report a daemon-identity failure with the endpoint it was resolved for.
 pub(super) fn daemon_identity_error(
     endpoint: &str,
-    error: &kernal_api::broker::protocol_v2::backend_handle::IdentityError,
+    error: &kernal_api::daemon_identity::DaemonIdentityError,
 ) -> crate::ipc::IpcError {
     crate::ipc::IpcError::Endpoint(format!("daemon identity for {endpoint}: {error}"))
 }
@@ -112,7 +112,7 @@ pub(super) fn new_shared_state(
     endpoint: &str,
     cache_dir: &crate::core::NormalizedPath,
     staging_root: Option<&crate::core::NormalizedPath>,
-    backend_identity: kernal_api::broker::protocol_v2::backend_handle::DaemonProcess,
+    backend_identity: kernal_api::daemon_identity::DaemonIdentity,
     host_admission_classifier: Option<Arc<dyn compile_resource_gate::HostAdmissionClassifier>>,
 ) -> std::io::Result<(
     Arc<SharedState>,
@@ -243,7 +243,7 @@ pub(super) fn new_shared_state(
     Ok((
         Arc::new(SharedState {
             endpoint: endpoint.to_string(),
-            backend_identity,
+            backend_probe: crate::ipc::backend_probe_responder(backend_identity),
             daemon_namespace: crate::core::config::daemon_namespace_label(),
             cache_dir: cache_dir.clone(),
             private_daemon: PrivateDaemonLifecycle::new(),
@@ -334,15 +334,10 @@ impl DaemonServer {
         Arc::clone(&self.shutdown)
     }
 
-    /// Clone the running-process identity served by this daemon.
-    ///
-    /// Slice 24 of zccache#782: migrated to the `protocol_v2::backend_handle`
-    /// namespace.
+    /// Copy the daemon identity this daemon proves to identity probes.
     #[must_use]
-    pub fn backend_identity(
-        &self,
-    ) -> kernal_api::broker::protocol_v2::backend_handle::DaemonProcess {
-        self.state.backend_identity.clone()
+    pub fn backend_identity(&self) -> kernal_api::daemon_identity::DaemonIdentity {
+        self.state.backend_probe.identity()
     }
 
     /// Replace the dependency graph with a pre-loaded one.

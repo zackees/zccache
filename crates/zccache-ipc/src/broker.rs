@@ -35,15 +35,7 @@
 //! TEST-ONLY fake-backend seam also stays resolve-and-drop: it dials a raw
 //! socket with no Hello negotiation, so there is no live session to adopt.
 
-// Slice 25 of zccache#782: migrated to the `protocol_v2::client_compat`
-// namespace (upstream PR #528). The underlying types remain identical
-// to v1's per the coexistence re-export design — no behaviour change.
-// When client_v2 + the v2 broker scaffold are production-ready the
-// implementation under this namespace flips to v2-native; the
-// consumer side stays unchanged.
-use kernal_api::broker::protocol_v2::client_compat::{
-    AdoptError, BackendConnectionRoute, RefusalKind,
-};
+use kernal_api::broker_client::{BackendRoute, BrokerClientError, RefusalKind};
 // The raw-socket reachability probe used by the `RUNNING_PROCESS_FAKE_BACKEND`
 // seam lives in `ipc::probe` (extracted from the removed `broker_v2` module,
 // issue #1001).
@@ -55,12 +47,11 @@ use super::{connect, running_process_disabled, ClientConnection};
 /// Upstream TEST-ONLY seam: a non-empty value short-circuits the broker
 /// negotiation and dials the given running-process endpoint directly.
 ///
-/// Mirrors the upstream v1-client seam contract (the constant ships
-/// upstream after 4.1.0; replace this local copy with the upstream
-/// re-export on the next running-process bump). The canonical
+/// The name is the facade's frozen seam constant
+/// (`kernal_api::broker_client::FAKE_BACKEND_ENV`). The canonical
 /// `RUNNING_PROCESS_DISABLE=1` hatch takes precedence: a disabled broker
 /// ignores the fake seam too. Never set this in production.
-pub const RUNNING_PROCESS_FAKE_BACKEND_ENV: &str = "RUNNING_PROCESS_FAKE_BACKEND";
+pub const RUNNING_PROCESS_FAKE_BACKEND_ENV: &str = kernal_api::broker_client::FAKE_BACKEND_ENV;
 
 /// How [`connect_daemon`] reached the daemon endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +62,7 @@ pub enum DaemonConnectRoute {
     /// Endpoint resolved through `connect_to_backend`.
     Broker {
         /// Route reported by the running-process broker client.
-        route: BackendConnectionRoute,
+        route: BackendRoute,
         /// Resolved endpoint (zccache connect form) the data connection used.
         endpoint: String,
     },
@@ -143,7 +134,7 @@ fn broker_lane_requested() -> bool {
 /// Re-dial a broker-resolved endpoint with zccache's own transport, reporting
 /// the broker route on success. Returns `None` if the endpoint is unreachable.
 async fn redial_resolved(
-    route: BackendConnectionRoute,
+    route: BackendRoute,
     resolved: String,
 ) -> Option<(ClientConnection, DaemonConnectRoute)> {
     match connect(&resolved).await {
@@ -168,9 +159,7 @@ async fn redial_resolved(
 /// Dial the upstream TEST-ONLY fake-backend seam on a worker thread.
 ///
 /// `connect_local_socket` is a blocking dial, so it runs on `spawn_blocking`.
-async fn resolve_fake_backend_seam_async(
-    seam_endpoint: String,
-) -> Option<(String, BackendConnectionRoute)> {
+async fn resolve_fake_backend_seam_async(seam_endpoint: String) -> Option<(String, BackendRoute)> {
     tokio::task::spawn_blocking(move || resolve_fake_backend_seam(&seam_endpoint))
         .await
         .unwrap_or_else(|err| {
@@ -180,12 +169,9 @@ async fn resolve_fake_backend_seam_async(
 }
 
 /// Dial the upstream TEST-ONLY fake-backend seam endpoint directly.
-fn resolve_fake_backend_seam(seam_endpoint: &str) -> Option<(String, BackendConnectionRoute)> {
+fn resolve_fake_backend_seam(seam_endpoint: &str) -> Option<(String, BackendRoute)> {
     match probe_local_socket(seam_endpoint) {
-        Ok(()) => Some((
-            to_zccache_endpoint(seam_endpoint),
-            BackendConnectionRoute::HelloSkip,
-        )),
+        Ok(()) => Some((to_zccache_endpoint(seam_endpoint), BackendRoute::HelloSkip)),
         Err(err) => {
             tracing::warn!(
                 endpoint = %seam_endpoint,
@@ -221,85 +207,32 @@ pub enum BrokerRefusal {
 }
 
 impl BrokerRefusal {
-    /// Map a v1 `RefusalKind` to a `BrokerRefusal`, threading the
-    /// caller's `retry_after_ms` hint through to the `RateLimited`
-    /// variant. Other variants ignore the hint.
-    fn from_kind_with_retry(kind: RefusalKind, retry_after_ms: u64) -> Self {
-        match kind {
+    /// Classify a broker client error as a `BrokerRefusal`.
+    ///
+    /// Returns `Some(BrokerRefusal)` only when the broker explicitly declined
+    /// the Hello — disabled, dial, IO, and protocol failures return `None`
+    /// (the caller falls back to the direct connect path). The typed
+    /// granularity is what `soldr doctor` and the connect-route logs depend on
+    /// (rate-limit / version-pin / shutdown all surface distinctly instead of
+    /// collapsing to `Other`).
+    ///
+    /// Unknown codes (including a future broker shipping a wire code this
+    /// client predates) fall through to `Other`. `retry_after_ms` is threaded
+    /// through to `RateLimited`; callers can honor it directly via
+    /// `Duration::from_millis(retry_after_ms)`.
+    #[must_use]
+    pub fn classify(err: &BrokerClientError) -> Option<Self> {
+        let refusal = err.refusal()?;
+        Some(match refusal.kind() {
             RefusalKind::VersionUnsupported => Self::VersionUnsupported,
             RefusalKind::VersionBlocked => Self::VersionBlocked,
             RefusalKind::ServiceUnknown => Self::ServiceUnknown,
-            RefusalKind::RateLimited => Self::RateLimited { retry_after_ms },
+            RefusalKind::RateLimited => Self::RateLimited {
+                retry_after_ms: refusal.retry_after_ms(),
+            },
             RefusalKind::ShuttingDown => Self::ShuttingDown,
             RefusalKind::Other(_) => Self::Other,
-        }
-    }
-
-    /// Classify a v2 broker error as a `BrokerRefusal`.
-    ///
-    /// Returns `Some(BrokerRefusal)` only when the v2 broker explicitly
-    /// declined the Hello — IO / framing / sid errors return `None`
-    /// (the caller falls back to the direct connect path). Mirrors v1's
-    /// `RefusalKind::from_code` mapping so the v2 path preserves the
-    /// same diagnostic granularity that `soldr doctor` and the
-    /// connect-route logs depend on (rate-limit / version-pin /
-    /// shutdown all surface distinctly instead of collapsing to
-    /// `Other`).
-    ///
-    /// Unknown codes (including a future broker shipping a wire code
-    /// this client predates) fall through to `Other`, matching v1's
-    /// forward-compatible behavior.
-    ///
-    /// `retry_after_ms` is threaded through to `RateLimited` from the
-    /// top-level field on `BrokerV2Error::Refused` (added upstream by
-    /// running-process#518). Callers can honor it directly via
-    /// `Duration::from_millis(retry_after_ms)`.
-    pub fn from_brokerv2_error(err: &kernal_api::broker::client_v2::BrokerV2Error) -> Option<Self> {
-        use kernal_api::broker::client_v2::BrokerV2Error;
-        use kernal_api::broker::protocol::ErrorCode;
-        match err {
-            BrokerV2Error::Refused {
-                details,
-                retry_after_ms,
-                ..
-            } => {
-                let code = ErrorCode::try_from(details.code).unwrap_or(ErrorCode::Unspecified);
-                Some(match code {
-                    ErrorCode::ErrorVersionUnsupported => Self::VersionUnsupported,
-                    ErrorCode::ErrorVersionBlocked => Self::VersionBlocked,
-                    ErrorCode::ErrorServiceUnknown => Self::ServiceUnknown,
-                    ErrorCode::ErrorRateLimited => Self::RateLimited {
-                        retry_after_ms: *retry_after_ms,
-                    },
-                    ErrorCode::ErrorShuttingDown => Self::ShuttingDown,
-                    _ => Self::Other,
-                })
-            }
-            _ => None,
-        }
-    }
-}
-
-/// Classify an `AdoptError`, returning the typed refusal when the broker spoke
-/// and declined, or `None` for a dial/IO failure (broker unreachable).
-///
-/// `retry_after_ms` is threaded through from the underlying
-/// `BrokerClientError::Refused` so `BrokerRefusal::RateLimited` carries
-/// the broker-supplied backoff hint. For non-`Refused` connect errors
-/// (and AdoptError variants that aren't Connect) the hint is 0 and
-/// the function returns `None` regardless.
-#[must_use]
-pub fn classify_adopt_error(err: &AdoptError) -> Option<BrokerRefusal> {
-    use kernal_api::broker::protocol_v2::client_compat::BrokerClientError;
-    match err {
-        AdoptError::Connect(connect_err) => connect_err.refusal_kind().map(|kind| {
-            let retry_after_ms = match connect_err {
-                BrokerClientError::Refused { retry_after_ms, .. } => *retry_after_ms,
-                _ => 0,
-            };
-            BrokerRefusal::from_kind_with_retry(kind, retry_after_ms)
-        }),
-        _ => None,
+        })
     }
 }
 
@@ -337,6 +270,7 @@ mod tests {
     use super::*;
     use crate::test_env::EnvVarGuard;
     use crate::{unique_test_endpoint, IpcListener, RUNNING_PROCESS_DISABLE_ENV};
+    use kernal_api::broker_client::RefusalCode;
     use zccache_protocol::{Request, Response};
 
     /// Spawn a ping server that accepts connections until it has answered
@@ -393,7 +327,7 @@ mod tests {
         let (mut conn, route) = connect_daemon_with_route(&endpoint).await.unwrap();
         match route {
             DaemonConnectRoute::Broker {
-                route: BackendConnectionRoute::HelloSkip,
+                route: BackendRoute::HelloSkip,
                 endpoint: resolved,
             } => assert_eq!(resolved, endpoint),
             other => panic!("expected broker HelloSkip route, got {other:?}"),
@@ -574,49 +508,88 @@ mod tests {
         );
     }
 
+    fn refused(code: RefusalCode, retry_after_ms: u64) -> BrokerClientError {
+        BrokerClientError::refused(code, "test", retry_after_ms)
+    }
+
+    /// Each actionable refusal code routes to the matching `BrokerRefusal`;
+    /// everything else (PeerRejected, Unspecified, …) lands on `Other`.
     #[test]
-    fn classify_adopt_error_maps_typed_refusals() {
-        use kernal_api::broker::protocol::ErrorCode;
-        use kernal_api::broker::protocol_v2::client_compat::BrokerClientError;
-
-        let refusal = |code: ErrorCode| {
-            AdoptError::Connect(BrokerClientError::Refused {
-                code,
-                reason: "test".to_string(),
-                retry_after_ms: 0,
-            })
-        };
-
-        assert_eq!(
-            classify_adopt_error(&refusal(ErrorCode::ErrorVersionUnsupported)),
-            Some(BrokerRefusal::VersionUnsupported)
-        );
-        assert_eq!(
-            classify_adopt_error(&refusal(ErrorCode::ErrorVersionBlocked)),
-            Some(BrokerRefusal::VersionBlocked)
-        );
-        assert_eq!(
-            classify_adopt_error(&refusal(ErrorCode::ErrorServiceUnknown)),
-            Some(BrokerRefusal::ServiceUnknown)
-        );
-        assert_eq!(
-            classify_adopt_error(&refusal(ErrorCode::ErrorRateLimited)),
-            Some(BrokerRefusal::RateLimited { retry_after_ms: 0 })
-        );
-        assert_eq!(
-            classify_adopt_error(&refusal(ErrorCode::ErrorShuttingDown)),
-            Some(BrokerRefusal::ShuttingDown)
-        );
-        assert_eq!(
-            classify_adopt_error(&refusal(ErrorCode::ErrorPeerRejected)),
-            Some(BrokerRefusal::Other)
-        );
+    fn classify_maps_typed_refusals() {
+        let cases = [
+            (
+                RefusalCode::VersionUnsupported,
+                BrokerRefusal::VersionUnsupported,
+            ),
+            (RefusalCode::VersionBlocked, BrokerRefusal::VersionBlocked),
+            (RefusalCode::ServiceUnknown, BrokerRefusal::ServiceUnknown),
+            (
+                RefusalCode::RateLimited,
+                BrokerRefusal::RateLimited { retry_after_ms: 0 },
+            ),
+            (RefusalCode::ShuttingDown, BrokerRefusal::ShuttingDown),
+            (RefusalCode::PeerRejected, BrokerRefusal::Other),
+            (RefusalCode::Unspecified, BrokerRefusal::Other),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                BrokerRefusal::classify(&refused(code, 0)),
+                Some(expected),
+                "{code:?}"
+            );
+        }
     }
 
     #[test]
-    fn classify_adopt_error_returns_none_for_disabled() {
-        // BrokerDisabled is the escape hatch, not a refusal — no classification.
-        assert_eq!(classify_adopt_error(&AdoptError::BrokerDisabled), None);
+    fn classify_returns_none_for_disabled() {
+        // Disabled is the escape hatch, not a refusal — no classification.
+        assert_eq!(BrokerRefusal::classify(&BrokerClientError::Disabled), None);
+    }
+
+    /// `retry_after_ms` is threaded all the way through to
+    /// `BrokerRefusal::RateLimited`. Catches the half-done fix where the typed
+    /// surface drops the hint.
+    #[test]
+    fn classify_propagates_retry_after_ms_on_rate_limited() {
+        assert_eq!(
+            BrokerRefusal::classify(&refused(RefusalCode::RateLimited, 2500)),
+            Some(BrokerRefusal::RateLimited {
+                retry_after_ms: 2500
+            })
+        );
+    }
+
+    /// Adversarial: a future broker shipping a code this client predates
+    /// (e.g. 999) must fall through to `BrokerRefusal::Other`, never panic.
+    #[test]
+    fn classify_maps_unknown_code_to_other() {
+        assert_eq!(
+            BrokerRefusal::classify(&refused(RefusalCode::from(999), 0)),
+            Some(BrokerRefusal::Other),
+            "unknown RefusalCode must classify as Other, not panic"
+        );
+    }
+
+    /// Non-refusal failures are transport / protocol errors — they MUST
+    /// classify as `None` so callers fall back to the direct-connect path.
+    #[test]
+    fn classify_treats_transport_failures_as_none() {
+        let dial = BrokerClientError::BrokerConnect {
+            endpoint: "/nowhere".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no broker"),
+        };
+        assert_eq!(BrokerRefusal::classify(&dial), None);
+
+        let backend = BrokerClientError::BackendConnect(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "pipe died",
+        ));
+        assert_eq!(BrokerRefusal::classify(&backend), None);
+
+        let protocol = BrokerClientError::Protocol {
+            detail: "missing result".to_string(),
+        };
+        assert_eq!(BrokerRefusal::classify(&protocol), None);
     }
 
     #[test]
@@ -629,159 +602,5 @@ mod tests {
         let native = crate::platform::ipc::Endpoint::from_running_process("name");
         assert_eq!(to_zccache_endpoint("name"), native.as_str());
         assert_eq!(to_running_process_endpoint(native.as_str()), "name");
-    }
-
-    /// `from_brokerv2_error` mirrors v1's `RefusalKind::from_code`
-    /// mapping: each `ErrorCode` variant routes to the matching
-    /// `BrokerRefusal`. Defaults (Unspecified) and unrecognized codes
-    /// land on `Other`. Transport-layer errors return `None`.
-    #[test]
-    fn from_brokerv2_error_classifies_refused_codes() {
-        use kernal_api::broker::client_v2::BrokerV2Error;
-        use kernal_api::broker::protocol::{ErrorCode, Refused};
-
-        let refused_with_code = |code: ErrorCode| BrokerV2Error::Refused {
-            reason: "test".to_string(),
-            retry_after_ms: 0,
-            details: Box::new(Refused {
-                code: code as i32,
-                ..Refused::default()
-            }),
-        };
-
-        // Mirror the v1 mapping matrix exhaustively — same cases as
-        // `classify_adopt_error_maps_typed_refusals`.
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(
-                ErrorCode::ErrorVersionUnsupported
-            )),
-            Some(BrokerRefusal::VersionUnsupported)
-        );
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorVersionBlocked)),
-            Some(BrokerRefusal::VersionBlocked)
-        );
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorServiceUnknown)),
-            Some(BrokerRefusal::ServiceUnknown)
-        );
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorRateLimited)),
-            Some(BrokerRefusal::RateLimited { retry_after_ms: 0 })
-        );
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorShuttingDown)),
-            Some(BrokerRefusal::ShuttingDown)
-        );
-        // Anything outside the named set (PeerRejected, Unspecified, etc.)
-        // falls through to `Other` — matches v1's forward-compatible
-        // behavior so a future broker code does not silently misclassify.
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&refused_with_code(ErrorCode::ErrorPeerRejected)),
-            Some(BrokerRefusal::Other)
-        );
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&BrokerV2Error::Refused {
-                reason: "default".to_string(),
-                retry_after_ms: 0,
-                details: Box::new(Refused::default()), // code = 0 = Unspecified
-            }),
-            Some(BrokerRefusal::Other)
-        );
-    }
-
-    /// `retry_after_ms` from the v1 `BrokerClientError::Refused` is
-    /// threaded all the way through to `BrokerRefusal::RateLimited`.
-    /// Catches the half-done fix where the typed surface drops the hint.
-    #[test]
-    fn classify_adopt_error_propagates_retry_after_ms_on_v1_rate_limited() {
-        use kernal_api::broker::protocol::ErrorCode;
-        use kernal_api::broker::protocol_v2::client_compat::BrokerClientError;
-
-        let err = AdoptError::Connect(BrokerClientError::Refused {
-            code: ErrorCode::ErrorRateLimited,
-            reason: "slow down".to_string(),
-            retry_after_ms: 2500,
-        });
-        assert_eq!(
-            classify_adopt_error(&err),
-            Some(BrokerRefusal::RateLimited {
-                retry_after_ms: 2500
-            })
-        );
-    }
-
-    /// Same property for the v2 path: `retry_after_ms` from the
-    /// top-level `BrokerV2Error::Refused` field reaches
-    /// `BrokerRefusal::RateLimited` unchanged.
-    #[test]
-    fn from_brokerv2_error_propagates_retry_after_ms_on_v2_rate_limited() {
-        use kernal_api::broker::client_v2::BrokerV2Error;
-        use kernal_api::broker::protocol::{ErrorCode, Refused};
-
-        let err = BrokerV2Error::Refused {
-            reason: "slow down".to_string(),
-            retry_after_ms: 7777,
-            details: Box::new(Refused {
-                code: ErrorCode::ErrorRateLimited as i32,
-                retry_after_ms: 7777,
-                ..Refused::default()
-            }),
-        };
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&err),
-            Some(BrokerRefusal::RateLimited {
-                retry_after_ms: 7777
-            })
-        );
-    }
-
-    /// Adversarial: a future broker shipping an `ErrorCode` value this
-    /// client predates (e.g. 999) must fall through to `BrokerRefusal::
-    /// Other`, never panic. Locks the forward-compat invariant.
-    #[test]
-    fn from_brokerv2_error_maps_unknown_code_to_other() {
-        use kernal_api::broker::client_v2::BrokerV2Error;
-        use kernal_api::broker::protocol::Refused;
-
-        let err = BrokerV2Error::Refused {
-            reason: "future broker code".to_string(),
-            retry_after_ms: 0,
-            details: Box::new(Refused {
-                code: 999,
-                reason: "future broker code".to_string(),
-                ..Refused::default()
-            }),
-        };
-        assert_eq!(
-            BrokerRefusal::from_brokerv2_error(&err),
-            Some(BrokerRefusal::Other),
-            "unknown ErrorCode must classify as Other, not panic"
-        );
-    }
-
-    /// Non-`Refused` `BrokerV2Error` variants are transport / framing /
-    /// sid failures — they MUST classify as `None` so callers fall back
-    /// to the direct-connect path. Locks the contract against a future
-    /// upstream that adds e.g. a `RefusedSoft` variant being silently
-    /// treated as transport.
-    #[test]
-    fn from_brokerv2_error_classifies_transport_variants_as_none() {
-        use kernal_api::broker::client_v2::BrokerV2Error;
-
-        let dial = BrokerV2Error::Dial {
-            socket_path: "/nowhere".to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no broker"),
-        };
-        assert_eq!(BrokerRefusal::from_brokerv2_error(&dial), None);
-
-        let io = BrokerV2Error::Io(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "pipe died",
-        ));
-        assert_eq!(BrokerRefusal::from_brokerv2_error(&io), None);
-
-        let missing = BrokerV2Error::MissingResult;
-        assert_eq!(BrokerRefusal::from_brokerv2_error(&missing), None);
     }
 }

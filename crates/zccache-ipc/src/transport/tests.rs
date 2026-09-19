@@ -124,12 +124,16 @@ async fn recv_wire_accepts_prost_request_on_live_ipc() {
 #[tokio::test]
 async fn backend_handle_probe_detector_preserves_zccache_requests() {
     let endpoint = unique_test_endpoint();
-    let daemon = crate::current_backend_identity(&endpoint).unwrap();
+    let responder =
+        crate::backend_probe_responder(crate::current_backend_identity(&endpoint).unwrap());
     let mut listener = IpcListener::bind(&endpoint).unwrap();
 
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
-        assert!(!conn.try_serve_backend_handle_probe(&daemon).await.unwrap());
+        assert!(!conn
+            .try_serve_backend_handle_probe(&responder)
+            .await
+            .unwrap());
         let msg: Option<Request> = conn.recv().await.unwrap();
         assert_eq!(msg, Some(Request::Ping));
         conn.send(&Response::Pong).await.unwrap();
@@ -146,12 +150,16 @@ async fn backend_handle_probe_detector_preserves_zccache_requests() {
 #[tokio::test]
 async fn backend_handle_probe_detector_leaves_retired_v25_headers_for_version_rejection() {
     let endpoint = unique_test_endpoint();
-    let daemon = crate::current_backend_identity(&endpoint).unwrap();
+    let responder =
+        crate::backend_probe_responder(crate::current_backend_identity(&endpoint).unwrap());
     let mut listener = IpcListener::bind(&endpoint).unwrap();
 
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
-        assert!(!conn.try_serve_backend_handle_probe(&daemon).await.unwrap());
+        assert!(!conn
+            .try_serve_backend_handle_probe(&responder)
+            .await
+            .unwrap());
         assert!(matches!(
             conn.recv_wire::<pb::Request>().await,
             Err(IpcError::Protocol(
@@ -177,36 +185,27 @@ async fn backend_handle_probe_detector_leaves_retired_v25_headers_for_version_re
 async fn backend_handle_probe_succeeds_on_direct_endpoint() {
     let endpoint = unique_test_endpoint();
     let daemon = crate::current_backend_identity(&endpoint).unwrap();
-    let probe_endpoint = daemon.ipc_endpoint.clone();
+    let probe_endpoint = crate::running_process_endpoint(&endpoint);
     let expected_daemon = daemon.clone();
+    let responder = crate::backend_probe_responder(daemon);
     let mut listener = IpcListener::bind(&endpoint).unwrap();
 
     let server = tokio::spawn(async move {
         let mut conn = listener.accept().await.unwrap();
-        assert!(conn.try_serve_backend_handle_probe(&daemon).await.unwrap());
+        assert!(conn
+            .try_serve_backend_handle_probe(&responder)
+            .await
+            .unwrap());
     });
 
-    let (service_name, handle_endpoint) = tokio::task::spawn_blocking(move || {
-        let handle =
-            kernal_api::broker::protocol_v2::backend_handle::BackendHandle::probe_with_service(
-                "zccache",
-                zccache_core::VERSION,
-                &probe_endpoint,
-                &expected_daemon,
-            )
-            .unwrap();
-        (
-            handle.service_name.clone(),
-            handle.daemon_process.ipc_endpoint.path.clone(),
-        )
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(service_name, "zccache");
+    let probed = expected_daemon.probe_endpoint(&probe_endpoint).await;
     assert_eq!(
-        handle_endpoint,
-        crate::running_process_endpoint(&endpoint).path
+        probed,
+        kernal_api::daemon_identity::ProbeSameEndpoint::Current
+    );
+    assert_eq!(
+        expected_daemon.endpoint().address(),
+        probe_endpoint.address()
     );
     server.await.unwrap();
 }
