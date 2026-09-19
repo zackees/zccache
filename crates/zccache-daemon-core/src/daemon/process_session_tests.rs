@@ -1,3 +1,6 @@
+// Only the Unix-gated tests below use the glob; the portable ones reach
+// `super::session` explicitly, so an ungated import is unused on Windows.
+#[cfg(unix)]
 use super::*;
 
 #[tokio::test]

@@ -450,42 +450,44 @@ pub(crate) mod ipc {
     fn create_first_with_retry(
         endpoint: &str,
     ) -> io::Result<kernal_api::platform::ipc::OwnerOnlyPipeInstance> {
+        const ATTEMPTS: u32 = 8;
         let mut delay = Duration::from_millis(20);
-        let mut last_error = None;
-        for attempt in 0..8 {
+        let mut attempt = 1;
+        loop {
             match create_pipe(endpoint, true) {
                 Ok(pipe) => return Ok(pipe),
-                Err(error) => last_error = Some(error),
+                // The final attempt's error is the one reported.
+                Err(error) if attempt == ATTEMPTS => return Err(error),
+                Err(_) => {}
             }
-            if attempt + 1 < 8 {
-                std::thread::sleep(delay);
-                delay = (delay * 2).min(Duration::from_millis(160));
-            }
+            std::thread::sleep(delay);
+            delay = (delay * 2).min(Duration::from_millis(160));
+            attempt += 1;
         }
-        Err(last_error.expect("nonzero retry count"))
     }
 
     #[cfg(windows)]
     async fn create_with_retry(
         endpoint: &str,
     ) -> io::Result<kernal_api::platform::ipc::OwnerOnlyPipeInstance> {
+        const ATTEMPTS: u32 = 5;
         let mut delay = Duration::from_millis(5);
-        let mut last_error = None;
-        for attempt in 0..5 {
+        let mut attempt = 1;
+        loop {
             let endpoint = endpoint.to_owned();
             let created = tokio::task::spawn_blocking(move || create_pipe(&endpoint, false))
                 .await
                 .map_err(|error| io::Error::other(format!("pipe create worker failed: {error}")))?;
             match created {
                 Ok(pipe) => return Ok(pipe),
-                Err(error) => last_error = Some(error),
+                // The final attempt's error is the one reported.
+                Err(error) if attempt == ATTEMPTS => return Err(error),
+                Err(_) => {}
             }
-            if attempt + 1 < 5 {
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(Duration::from_millis(80));
-            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_millis(80));
+            attempt += 1;
         }
-        Err(last_error.expect("nonzero retry count"))
     }
 
     #[cfg(test)]
