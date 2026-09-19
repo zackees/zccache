@@ -412,7 +412,8 @@ mod runtime_hooks_tests {
         let cache_root: NormalizedPath = temp.path().join("zccache").into();
 
         let landed_clone = Arc::clone(&landed_on_host);
-        let host_handle_clone = host_handle.clone();
+        // The public hook takes the host's Tokio handle (unchanged for hosts).
+        let host_handle_clone = host_rt.handle().clone();
         let service = host_rt.block_on(async move {
             // Disable audit (`AuditMode::Off`) so the production
             // `output_root` validation does not reject this fixture; the

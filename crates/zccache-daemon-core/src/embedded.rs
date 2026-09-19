@@ -204,7 +204,10 @@ impl HostIdentity {
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeHooks {
     pub service_name: Option<String>,
-    pub handle: Option<kernal_api::async_engine::RuntimeHandle>,
+    /// The host's Tokio runtime handle. Kept as `tokio::runtime::Handle` so
+    /// hosts (soldr, fbuild) are unaffected by zccache's internal move to
+    /// kernal-api; it is bridged to the facade handle once, at start.
+    pub handle: Option<tokio::runtime::Handle>,
 }
 
 /// Optional service limits. `None` means zccache's existing daemon defaults.

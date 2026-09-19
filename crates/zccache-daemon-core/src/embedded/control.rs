@@ -80,6 +80,13 @@ impl ZccacheService {
             Some(limit) => Some(Arc::new(Semaphore::new(limit))),
             None => None,
         };
+        let runtime_handle = config
+            .runtime
+            .handle
+            .as_ref()
+            .map(facade_runtime_handle)
+            .transpose()
+            .map_err(EmbeddedError::Start)?;
         let endpoint = embedded_endpoint(&config.host);
         let cache_root =
             crate::core::config::effective_cache_root_from_top_level(&config.cache_root);
@@ -92,7 +99,7 @@ impl ZccacheService {
             endpoint,
             cache_root,
             options.staging_root.as_ref(),
-            config.runtime.handle.clone(),
+            runtime_handle.clone(),
             maintenance_policy,
             options.maintenance_ownership == MaintenanceOwnership::Embedded,
             host_admission_classifier,
@@ -104,10 +111,9 @@ impl ZccacheService {
             .host_in_flight
             .map(crate::daemon::process::register_host_in_flight_counter)
             .map(Arc::new);
-        let audit_sink =
-            crate::audit_writer::AuditSink::start(&config.audit, config.runtime.handle.clone())
-                .map_err(|err| EmbeddedError::Start(err.to_string()))?
-                .map(Arc::new);
+        let audit_sink = crate::audit_writer::AuditSink::start(&config.audit, runtime_handle)
+            .map_err(|err| EmbeddedError::Start(err.to_string()))?
+            .map(Arc::new);
         Ok(Self {
             daemon: Arc::new(daemon),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -280,4 +286,16 @@ fn sanitize_identity(value: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Bridge the host's Tokio handle -- the public `RuntimeHooks` contract soldr
+/// and fbuild build against -- to the kernal-api handle zccache launches its
+/// background work through. Entering the handle makes it the ambient runtime,
+/// which is exactly what the facade's `RuntimeHandle::current` captures.
+fn facade_runtime_handle(
+    handle: &tokio::runtime::Handle,
+) -> std::result::Result<kernal_api::async_engine::RuntimeHandle, String> {
+    let _entered = handle.enter();
+    kernal_api::async_engine::RuntimeHandle::current()
+        .map_err(|error| format!("host runtime handle is not usable: {error:?}"))
 }
