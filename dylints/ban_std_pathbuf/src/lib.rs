@@ -134,7 +134,9 @@ fn normalize_slashes(path: &str) -> String {
 
 #[test]
 fn platform_adapter_sources_are_exempt_on_relative_and_absolute_paths() {
-    assert!(is_platform_adapter_source("crates/zccache-ipc/src/platform.rs"));
+    assert!(is_platform_adapter_source(
+        "crates/zccache-ipc/src/platform.rs"
+    ));
     assert!(is_platform_adapter_source(
         "/checkout/crates/zccache-daemon-core/src/platform.rs"
     ));

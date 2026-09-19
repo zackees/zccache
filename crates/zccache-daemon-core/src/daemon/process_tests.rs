@@ -638,8 +638,14 @@ fn semantic_session_start_future_is_send_without_a_caller_held_lock() {
     ));
 }
 
-#[tokio::test]
-async fn semantic_streaming_session_forwards_chunks_without_duplicate_capture() {
+/// A child that writes `stdout` to stdout and `stderr` to stderr (no trailing
+/// newlines) and exits 0.
+///
+/// On Windows `<nul set /p =text` is the newline-free `printf`, but `set /p`
+/// reading EOF sets ERRORLEVEL 1, and `cmd /C` exits with the last command's
+/// ERRORLEVEL — so the fixture must end in an explicit `exit 0` to model the
+/// successful compiler the Unix `sh -c printf` fixture already is.
+fn stdout_stderr_success_fixture() -> kernal_api::SpawnSpec {
     #[cfg(unix)]
     let builder = kernal_api::SpawnSpec::new("sh").args(["-c", "printf stdout; printf stderr >&2"]);
     #[cfg(windows)]
@@ -648,7 +654,17 @@ async fn semantic_streaming_session_forwards_chunks_without_duplicate_capture() 
             .join("System32")
             .join("cmd.exe"),
     )
-    .args(["/D", "/C", "<nul set /p =stdout & <nul set /p =stderr 1>&2"]);
+    .args([
+        "/D",
+        "/C",
+        "<nul set /p =stdout & <nul set /p =stderr 1>&2 & exit 0",
+    ]);
+    builder
+}
+
+#[tokio::test]
+async fn semantic_streaming_session_forwards_chunks_without_duplicate_capture() {
+    let builder = stdout_stderr_success_fixture();
 
     let (sender, mut receiver) = kernal_api::async_engine::channel(8);
     let (output, decision) = async_builder_output_streaming_with_priority_decision(
@@ -659,7 +675,7 @@ async fn semantic_streaming_session_forwards_chunks_without_duplicate_capture() 
     )
     .await;
     let output = output.expect("streaming fixture must succeed");
-    assert!(output.status.success());
+    assert!(output.status.success(), "fixture exit: {:?}", output.status);
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
     assert_eq!(decision.effective, CompilePriority::Normal);
@@ -678,15 +694,7 @@ async fn semantic_streaming_session_forwards_chunks_without_duplicate_capture() 
 
 #[tokio::test]
 async fn semantic_compiler_capture_uses_the_same_session_watchdog_loop() {
-    #[cfg(unix)]
-    let builder = kernal_api::SpawnSpec::new("sh").args(["-c", "printf stdout; printf stderr >&2"]);
-    #[cfg(windows)]
-    let builder = kernal_api::SpawnSpec::new(
-        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
-            .join("System32")
-            .join("cmd.exe"),
-    )
-    .args(["/D", "/C", "<nul set /p =stdout & <nul set /p =stderr 1>&2"]);
+    let builder = stdout_stderr_success_fixture();
 
     let (output, decision) = async_builder_output_with_priority_decision(
         builder,
@@ -695,7 +703,7 @@ async fn semantic_compiler_capture_uses_the_same_session_watchdog_loop() {
     )
     .await;
     let output = output.expect("captured compiler fixture must succeed");
-    assert!(output.status.success());
+    assert!(output.status.success(), "fixture exit: {:?}", output.status);
     assert_eq!(output.stdout, b"stdout");
     assert_eq!(output.stderr, b"stderr");
     assert_eq!(decision.effective, CompilePriority::Normal);

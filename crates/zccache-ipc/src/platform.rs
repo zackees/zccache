@@ -426,8 +426,13 @@ pub(crate) mod ipc {
         }
     }
 
-    pub(crate) fn probe_native(endpoint: &str) -> io::Result<()> {
-        let endpoint = Endpoint::from_native(endpoint);
+    /// Dial an endpoint given in running-process spelling and drop the
+    /// connection. On Windows the `RUNNING_PROCESS_FAKE_BACKEND` seam carries
+    /// a bare pipe name, which must gain the `\\.\pipe\` prefix before the
+    /// native pipe open (an already-native name, or a Unix socket path,
+    /// passes through unchanged).
+    pub(crate) fn probe_running_process(endpoint: &str) -> io::Result<()> {
+        let endpoint = Endpoint::from_running_process(endpoint);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .build()

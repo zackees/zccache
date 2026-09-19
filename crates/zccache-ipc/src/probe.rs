@@ -40,7 +40,7 @@ pub fn probe_local_socket(endpoint: &str) -> std::io::Result<()> {
 pub fn probe_local_socket_with_deadline(endpoint: &str, deadline: Duration) -> std::io::Result<()> {
     let endpoint = endpoint.to_owned();
     call_with_io_deadline("probe_local_socket", deadline, move || {
-        crate::platform::ipc::probe_native(&endpoint)
+        crate::platform::ipc::probe_running_process(&endpoint)
     })
 }
 
