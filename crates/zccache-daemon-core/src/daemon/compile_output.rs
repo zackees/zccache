@@ -575,7 +575,7 @@ mod tests {
         let (sender, mut chunks) = async_engine::channel(8);
         let context = OutputContext::new(sender);
         let (raw_sender, raw_receiver) = async_engine::channel(8);
-        let command = kernal_api::async_process::AsyncProcessBuilder::new("sh").args([
+        let command = kernal_api::SpawnSpec::new("sh").args([
             "-c",
             "printf 'first\\n' >&2; sleep 1; printf 'second\\n' >&2",
         ]);
@@ -626,8 +626,7 @@ mod tests {
         let context = OutputContext::new(sender);
         let operation = async move {
             let (raw_sender, raw_receiver) = async_engine::channel(8);
-            let command =
-                kernal_api::async_process::AsyncProcessBuilder::new("sh").args(["-c", &script]);
+            let command = kernal_api::SpawnSpec::new("sh").args(["-c", &script]);
             let process = crate::daemon::process::async_builder_output_with_priority_stdin(
                 command,
                 CompilePriority::Normal,

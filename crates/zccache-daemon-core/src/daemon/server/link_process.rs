@@ -55,7 +55,7 @@ pub(super) async fn run_tool_passthrough(
         }
     };
 
-    let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(tool);
+    let mut builder = kernal_api::SpawnSpec::new(tool);
     if let Some(ref response_file) = response_file {
         builder = builder.arg(response_file.at_arg());
     } else {
@@ -92,7 +92,7 @@ pub(super) async fn run_archive_tool_passthrough(
     lineage: &super::super::lineage::Lineage,
 ) -> Response {
     let builder = apply_client_env_builder(
-        kernal_api::async_process::AsyncProcessBuilder::new(tool)
+        kernal_api::SpawnSpec::new(tool)
             .args(args.iter().cloned())
             .current_dir(cwd),
         &env,
@@ -134,7 +134,7 @@ pub(super) async fn run_post_link_deploy_hook(
     };
     let extra_args: Vec<&str> = parts.collect();
 
-    let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(program)
+    let mut builder = kernal_api::SpawnSpec::new(program)
         .args(extra_args)
         .arg(output_path.as_os_str());
     if let Some(parent) = output_path.parent() {

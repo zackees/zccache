@@ -135,8 +135,7 @@ pub(super) async fn run_compiler_direct_with_family(
         sessions.get(sid).map(|s| s.client_pid),
         Some(sid.to_string()),
     );
-    let mut builder =
-        kernal_api::async_process::AsyncProcessBuilder::new(compiler.as_path()).current_dir(cwd);
+    let mut builder = kernal_api::SpawnSpec::new(compiler.as_path()).current_dir(cwd);
     if let Some(ref rsp) = _rsp_guard {
         builder = builder.arg(rsp.at_arg());
     } else {

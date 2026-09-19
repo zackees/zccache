@@ -93,7 +93,7 @@ pub(crate) mod process {
 
         pub(crate) fn outcome(status: &std::process::ExitStatus) -> ExitOutcome {
             let trampoline_code =
-                kernal_api::platform::process::trampoline_exit_code(status.clone());
+                kernal_api::platform::process::trampoline_exit_code(*status);
             let termination_signal = (!kernal_api::platform::host::target_is_windows())
                 .then(|| {
                     trampoline_code
@@ -115,15 +115,30 @@ pub(crate) mod process {
         }
     }
 
-    #[cfg(test)]
     pub(crate) mod inspect {
+        pub(crate) use kernal_api::platform::process::PEAK_RSS_READABLE_AFTER_EXIT;
+
+        #[cfg(test)]
         pub(crate) fn is_alive(pid: u32) -> bool {
             kernal_api::platform::process::ProcessLiveness::open(pid)
                 .is_ok_and(|handle| handle.is_alive())
         }
 
+        #[cfg(test)]
         pub(crate) fn cpu_ticks(pid: u32) -> Option<u64> {
             kernal_api::platform::process::cpu_ticks_for_pid(pid)
+        }
+
+        /// Resident-memory high-water mark of `pid` (zccache#1586).
+        pub(crate) fn peak_rss_bytes(pid: u32) -> Option<u64> {
+            kernal_api::platform::process::peak_rss_bytes_for_pid(pid)
+        }
+
+        /// Current resident bytes of `pid` and its live descendants
+        /// (zccache#1588), bounded by
+        /// `kernal_api::platform::process::MAX_TREE_RSS_PROCESSES`.
+        pub(crate) fn tree_rss_bytes(pid: u32) -> Option<u64> {
+            kernal_api::platform::process::tree_rss_bytes_for_pid(pid)
         }
     }
 
@@ -136,34 +151,6 @@ pub(crate) mod process {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) mod priority {
-        pub(crate) use kernal_api::ProcessPriority as Priority;
-
-        pub(crate) fn apply_to_child(
-            child: &tokio::process::Child,
-            priority: Priority,
-        ) -> std::io::Result<()> {
-            kernal_api::platform::process::apply_priority_to_async_child(child, priority)
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) mod spawn {
-        /// Running-process now owns transactionally installed owner-death
-        /// containment on every supported host, including Windows.
-        pub(crate) const fn uses_pre_spawn_owner_death() -> bool {
-            true
-        }
-
-        /// Kept for test call-site compatibility. Containment has already
-        /// been installed by the async spawn boundary, so no post-spawn Job
-        /// Object mutation remains.
-        pub(crate) fn attach_owner_death(_child: &tokio::process::Child) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     pub(crate) mod stdio {
         pub(crate) use kernal_api::platform::process::{
             detach_standard_streams as detach, redirect_standard_streams_to_log as redirect_to_log,
@@ -172,7 +159,13 @@ pub(crate) mod process {
 
     #[cfg(test)]
     pub(crate) mod terminate {
-        pub(crate) use kernal_api::platform::process::force_terminate_pid as force;
+        /// Best-effort, generation-safe force kill for test cleanup.
+        pub(crate) fn force(pid: u32) {
+            use kernal_api::platform::process::{capture_identity, ProcessIdentityCapture};
+            if let ProcessIdentityCapture::Found(identity) = capture_identity(pid) {
+                let _ = kernal_api::platform::process::force_kill(identity);
+            }
+        }
     }
 }
 
@@ -193,10 +186,5 @@ mod tests {
             value
         }
         let _ = (to_kernal_api, from_kernal_api);
-    }
-
-    #[test]
-    fn inherited_owner_death_is_the_daemon_default() {
-        assert!(process::spawn::uses_pre_spawn_owner_death());
     }
 }

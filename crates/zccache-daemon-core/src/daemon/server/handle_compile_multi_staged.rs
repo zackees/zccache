@@ -200,8 +200,7 @@ pub(super) async fn try_handle_staged_misses(
                 });
             }
         };
-        let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(compiler.as_path())
-            .current_dir(cwd.as_path());
+        let mut builder = kernal_api::SpawnSpec::new(compiler.as_path()).current_dir(cwd.as_path());
         if let Some(response_file) = &rsp_guard {
             builder = builder.arg(response_file.at_arg());
         } else {

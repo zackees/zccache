@@ -27,15 +27,14 @@ use zccache::daemon::lineage::{
 
 /// Spawn a tiny "print one env var" child and return its stdout.
 fn capture_child_env(
-    apply: impl FnOnce(
-        kernal_api::async_process::AsyncProcessBuilder,
-    ) -> kernal_api::async_process::AsyncProcessBuilder,
+    apply: impl FnOnce(kernal_api::SpawnSpec) -> kernal_api::SpawnSpec,
     var: &str,
 ) -> Option<String> {
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("/bin/sh")
+    let builder = kernal_api::SpawnSpec::new("/bin/sh")
         .args(["-c", &format!("printf '%s' \"${{{var}}}\"")])
-        .kill_on_drop(true);
-    let mut process = apply(builder).build();
+        .stdout(kernal_api::StreamMode::Piped)
+        .stderr(kernal_api::StreamMode::Piped);
+    let spec = apply(builder);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -44,8 +43,11 @@ fn capture_child_env(
     let output = rt
         .block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                process.start().await.expect("spawn");
-                process.output().await
+                spec.spawn()
+                    .await
+                    .expect("spawn")
+                    .wait_with_output_bounded(64 * 1024)
+                    .await
             })
             .await
         })

@@ -1,9 +1,5 @@
 //! Helpers for daemon-owned child processes.
 
-#[cfg(test)]
-use std::io;
-#[cfg(test)]
-use std::process::Output;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     Arc, OnceLock,
@@ -330,18 +326,6 @@ impl CompilePriority {
             None => Ok(Self::Auto),
         }
     }
-
-    #[cfg(test)]
-    fn platform_priority(self) -> crate::platform::process::priority::Priority {
-        use crate::platform::process::priority::Priority;
-
-        match self {
-            Self::Auto | Self::Normal => Priority::Normal,
-            Self::Low => Priority::Low,
-            Self::Idle => Priority::Idle,
-            Self::High => Priority::High,
-        }
-    }
 }
 
 const CPU_USAGE_UNKNOWN_BITS: u32 = u32::MAX;
@@ -531,59 +515,6 @@ pub(crate) struct CompilePriorityParseError {
     value: String,
 }
 
-/// Child creation is delegated to the running-process boundary.
-///
-/// This keeps Windows console policy out of zccache while preserving Tokio's
-/// async pipe and wait interfaces. In particular, it prevents a visible flash
-/// per cache-miss compile in the soldr + rustc + zccache call chain.
-///
-/// The compiler-identity probe (`rustc -vV` in [`super::server`]'s
-/// compiler-hash module) is covered by the same boundary.
-///
-/// Priority remains local post-spawn policy. Owner-death containment is
-/// configured transactionally by running-process on Linux and macOS; Windows
-/// retains zccache's established process-wide kill-on-close Job Object until
-/// the dependency's Windows spawn path can propagate assignment failures.
-///
-/// Spawn options for daemon-owned compiler/tool children (soldr#2442 slice 3):
-/// reap the child when the daemon drops the compile future (a client
-/// disconnect / Ctrl-C) and when the daemon process itself dies, so a cancelled
-/// or crashed compile never orphans a rustc process. running-process provides
-/// both primitives: `kill_on_drop` handles a dropped Tokio future, while the
-/// platform owner-death policy binds the child to the daemon process.
-///
-/// Linux and macOS install that containment transactionally in the dependency
-/// spawn boundary. Windows keeps the existing local kill-on-close Job Object,
-/// so it must not request the dependency's second Job Object as well.
-#[cfg(test)]
-fn owned_child_spawn_options() -> kernal_api::async_process::TokioSpawnOptions {
-    kernal_api::async_process::TokioSpawnOptions {
-        kill_on_drop: true,
-        kill_when_owner_dies: crate::platform::process::spawn::uses_pre_spawn_owner_death(),
-        ..Default::default()
-    }
-}
-
-/// Run a leaf tool without the orphan-pipe watchdog used for compilers.
-/// Pure archivers do not spawn descendants, so Tokio can reap them directly.
-#[cfg(test)]
-pub(crate) async fn tokio_leaf_command_output_with_priority(
-    cmd: &mut tokio::process::Command,
-    priority: CompilePriority,
-) -> io::Result<Output> {
-    use std::process::Stdio;
-
-    let (decision, _ticket) = priority.resolve_and_track();
-    let priority = decision.effective;
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    let child = spawn_tokio_excluding_materialization(cmd)?;
-    attach_child_owner_death(&child);
-    apply_priority_to_child(&child, priority);
-    child.wait_with_output().await
-}
-
 #[path = "process_session.rs"]
 mod session;
 
@@ -593,41 +524,6 @@ pub(crate) use session::{
     async_builder_output_with_priority_decision, async_builder_output_with_priority_stdin,
     async_builder_output_with_priority_timeout,
 };
-
-/// Spawn a daemon-owned child while holding the shared half of the
-/// materialization/spawn lock (zccache#1562). `spawn` returns only after the
-/// child has exec'd (or failed to), so the guard covers the whole fork-to-exec
-/// window in which the child still holds a copy of this process's descriptor
-/// table. Holding it here, at the single choke point every compiler, linker,
-/// archiver, exec-tool, deploy-hook, and async identity-probe child passes
-/// through, keeps every call site covered without touching them.
-#[cfg(test)]
-fn spawn_tokio_excluding_materialization(
-    cmd: &mut tokio::process::Command,
-) -> io::Result<tokio::process::Child> {
-    let _spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
-    kernal_api::async_process::spawn_tokio(cmd, owned_child_spawn_options())
-}
-
-#[cfg(test)]
-fn attach_child_owner_death(child: &tokio::process::Child) {
-    if let Err(error) = crate::platform::process::spawn::attach_owner_death(child) {
-        tracing::debug!(%error, "failed to attach child process owner-death primitive");
-    }
-}
-
-#[cfg(test)]
-fn apply_priority_to_child(child: &tokio::process::Child, priority: CompilePriority) {
-    if let Err(error) =
-        crate::platform::process::priority::apply_to_child(child, priority.platform_priority())
-    {
-        tracing::debug!(
-            ?priority,
-            %error,
-            "failed to set compiler child priority"
-        );
-    }
-}
 
 #[cfg(test)]
 #[path = "process_tests.rs"]

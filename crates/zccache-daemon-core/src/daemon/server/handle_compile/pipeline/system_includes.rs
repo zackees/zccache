@@ -288,8 +288,7 @@ async fn run_discovery_command(
     lineage: &crate::daemon::lineage::Lineage,
     compiler_priority: CompilePriority,
 ) -> std::io::Result<std::process::Output> {
-    let builder =
-        kernal_api::async_process::AsyncProcessBuilder::new(compiler.as_path()).args(args);
+    let builder = kernal_api::SpawnSpec::new(compiler.as_path()).args(args);
     let builder = lineage.apply_to_async_builder(builder, None);
     crate::daemon::process::async_builder_output_with_priority_timeout(
         builder,

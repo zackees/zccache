@@ -2,9 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn compiler_output_has_exactly_one_capture_owner() {
-    use kernal_api::async_process::{
-        AsyncProcessSessionChunk, AsyncProcessSessionEvent, StreamKind,
-    };
+    use kernal_api::{ProcessOutputChunk, ProcessOutputEvent};
     for streaming in [false, true] {
         let (tx, mut rx) = kernal_api::async_engine::channel(2);
         let sender = streaming.then_some(tx);
@@ -12,12 +10,12 @@ async fn compiler_output_has_exactly_one_capture_owner() {
         let mut stderr_bytes = 0;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        for (stream, bytes) in [
-            (StreamKind::Stdout, b"out".to_vec()),
-            (StreamKind::Stderr, b"err".to_vec()),
+        for chunk in [
+            ProcessOutputChunk::Stdout(b"out".to_vec()),
+            ProcessOutputChunk::Stderr(b"err".to_vec()),
         ] {
             let result = forward_compiler_session_event(
-                AsyncProcessSessionEvent::Chunk(AsyncProcessSessionChunk { stream, bytes }),
+                ProcessOutputEvent::Chunk(chunk),
                 &sender,
                 &mut stdout_bytes,
                 &mut stderr_bytes,
@@ -47,7 +45,7 @@ async fn compiler_output_has_exactly_one_capture_owner() {
 #[tokio::test]
 async fn semantic_compiler_early_stdin_close_preserves_diagnostics() {
     let input = vec![b'x'; 1024 * 1024];
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("/bin/sh")
+    let builder = kernal_api::SpawnSpec::new("/bin/sh")
         .args(["-c", "exec 0<&-; printf 'rejected input\\n' >&2; exit 7"]);
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -70,33 +68,33 @@ async fn semantic_compiler_early_stdin_close_preserves_diagnostics() {
 #[tokio::test]
 async fn semantic_termination_returns_a_reaped_child_status() {
     #[cfg(unix)]
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("/bin/sh")
-        .args(["-c", "exec sleep 30"]);
+    let builder = kernal_api::SpawnSpec::new("/bin/sh").args(["-c", "exec sleep 30"]);
     #[cfg(windows)]
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("powershell").args([
+    let builder = kernal_api::SpawnSpec::new("powershell").args([
         "-NoProfile",
         "-Command",
         "Start-Sleep -Seconds 30",
     ]);
-    let mut session = builder.session(kernal_api::async_process::AsyncProcessSessionOptions {
-        kill_on_drop: true,
-        ..Default::default()
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(10), session.start())
-        .await
-        .expect("fixture startup deadline")
-        .expect("fixture starts");
-    let (control, _output) = session.into_parts().expect("started session");
-    let status = super::session::terminate_session(&control)
+    let session = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        builder.spawn_session(kernal_api::ProcessSessionOptions {
+            kill_on_drop: true,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("fixture startup deadline")
+    .expect("fixture starts");
+    let status = super::session::terminate_session(&session)
         .await
         .expect("termination confirms reaping");
     assert!(!status.success());
-    let polled = tokio::time::timeout(std::time::Duration::from_secs(2), control.poll())
+    let polled = tokio::time::timeout(std::time::Duration::from_secs(2), session.poll())
         .await
         .expect("poll deadline")
         .expect("poll completed");
     assert_eq!(
-        polled,
+        polled.map(kernal_api::ProcessSessionExit::exit_status),
         Some(status),
         "termination returned before reaping was recorded"
     );
@@ -116,7 +114,7 @@ fn canonical_spawn_waits_for_materialization_to_release() {
             .enable_all()
             .build()
             .expect("fixture runtime");
-        let builder = kernal_api::async_process::AsyncProcessBuilder::new("/bin/sh")
+        let builder = kernal_api::SpawnSpec::new("/bin/sh")
             .args(["-c", "printf started > \"$1\"", "fixture"])
             .arg(child_marker);
         started_tx.send(()).expect("parent listening");
@@ -173,7 +171,7 @@ fn canonical_spawn_waits_for_materialization_to_release() {
 #[tokio::test]
 async fn semantic_compiler_drains_output_while_feeding_large_stdin() {
     let input = vec![b'x'; 1024 * 1024];
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("/bin/sh")
+    let builder = kernal_api::SpawnSpec::new("/bin/sh")
         .args(["-c", "dd if=/dev/zero bs=4096 count=64 2>/dev/null; cat"]);
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -199,7 +197,7 @@ use super::session::{forward_compiler_session_event, CompilerSessionEvent};
 #[cfg(unix)]
 #[tokio::test]
 async fn semantic_discovery_timeout_preserves_output_and_nonzero_status() {
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("/bin/sh")
+    let builder = kernal_api::SpawnSpec::new("/bin/sh")
         .args(["-c", "printf probe-out; printf probe-err >&2; exit 7"]);
     let output = async_builder_output_with_priority_timeout(
         builder,
@@ -217,8 +215,7 @@ async fn semantic_discovery_timeout_preserves_output_and_nonzero_status() {
 #[cfg(unix)]
 #[tokio::test]
 async fn semantic_discovery_deadline_returns_timed_out() {
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("/bin/sh")
-        .args(["-c", "exec sleep 30"]);
+    let builder = kernal_api::SpawnSpec::new("/bin/sh").args(["-c", "exec sleep 30"]);
     let error = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         async_builder_output_with_priority_timeout(

@@ -701,7 +701,7 @@ async fn spawn_tool(
     cwd: &Path,
     env: &[(String, String)],
 ) -> std::io::Result<std::process::Output> {
-    let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(tool)
+    let mut builder = kernal_api::SpawnSpec::new(tool)
         .args(args.iter().cloned())
         .current_dir(cwd)
         .clear_env(true);

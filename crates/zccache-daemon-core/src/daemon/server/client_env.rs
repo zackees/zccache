@@ -15,10 +15,10 @@ use super::*;
 /// the client's vars. Lineage env vars are layered on top in either case so
 /// the child always carries the chain.
 pub(super) fn apply_client_env_builder(
-    mut builder: kernal_api::async_process::AsyncProcessBuilder,
+    mut builder: kernal_api::SpawnSpec,
     client_env: &Option<Vec<(String, String)>>,
     lineage: &super::super::lineage::Lineage,
-) -> kernal_api::async_process::AsyncProcessBuilder {
+) -> kernal_api::SpawnSpec {
     if let Some(vars) = client_env {
         builder = builder.clear_env(true);
         for (key, val) in vars {

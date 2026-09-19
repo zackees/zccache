@@ -138,9 +138,9 @@ impl Lineage {
     /// Apply lineage to a kernel-owned asynchronous process description.
     pub fn apply_to_async_builder(
         &self,
-        builder: kernal_api::async_process::AsyncProcessBuilder,
+        builder: kernal_api::SpawnSpec,
         incoming_env: Option<&[(String, String)]>,
-    ) -> kernal_api::async_process::AsyncProcessBuilder {
+    ) -> kernal_api::SpawnSpec {
         self.env_for_child(incoming_env)
             .into_iter()
             .fold(builder, |builder, (key, value)| builder.env(key, value))

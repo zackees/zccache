@@ -53,9 +53,9 @@ fn test_lineage() -> super::super::super::lineage::Lineage {
 async fn apply_client_env_filters_stale_jobserver_vars_for_compiler_spawns() {
     let env = jobserver_client_env();
     #[cfg(unix)]
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new("/usr/bin/env");
+    let builder = kernal_api::SpawnSpec::new("/usr/bin/env");
     #[cfg(windows)]
-    let builder = kernal_api::async_process::AsyncProcessBuilder::new(
+    let builder = kernal_api::SpawnSpec::new(
         std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
             .join("System32")
             .join("cmd.exe"),

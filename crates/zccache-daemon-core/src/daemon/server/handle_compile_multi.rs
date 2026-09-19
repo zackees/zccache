@@ -747,8 +747,8 @@ pub(super) async fn handle_compile_multi(
         session_client_pid(&state, &sid),
         Some(sid.to_string()),
     );
-    let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(compiler.as_path())
-        .current_dir(cwd_path.as_path());
+    let mut builder =
+        kernal_api::SpawnSpec::new(compiler.as_path()).current_dir(cwd_path.as_path());
     if let Some(ref rsp) = _rsp_guard {
         builder = builder.arg(rsp.at_arg());
     } else {

@@ -257,7 +257,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     }
     let break_outputs_ns = t_break_outputs.elapsed().as_nanos() as u64;
 
-    let mut builder = kernal_api::async_process::AsyncProcessBuilder::new(compiler);
+    let mut builder = kernal_api::SpawnSpec::new(compiler);
     if let Some(ref rsp) = _rsp_guard {
         builder = builder.arg(rsp.at_arg()).current_dir(cwd);
     } else {

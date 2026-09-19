@@ -95,16 +95,20 @@ pub(crate) const fn stall_tick() -> Duration {
 /// (soldr#3152). The kernel maintains the high-water mark itself, so the tick
 /// only bounds how much growth in the child's final instant goes unseen. One
 /// `/proc/<pid>/status` / `proc_pid_rusage` / `GetProcessMemoryInfo` read.
-const MEMORY_SAMPLE_TICK: Duration = Duration::from_millis(250);
+pub(crate) const MEMORY_SAMPLE_TICK: Duration = Duration::from_millis(250);
 
 /// The memory samples taken for one child: its own high-water mark and the
 /// largest resident total of its live process tree (zccache#1588), published
 /// to the enclosing compile scope when the wait ends — on every return path,
 /// including errors and cancellation, because it publishes from `Drop`.
-struct ChildMemorySample(crate::daemon::compile_journal::ChildMemory);
+pub(crate) struct ChildMemorySample(crate::daemon::compile_journal::ChildMemory);
 
 impl ChildMemorySample {
-    fn observe(&mut self, pid: Option<u32>) {
+    pub(crate) fn new() -> Self {
+        Self(crate::daemon::compile_journal::ChildMemory::default())
+    }
+
+    pub(crate) fn observe(&mut self, pid: Option<u32>) {
         let Some(pid) = pid else {
             return;
         };
@@ -260,7 +264,7 @@ async fn watchdog_inner_impl(
     // so a Unix sample can never read a reused pid. Where the platform keeps a
     // held handle's final peak readable (Windows), it is re-read once after
     // exit.
-    let mut peak_rss = ChildMemorySample(crate::daemon::compile_journal::ChildMemory::default());
+    let mut peak_rss = ChildMemorySample::new();
     // The race has five arms, so memory sampling shares the progress-sample
     // arm: each tick fires at the earlier of the two persistent deadlines. The
     // first memory sample is due immediately, matching an interval's first tick.
