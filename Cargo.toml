@@ -93,11 +93,11 @@ rkyv = "0.8"
 # `_vender/kernal-api`, regenerate the lockfile, and validate normally; see
 # `CLAUDE.md` → Temporary dependent subgit integration.
 #
-# The checkout is pinned to kernal-api main 04bd695, the content that ships as
-# 0.1.16. Its manifest still reads 0.1.15 until the release bump, so the
-# requirement matches that; the release swap is
-# `kernal-api = { version = "=0.1.16", default-features = false }`.
-kernal-api = { path = "_vender/kernal-api", version = "=0.1.15", default-features = false }
+# The checkout is pinned to kernal-api main 07db3bd (the fs/ipc/async/process
+# ports, kernal-api#333-#336), from which 0.1.17 is cut. Its manifest still
+# reads 0.1.16 until the release bump, so the requirement matches that; the
+# release swap is `kernal-api = { version = "=0.1.17", default-features = false }`.
+kernal-api = { path = "_vender/kernal-api", version = "=0.1.16", default-features = false }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
