@@ -359,19 +359,6 @@ fn multi_cold_per_tu_args(source: &str) -> Vec<String> {
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::multi_cold_per_tu_args;
-
-    #[test]
-    fn cold_multi_per_tu_args_select_one_source_without_an_output_override() {
-        assert_eq!(
-            multi_cold_per_tu_args("unit_007.cpp"),
-            vec!["-c", "unit_007.cpp", "-Iinclude", "-O2", "-std=c++17"]
-        );
-    }
-}
-
 pub async fn zccache_compile_cpp_single_with_env(
     client: &mut ClientConn,
     session_id: &str,
@@ -406,4 +393,17 @@ pub async fn zccache_compile_cpp_single_with_env(
         assert_eq!(exit_code, 0, "compile failed for {src}");
     }
     start.elapsed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::multi_cold_per_tu_args;
+
+    #[test]
+    fn cold_multi_per_tu_args_select_one_source_without_an_output_override() {
+        assert_eq!(
+            multi_cold_per_tu_args("unit_007.cpp"),
+            vec!["-c", "unit_007.cpp", "-Iinclude", "-O2", "-std=c++17"]
+        );
+    }
 }

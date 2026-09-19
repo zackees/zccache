@@ -265,20 +265,20 @@ fn never_bound_endpoint() -> String {
     crate::ipc::unique_test_endpoint()
 }
 
-/// A `DaemonProcess` that cannot possibly be the one recorded on disk.
-fn foreign_identity(
-    pid: u32,
-) -> running_process::broker::protocol_v2::backend_handle::DaemonProcess {
-    running_process::broker::protocol_v2::backend_handle::DaemonProcess {
-        pid,
-        exe_path: std::path::PathBuf::from("zccache-daemon"),
-        exe_hash: [0u8; 32],
-        legacy_exe_sha256: [0u8; 32],
-        boot_id: "boot-that-never-was".to_string(),
-        ipc_endpoint: crate::ipc::running_process_endpoint("test-endpoint"),
-        started_at_unix_ms: 1,
-        idle_timeout_secs: None,
-    }
+/// A daemon identity that cannot possibly be the one recorded on disk.
+fn foreign_identity(pid: u32) -> kernal_api::daemon_identity::DaemonIdentity {
+    kernal_api::daemon_identity::DaemonIdentity::from_record(
+        kernal_api::daemon_identity::DaemonIdentityRecord {
+            pid,
+            executable_path: std::path::PathBuf::from("zccache-daemon"),
+            blake3_digest: [0u8; 32],
+            legacy_sha256_digest: [0u8; 32],
+            boot_id: "boot-that-never-was".to_string(),
+            endpoint: crate::ipc::running_process_endpoint("test-endpoint"),
+            started_at_unix_ms: 1,
+            idle_timeout_secs: None,
+        },
+    )
 }
 
 /// #1161 leg 1. The gate sits before the `Shutdown` request, not just

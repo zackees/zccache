@@ -5,12 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
+#[cfg(test)]
+use kernal_api::async_engine::CancellationSource;
+use kernal_api::async_engine::CancellationToken;
 use reqwest::header::{
     ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_LENGTH, ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_util::sync::CancellationToken;
 use zccache_core::NormalizedPath;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,7 +493,9 @@ async fn download_segment(request: SegmentDownload<'_>) -> Result<u64, DownloadE
 
 pub fn stable_download_id(path: &Path) -> String {
     let key = zccache_core::normalize_for_key(path);
-    blake3::hash(key.as_bytes()).to_hex().to_string()
+    kernal_api::hash::blake3_bytes(key.as_bytes())
+        .to_hex()
+        .to_string()
 }
 
 pub fn canonical_destination(path: &Path) -> Result<NormalizedPath, std::io::Error> {
@@ -737,7 +741,7 @@ mod tests {
                 allow_insecure_http: true,
             },
             progress,
-            CancellationToken::new(),
+            CancellationSource::new().token(),
         )
         .await
         .unwrap();
@@ -796,7 +800,7 @@ mod tests {
                 allow_insecure_http: true,
             },
             Arc::new(|_, _, _| {}),
-            CancellationToken::new(),
+            CancellationSource::new().token(),
         )
         .await
         .unwrap();
@@ -837,7 +841,7 @@ mod tests {
                 ..DownloadOptions::default()
             },
             progress,
-            CancellationToken::new(),
+            CancellationSource::new().token(),
         )
         .await
         .unwrap();
@@ -865,8 +869,8 @@ mod tests {
         let destination = dir.path().join("cancel.bin");
         let metadata_dir = dir.path().join("cancel-meta");
         let temp_path = expected_temp_path(&destination);
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
+        let cancel = CancellationSource::new();
+        let cancel_clone = cancel.token();
         let (progress, rx) = progress_recorder();
 
         let task = tokio::spawn(async move {
@@ -953,7 +957,7 @@ mod tests {
             // Default: the secure setting.
             &DownloadOptions::default(),
             Arc::new(|_, _, _| {}),
-            CancellationToken::new(),
+            CancellationSource::new().token(),
         )
         .await;
 
@@ -977,7 +981,7 @@ mod tests {
                 ..DownloadOptions::default()
             },
             Arc::new(|_, _, _| {}),
-            CancellationToken::new(),
+            CancellationSource::new().token(),
         )
         .await;
         assert!(allowed.is_ok(), "explicit opt-in must still download");

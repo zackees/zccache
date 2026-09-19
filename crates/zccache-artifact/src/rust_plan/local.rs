@@ -615,7 +615,7 @@ fn now_secs() -> u64 {
 }
 
 fn snapshot_to_bundle(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if reflink_copy::reflink(src, dst).is_err() {
+    if kernal_api::platform::fs::reflink_file(src, dst).is_err() {
         std::fs::copy(src, dst)?;
     }
     let mut permissions = std::fs::metadata(dst)?.permissions();
@@ -627,14 +627,29 @@ fn restore_bundle_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     // Rust-plan bundles are immutable. Reflink is ideal; where unavailable we
     // copy instead of hardlinking because this crate does not own the daemon's
     // mediated-write registry and must not create an untracked shared writer.
-    if reflink_copy::reflink(src, dst).is_err() {
+    if kernal_api::platform::fs::reflink_file(src, dst).is_err() {
         std::fs::copy(src, dst)?;
     }
     make_bundle_file_writable(dst)
 }
 
 fn make_bundle_file_writable(path: &Path) -> std::io::Result<()> {
-    crate::platform::fs::permissions::make_writable(path)
+    // Preserve the staged-artifact compatibility rule: a dangling link is
+    // removable without changing a referent, while an actually absent path
+    // remains an error except for Windows' historical no-op behavior.
+    match kernal_api::platform::fs::set_readonly(path, false) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && (kernal_api::platform::host::target_is_windows()
+                    || std::fs::symlink_metadata(path)
+                        .map(|metadata| metadata.file_type().is_symlink())
+                        .unwrap_or(false)) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn remove_bundle_dir(path: &Path) -> std::io::Result<()> {
@@ -654,7 +669,7 @@ fn clear_readonly(path: &Path) -> std::io::Result<()> {
         if entry.file_type()?.is_dir() {
             clear_readonly(&child)?;
         } else {
-            let _ = crate::platform::fs::permissions::make_writable(&child);
+            let _ = make_bundle_file_writable(&child);
         }
     }
     Ok(())

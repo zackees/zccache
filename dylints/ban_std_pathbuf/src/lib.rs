@@ -12,14 +12,16 @@ use rustc_span::{symbol::Symbol, FileName, RemapPathScopeComponents};
 dylint_linting::declare_late_lint! {
     /// ### What it does
     ///
-    /// Bans `std::path::PathBuf` outside the platform leaf and explicit legacy allowlist.
+    /// Bans `std::path::PathBuf` outside approved product adapters and the
+    /// explicit legacy allowlist.
     ///
     /// ### Why is this bad?
     ///
     /// Raw `PathBuf` values do not carry zccache's normalization invariant, which
     /// has caused Windows-only cache key and watcher mismatches. The
-    /// `zccache-platform` dependency leaf is exempt because it cannot depend on
-    /// `zccache-core`; callers normalize its primitive path results at the boundary.
+    /// Approved product adapters are exempt where their canonical kernal-api
+    /// capability requires a primitive path; callers normalize product paths at
+    /// their boundary.
     ///
     /// ### Known problems
     ///
@@ -44,7 +46,7 @@ dylint_linting::declare_late_lint! {
     /// ```
     pub BAN_STD_PATHBUF,
     Deny,
-    "ban std::path::PathBuf outside the platform leaf and legacy allowlist"
+    "ban std::path::PathBuf outside approved product adapters and legacy allowlist"
 }
 
 const PATHBUF_DEF_PATH: &[&str] = &["std", "path", "PathBuf"];
@@ -106,7 +108,7 @@ fn is_allowlisted(cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
             .to_string(),
     };
     let normalized = normalize_slashes(&filename);
-    is_platform_leaf_source(&normalized)
+    is_platform_adapter_source(&normalized)
         || ALLOWLIST
             .lines()
             .map(str::trim)
@@ -114,10 +116,16 @@ fn is_allowlisted(cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
             .any(|allowed| normalized.ends_with(allowed))
 }
 
-fn is_platform_leaf_source(path: &str) -> bool {
+fn is_platform_adapter_source(path: &str) -> bool {
     let normalized = normalize_slashes(path);
-    normalized.starts_with("crates/zccache-platform/src/")
-        || normalized.contains("/crates/zccache-platform/src/")
+    [
+        "crates/zccache-ipc/src/platform.rs",
+        "crates/zccache-daemon-core/src/platform.rs",
+        "crates/zccache-cli-core/src/platform.rs",
+        "crates/zccache/src/platform.rs",
+    ]
+    .iter()
+    .any(|adapter| normalized == *adapter || normalized.ends_with(&format!("/{adapter}")))
 }
 
 fn normalize_slashes(path: &str) -> String {
@@ -125,24 +133,24 @@ fn normalize_slashes(path: &str) -> String {
 }
 
 #[test]
-fn platform_leaf_sources_are_exempt_on_relative_and_absolute_paths() {
-    assert!(is_platform_leaf_source(
-        "crates/zccache-platform/src/platform/host.rs"
+fn platform_adapter_sources_are_exempt_on_relative_and_absolute_paths() {
+    assert!(is_platform_adapter_source(
+        "crates/zccache-ipc/src/platform.rs"
     ));
-    assert!(is_platform_leaf_source(
-        "/checkout/crates/zccache-platform/src/platform_linux/host.rs"
+    assert!(is_platform_adapter_source(
+        "/checkout/crates/zccache-daemon-core/src/platform.rs"
     ));
-    assert!(is_platform_leaf_source(
-        r"C:\checkout\crates\zccache-platform\src\platform_win\host.rs"
+    assert!(is_platform_adapter_source(
+        r"C:\checkout\crates\zccache-cli-core\src\platform.rs"
     ));
 }
 
 #[test]
-fn similarly_named_paths_outside_the_platform_leaf_are_not_exempt() {
-    assert!(!is_platform_leaf_source(
-        "crates/zccache-platform-tests/src/lib.rs"
+fn similarly_named_paths_outside_the_platform_adapters_are_not_exempt() {
+    assert!(!is_platform_adapter_source(
+        "crates/zccache-ipc/src/platform/test.rs"
     ));
-    assert!(!is_platform_leaf_source(
+    assert!(!is_platform_adapter_source(
         "crates/zccache-core/src/platform.rs"
     ));
 }

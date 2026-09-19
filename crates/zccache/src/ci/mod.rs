@@ -26,9 +26,7 @@
 //!    its daemon could be reaped.
 
 use crate::core::NormalizedPath;
-use std::borrow::Cow;
 use std::env;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -36,26 +34,6 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
-
-trait ProcessNameExt {
-    fn to_lossy_name(&self) -> Cow<'_, str>;
-}
-
-impl ProcessNameExt for str {
-    fn to_lossy_name(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self)
-    }
-}
-
-impl ProcessNameExt for OsStr {
-    fn to_lossy_name(&self) -> Cow<'_, str> {
-        self.to_string_lossy()
-    }
-}
-
-fn process_name_lossy<N: ProcessNameExt + ?Sized>(name: &N) -> Cow<'_, str> {
-    name.to_lossy_name()
-}
 
 /// Default wall-clock timeout for the entire stop hook run, in seconds.
 ///
@@ -267,15 +245,22 @@ pub fn format_elapsed(d: Duration) -> String {
 /// kill atomically. On Unix this calls `setsid` via `pre_exec`; on Windows
 /// this sets the `CREATE_NEW_PROCESS_GROUP` creation flag.
 pub fn configure_process_group(cmd: &mut Command) {
-    crate::platform::process::command::configure_process_group(cmd);
+    kernal_api::platform::process::configure_session_leader_command(cmd);
+}
+
+/// Preserve the CI runner's product-specific tree-kill fallback. Kernal-api
+/// owns Unix group termination; Windows retains `taskkill /T` because a
+/// console process group is not a retained tree-control capability there.
+fn force_process_group(child: &Child) {
+    crate::platform::force_process_group(child);
 }
 
 /// Kill `child` and every descendant. Best-effort: errors are swallowed
 /// because we are already on the failure path.
 pub fn kill_process_tree(child: &mut Child) {
-    let pid = child.id();
-
-    crate::platform::process::terminate::force_group(pid);
+    // Before reaping: the group kill proves its target through the
+    // still-unreaped child.
+    force_process_group(child);
 
     // Reap the direct child to avoid a zombie even on platforms where the
     // group-kill above did the heavy lifting.
@@ -299,11 +284,10 @@ pub fn capture_diagnostics() {
 }
 
 fn dump_relevant_processes() {
-    let sys = sysinfo::System::new_all();
     eprintln!("processes (zccache/cargo/rustc/soldr):");
     let mut count = 0usize;
-    for (pid, p) in sys.processes() {
-        let name = process_name_lossy(p.name());
+    for process in kernal_api::platform::host_processes::snapshot() {
+        let name = process.name();
         let lower = name.to_ascii_lowercase();
         if lower.contains("zccache")
             || lower.contains("cargo")
@@ -311,11 +295,11 @@ fn dump_relevant_processes() {
             || lower.contains("soldr")
         {
             eprintln!(
-                "  PID={pid} name={} status={:?} cpu={:.1}% mem={}KB",
-                name.as_ref(),
-                p.status(),
-                p.cpu_usage(),
-                p.memory() / 1024,
+                "  PID={} name={name} running={} cpu={:.1}% mem={}KB",
+                process.pid(),
+                process.running(),
+                process.cpu_usage_percent(),
+                process.memory_bytes() / 1024,
             );
             count += 1;
         }
@@ -326,7 +310,7 @@ fn dump_relevant_processes() {
 }
 
 fn home_dir() -> Option<NormalizedPath> {
-    let key = if crate::platform::host::is_windows() {
+    let key = if kernal_api::platform::host::target_is_windows() {
         "USERPROFILE"
     } else {
         "HOME"
@@ -415,14 +399,15 @@ pub const KILL_DAEMON_WAIT: Duration = Duration::from_secs(2);
 
 /// Find every running `zccache-daemon[.exe]` PID by walking the process table.
 fn find_daemon_pids() -> Vec<u32> {
-    let sys = sysinfo::System::new_all();
-    sys.processes()
-        .iter()
-        .filter_map(|(pid, process)| {
-            let name = process_name_lossy(process.name());
-            (name.as_ref() == "zccache-daemon" || name.as_ref() == "zccache-daemon.exe")
-                .then_some(pid.as_u32())
+    // The facade enumerates without filtering, deliberately: an exact name
+    // here and a substring above are both legitimate, and only the caller
+    // knows which it wants.
+    kernal_api::platform::host_processes::snapshot()
+        .into_iter()
+        .filter(|process| {
+            process.name() == "zccache-daemon" || process.name() == "zccache-daemon.exe"
         })
+        .map(|process| process.pid())
         .collect()
 }
 
@@ -509,27 +494,34 @@ pub fn kill_daemon() {
 /// This is conservative: we only reap when we can confirm the parent is
 /// gone. Daemons spawned by a still-running supervisor are left alone.
 pub fn reap_orphan_daemons() -> Vec<u32> {
-    use sysinfo::Pid;
-
-    let sys = sysinfo::System::new_all();
-
-    let alive: std::collections::HashSet<Pid> = sys.processes().keys().copied().collect();
+    // One enumeration for both questions: which daemons exist, and which pids
+    // are still alive to be their parents. Taking two snapshots would let a
+    // parent exit between them and make a live daemon look orphaned.
+    let processes = kernal_api::platform::host_processes::snapshot();
+    let alive: std::collections::HashSet<u32> =
+        processes.iter().map(|process| process.pid()).collect();
 
     let mut killed = Vec::new();
-    for (pid, process) in sys.processes() {
-        let name = process_name_lossy(process.name());
-        if name.as_ref() != "zccache-daemon" && name.as_ref() != "zccache-daemon.exe" {
+    for process in &processes {
+        if process.name() != "zccache-daemon" && process.name() != "zccache-daemon.exe" {
             continue;
         }
-        let parent = process.parent();
+        let parent = process.parent_pid();
+        // Both orphan shapes: no parent named, or a parent that is no longer
+        // in this same snapshot.
         let is_orphan = match parent {
             None => true,
             Some(ppid) => !alive.contains(&ppid),
         };
         if is_orphan {
+            let pid = process.pid();
             eprintln!("Reaping orphan zccache-daemon PID={pid} (parent {parent:?} gone)");
-            if process.kill() {
-                killed.push(pid.as_u32());
+            // Was `sysinfo`'s `Process::kill`. This crate already prefers its
+            // own force-kill for the reason recorded on `kill_pids_and_wait`:
+            // the sysinfo kill has been seen to report success on Windows
+            // while leaving the process running.
+            if crate::ipc::force_kill_process(pid).is_ok() {
+                killed.push(pid);
             }
         }
     }
@@ -548,7 +540,7 @@ mod tests {
     fn sleep_forever_cmd() -> Command {
         // A child that will never exit on its own. We use the host's interpreter
         // so this works on Windows (where `sleep` is not a binary).
-        if crate::platform::host::is_windows() {
+        if kernal_api::platform::host::target_is_windows() {
             let mut c = Command::new("cmd");
             c.args(["/C", "ping -n 600 127.0.0.1 > NUL"]);
             c.stdout(Stdio::null()).stderr(Stdio::null());
@@ -562,7 +554,7 @@ mod tests {
     }
 
     fn quick_exit_cmd() -> Command {
-        if crate::platform::host::is_windows() {
+        if kernal_api::platform::host::target_is_windows() {
             let mut c = Command::new("cmd");
             c.args(["/C", "exit 0"]);
             c.stdout(Stdio::null()).stderr(Stdio::null());

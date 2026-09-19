@@ -14,20 +14,20 @@ use super::*;
 /// If `client_env` is `Some`, the inherited env is cleared and replaced with
 /// the client's vars. Lineage env vars are layered on top in either case so
 /// the child always carries the chain.
-pub(super) fn apply_client_env(
-    cmd: &mut tokio::process::Command,
+pub(super) fn apply_client_env_builder(
+    mut builder: kernal_api::SpawnSpec,
     client_env: &Option<Vec<(String, String)>>,
     lineage: &super::super::lineage::Lineage,
-) {
+) -> kernal_api::SpawnSpec {
     if let Some(vars) = client_env {
-        cmd.env_clear();
+        builder = builder.clear_env(true);
         for (key, val) in vars {
             if client_env_var_is_safe_to_replay(key) {
-                cmd.env(key, val);
+                builder = builder.env(key, val);
             }
         }
     }
-    lineage.apply_to_tokio(cmd, client_env.as_deref());
+    lineage.apply_to_async_builder(builder, client_env.as_deref())
 }
 
 /// Cargo jobserver env vars name process-local file descriptors. The daemon
@@ -40,7 +40,7 @@ pub(super) fn client_env_var_is_safe_to_replay(key: &str) -> bool {
     )
 }
 
-/// Sync-command counterpart of [`apply_client_env`].
+/// Sync-command counterpart of [`apply_client_env_builder`].
 #[cfg(test)]
 pub(super) fn apply_client_env_sync(
     cmd: &mut std::process::Command,

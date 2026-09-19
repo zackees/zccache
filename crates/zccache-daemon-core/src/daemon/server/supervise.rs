@@ -1,7 +1,7 @@
 //! Supervision for the daemon's long-lived background loops (issue #1177).
 //!
-//! Every periodic task in `run.rs` was a bare `tokio::spawn` whose `JoinHandle`
-//! was dropped. A panic inside one of them is therefore **completely silent**:
+//! Every periodic task in `run.rs` was a bare runtime task whose handle was
+//! dropped. A panic inside one of them is therefore **completely silent**:
 //! the task disappears, the daemon keeps serving, and the only symptom is that
 //! something stops happening — memory is never evicted, the depgraph is never
 //! saved, disk is never reclaimed. Those are exactly the failures that present
@@ -51,7 +51,7 @@ pub(super) enum Restart {
 }
 
 /// Why a supervised task stopped.
-fn exit_reason(outcome: &Result<(), tokio::task::JoinError>) -> &'static str {
+fn exit_reason(outcome: &Result<(), kernal_api::async_engine::TaskError>) -> &'static str {
     match outcome {
         Ok(()) => "exited",
         Err(err) if err.is_panic() => "panicked",
@@ -65,7 +65,7 @@ fn exit_reason(outcome: &Result<(), tokio::task::JoinError>) -> &'static str {
 /// must capture whatever the loop needs by clone rather than by move-once.
 ///
 /// `runtime_handle` carries the embedded host's runtime (zccache#922). Both the
-/// supervisor and every task it starts must land on it — a bare `tokio::spawn`
+/// supervisor and every task it starts must land on it — a bare ambient launch
 /// would put supervised work on whatever runtime happened to be current at the
 /// call, which is precisely the contract the handle exists to enforce. `None`
 /// means "use the ambient runtime", which is the standalone daemon's case.
@@ -73,9 +73,9 @@ pub(super) fn spawn_supervised<S, F, Fut>(
     name: &'static str,
     is_shutting_down: S,
     restart: Restart,
-    runtime_handle: Option<&tokio::runtime::Handle>,
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
     factory: F,
-) -> tokio::task::JoinHandle<()>
+) -> kernal_api::async_engine::Task<()>
 where
     S: Fn() -> bool + Send + 'static,
     F: Fn() -> Fut + Send + 'static,
@@ -89,8 +89,8 @@ where
         loop {
             let task = factory();
             let outcome = match &runtime_handle {
-                Some(handle) => handle.spawn(task),
-                None => tokio::spawn(task),
+                Some(handle) => handle.launch(task),
+                None => kernal_api::async_engine::launch(task),
             }
             .await;
 
@@ -125,7 +125,7 @@ where
                 return;
             }
 
-            tokio::time::sleep(backoff).await;
+            kernal_api::async_engine::sleep(backoff).await;
             if is_shutting_down() {
                 return;
             }
@@ -139,8 +139,8 @@ where
         }
     };
     match spawn_handle {
-        Some(handle) => handle.spawn(supervisor),
-        None => tokio::spawn(supervisor),
+        Some(handle) => handle.launch(supervisor),
+        None => kernal_api::async_engine::launch(supervisor),
     }
 }
 

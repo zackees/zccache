@@ -51,11 +51,11 @@ fn print_status(args: &Args) {
 }
 
 fn query_daemon_status(endpoint: &str) -> Result<crate::download::DownloadDaemonStatus, String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = kernal_api::async_engine::RuntimeBuilder::current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("failed to create runtime: {e}"))?;
-    rt.block_on(async {
+    rt.run(async {
         let mut conn = crate::ipc::connect(endpoint)
             .await
             .map_err(|e| format!("download daemon not running at {endpoint}: {e}"))?;
@@ -88,13 +88,13 @@ fn run_server(args: Args) {
         clippy::expect_used,
         reason = "multi-thread runtime construction with enable_all only fails on OS resource exhaustion (timer/IO driver registration); download daemon cannot proceed by any other means at that point"
     )]
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = kernal_api::async_engine::RuntimeBuilder::multi_thread()
         .enable_all()
         .build()
         .expect("failed to create runtime");
-    rt.block_on(async move {
+    rt.run(async move {
         let bind_endpoint = endpoint.clone();
-        let bind_result = tokio::task::spawn_blocking(move || {
+        let bind_result = kernal_api::async_engine::launch_blocking(move || {
             crate::download_daemon::DownloadDaemon::bind(&bind_endpoint)
         })
         .await;
@@ -112,11 +112,21 @@ fn run_server(args: Args) {
             }
         };
         let shutdown = server.shutdown_handle();
-        tokio::spawn(async move {
+        // `detach` is required, not decoration: unlike `tokio::spawn`, the
+        // facade's `Task` aborts on drop, and this handle is dropped
+        // immediately. Without it the listener dies before it ever sees a
+        // signal.
+        //
+        // `tokio::signal` is the one thing here with no facade equivalent
+        // (kernal-api#69): the facade can await a task, a deadline or a
+        // cancellation token, but not a signal. It is why `tokio` is still a
+        // production dependency of this crate.
+        kernal_api::async_engine::launch(async move {
             if let Ok(()) = tokio::signal::ctrl_c().await {
                 shutdown.notify_waiters();
             }
-        });
+        })
+        .detach();
         if let Err(err) = server.run().await {
             eprintln!("download daemon error: {err}");
             daemon_mgmt::remove_lock_file();

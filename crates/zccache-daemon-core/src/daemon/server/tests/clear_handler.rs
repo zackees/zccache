@@ -46,9 +46,9 @@ fn system_include_cache_entry_self_verifies_after_clear_skip() {
 
     // After a compiler change, stat-verify must reject the entry —
     // this is the safety net that makes preservation across Clear safe.
-    filetime::set_file_mtime(
+    kernal_api::platform::fs::set_file_mtime(
         &compiler,
-        filetime::FileTime::from_unix_time(2_000_000_000, 0),
+        kernal_api::platform::fs::FileTime::from_unix_time(2_000_000_000, 0),
     )
     .unwrap();
     std::fs::write(&compiler, b"different compiler bytes after upgrade").unwrap();

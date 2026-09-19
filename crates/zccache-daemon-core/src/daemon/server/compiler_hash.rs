@@ -85,8 +85,8 @@ struct ProbeOutput {
 
 /// Spawn `cmd` and wait up to `timeout`, killing the child on timeout. Used to
 /// bound the sync `-vV` probe. Capture, descendant containment, reader
-/// cancellation, and the aggregate byte limit all belong to running-process.
-fn output_within(cmd: std::process::Command, timeout: std::time::Duration) -> ProbeOutcome {
+/// cancellation, and the aggregate byte limit all belong to kernal-api.
+fn output_within(cmd: kernal_api::SpawnSpec, timeout: std::time::Duration) -> ProbeOutcome {
     const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
 
     // zccache#1562: running-process owns spawn *and* wait here, so the shared
@@ -95,26 +95,39 @@ fn output_within(cmd: std::process::Command, timeout: std::time::Duration) -> Pr
     // exclusive side), never other spawns; this probe is a cold path taken
     // once per compiler identity, normally ~10 ms, and bounded by `timeout`.
     let _spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
-    match running_process::run_std_command_bounded(cmd, Some(timeout), PROBE_OUTPUT_LIMIT) {
+    match kernal_api::run_bounded_command(cmd, Some(timeout), PROBE_OUTPUT_LIMIT) {
         Ok(output) => ProbeOutcome::Completed(ProbeOutput {
-            success: output.exit_code == 0,
+            success: output.exit.raw_code() == 0,
             stdout: output.stdout,
         }),
-        Err(running_process::ProcessError::Timeout) => ProbeOutcome::TimedOut,
+        Err(kernal_api::BoundedProcessError::TimedOut) => ProbeOutcome::TimedOut,
         Err(_) => ProbeOutcome::SpawnFailed,
     }
 }
 
 async fn output_within_async(
-    cmd: &mut tokio::process::Command,
+    cmd: kernal_api::SpawnSpec,
     timeout: std::time::Duration,
-) -> std::io::Result<std::process::Output> {
-    crate::daemon::process::tokio_command_output_with_priority_timeout(
-        cmd,
-        crate::daemon::process::CompilePriority::Normal,
-        timeout,
-    )
+) -> ProbeOutcome {
+    const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+    // Keep the shared spawn/materialization exclusion inside the blocking
+    // operation. Holding its synchronous guard across `.await` would make the
+    // async probe non-Send and, more importantly, would not cover the actual
+    // native child creation on the kernel blocking lane.
+    match kernal_api::async_engine::launch_blocking(move || {
+        let _spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
+        kernal_api::run_bounded_command(cmd, Some(timeout), PROBE_OUTPUT_LIMIT)
+    })
     .await
+    {
+        Ok(Ok(output)) => ProbeOutcome::Completed(ProbeOutput {
+            success: output.exit.raw_code() == 0,
+            stdout: output.stdout,
+        }),
+        Ok(Err(kernal_api::BoundedProcessError::TimedOut)) => ProbeOutcome::TimedOut,
+        Ok(Err(_)) | Err(_) => ProbeOutcome::SpawnFailed,
+    }
 }
 
 /// The provenance of a cached compiler identity.
@@ -540,8 +553,7 @@ fn warn_rustc_identity_fallback(path: &Path, reason: &'static str) {
 }
 
 fn rustc_identity(path: &Path) -> Option<RustcIdentity> {
-    let mut cmd = std::process::Command::new(path);
-    cmd.arg("-vV");
+    let cmd = kernal_api::SpawnSpec::new(path).arg("-vV");
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
         ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => Some(
@@ -570,27 +582,26 @@ fn rustc_identity(path: &Path) -> Option<RustcIdentity> {
 }
 
 async fn rustc_identity_async(path: std::path::PathBuf) -> Option<RustcIdentity> {
-    let mut cmd = tokio::process::Command::new(&path);
-    cmd.arg("-vV");
+    let cmd = kernal_api::SpawnSpec::new(&path).arg("-vV");
     let timeout = rustc_probe_timeout();
-    match output_within_async(&mut cmd, timeout).await {
-        Ok(output) if output.status.success() && !output.stdout.is_empty() => Some(
+    match output_within_async(cmd, timeout).await {
+        ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => Some(
             RustcIdentity::VerifiedVv(crate::hash::hash_bytes(&output.stdout)),
         ),
-        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+        ProbeOutcome::TimedOut => {
             warn_probe_timeout(&path, timeout);
             warn_rustc_identity_fallback(&path, "probe_timeout");
             crate::hash::hash_file(&path)
                 .ok()
                 .map(RustcIdentity::FileFallback)
         }
-        Err(_) => {
+        ProbeOutcome::SpawnFailed => {
             warn_rustc_identity_fallback(&path, "probe_spawn_failed");
             crate::hash::hash_file(&path)
                 .ok()
                 .map(RustcIdentity::FileFallback)
         }
-        Ok(_) => {
+        ProbeOutcome::Completed(_) => {
             warn_rustc_identity_fallback(&path, "probe_degenerate_output");
             crate::hash::hash_file(&path)
                 .ok()
@@ -611,8 +622,7 @@ async fn rustc_identity_async(path: std::path::PathBuf) -> Option<RustcIdentity>
 /// stubbed binaries (unit tests) or broken toolchains.
 #[allow(dead_code)] // Direct helper retained for the identity-output unit test.
 pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
-    let mut cmd = std::process::Command::new(path);
-    cmd.arg("-vV");
+    let cmd = kernal_api::SpawnSpec::new(path).arg("-vV");
     // The running-process boundary makes this cold-path probe consoleless.
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
@@ -646,8 +656,7 @@ pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
 /// (e.g. some `cl.exe` invocations) that only print version info to
 /// stderr — see the TODO below.
 pub(super) fn hash_cc_identity(path: &Path) -> Option<ContentHash> {
-    let mut cmd = std::process::Command::new(path);
-    cmd.arg("--version");
+    let cmd = kernal_api::SpawnSpec::new(path).arg("--version");
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
         ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
@@ -674,14 +683,13 @@ pub(super) fn hash_cc_identity(path: &Path) -> Option<ContentHash> {
 /// Async sibling of [`hash_cc_identity`]. See that function's doc comment
 /// for the rationale (issue #1166).
 pub(super) async fn hash_cc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
-    let mut cmd = tokio::process::Command::new(&path);
-    cmd.arg("--version");
+    let cmd = kernal_api::SpawnSpec::new(&path).arg("--version");
     let timeout = rustc_probe_timeout();
-    match output_within_async(&mut cmd, timeout).await {
-        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+    match output_within_async(cmd, timeout).await {
+        ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+        ProbeOutcome::TimedOut => {
             warn_probe_timeout(&path, timeout);
             crate::hash::hash_file(&path).ok()
         }
@@ -703,14 +711,16 @@ pub(super) async fn hash_dylint_driver_identity_async(
     path: std::path::PathBuf,
     client_env: Vec<(String, String)>,
 ) -> Option<ContentHash> {
-    let mut cmd = tokio::process::Command::new(&path);
-    cmd.arg("-V").envs(client_env);
+    let cmd = client_env.into_iter().fold(
+        kernal_api::SpawnSpec::new(&path).arg("-V"),
+        |spec, (key, value)| spec.env(key, value),
+    );
     let timeout = rustc_probe_timeout();
-    match output_within_async(&mut cmd, timeout).await {
-        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+    match output_within_async(cmd, timeout).await {
+        ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+        ProbeOutcome::TimedOut => {
             warn_probe_timeout(&path, timeout);
             crate::hash::hash_file(&path).ok()
         }
@@ -720,14 +730,13 @@ pub(super) async fn hash_dylint_driver_identity_async(
 
 #[allow(dead_code)] // The cache calls `rustc_identity_async` to retain provenance.
 pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Option<ContentHash> {
-    let mut cmd = tokio::process::Command::new(&path);
-    cmd.arg("-vV");
+    let cmd = kernal_api::SpawnSpec::new(&path).arg("-vV");
     let timeout = rustc_probe_timeout();
-    match output_within_async(&mut cmd, timeout).await {
-        Ok(output) if output.status.success() && !output.stdout.is_empty() => {
+    match output_within_async(cmd, timeout).await {
+        ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
             Some(crate::hash::hash_bytes(&output.stdout))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+        ProbeOutcome::TimedOut => {
             warn_probe_timeout(&path, timeout);
             crate::hash::hash_file(&path).ok()
         }
@@ -745,28 +754,22 @@ mod probe_timeout_tests {
     use super::{output_within, ProbeOutcome};
     use std::time::Duration;
 
-    fn slow_cmd() -> std::process::Command {
+    fn slow_cmd() -> kernal_api::SpawnSpec {
         if crate::platform::host::is_windows() {
-            let mut c = std::process::Command::new("cmd");
             // ~30 s: 31 pings ~1 s apart.
-            c.args(["/c", "ping -n 31 127.0.0.1 >nul"]);
-            c
+            kernal_api::SpawnSpec::new("cmd")
+                .arg("/c")
+                .arg("ping -n 31 127.0.0.1 >nul")
         } else {
-            let mut c = std::process::Command::new("sh");
-            c.args(["-c", "sleep 30"]);
-            c
+            kernal_api::SpawnSpec::new("sh").arg("-c").arg("sleep 30")
         }
     }
 
-    fn fast_cmd() -> std::process::Command {
+    fn fast_cmd() -> kernal_api::SpawnSpec {
         if crate::platform::host::is_windows() {
-            let mut c = std::process::Command::new("cmd");
-            c.args(["/c", "echo hi"]);
-            c
+            kernal_api::SpawnSpec::new("cmd").arg("/c").arg("echo hi")
         } else {
-            let mut c = std::process::Command::new("sh");
-            c.args(["-c", "echo hi"]);
-            c
+            kernal_api::SpawnSpec::new("sh").arg("-c").arg("echo hi")
         }
     }
 
@@ -799,7 +802,7 @@ mod probe_timeout_tests {
 
     #[test]
     fn spawn_failed_for_missing_binary() {
-        let cmd = std::process::Command::new("zzz-nonexistent-compiler-xyz-972");
+        let cmd = kernal_api::SpawnSpec::new("zzz-nonexistent-compiler-xyz-972");
         assert!(matches!(
             output_within(cmd, Duration::from_secs(5)),
             ProbeOutcome::SpawnFailed
@@ -811,8 +814,9 @@ mod probe_timeout_tests {
         if !crate::platform::host::is_linux() {
             return;
         }
-        let mut cmd = std::process::Command::new("sh");
-        cmd.args(["-c", "setsid sh -c 'sleep 3' & sleep 30"]);
+        let cmd = kernal_api::SpawnSpec::new("sh")
+            .arg("-c")
+            .arg("setsid sh -c 'sleep 3' & sleep 30");
 
         let start = std::time::Instant::now();
         let outcome = output_within(cmd, Duration::from_millis(100));

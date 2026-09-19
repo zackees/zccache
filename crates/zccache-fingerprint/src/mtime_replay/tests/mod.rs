@@ -1,5 +1,5 @@
 use super::*;
-use filetime::{set_file_mtime, FileTime};
+use kernal_api::platform::fs::{set_file_mtime, FileTime};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -29,25 +29,30 @@ fn entry_for<'a>(manifest: &'a MtimeManifest, path: &str) -> &'a MtimeEntry {
         .unwrap_or_else(|| panic!("manifest missing entry for {path}"))
 }
 
-const OLD_MTIME: FileTime = FileTime::from_unix_time(1_600_000_000, 0);
-const FRESH_MTIME: FileTime = FileTime::from_unix_time(1_700_000_000, 0);
+// `FileTime::from_unix_time` is not `const` in the facade, so these are fns.
+fn old_mtime() -> FileTime {
+    FileTime::from_unix_time(1_600_000_000, 0)
+}
+fn fresh_mtime() -> FileTime {
+    FileTime::from_unix_time(1_700_000_000, 0)
+}
 
 #[test]
 fn unchanged_file_gets_recorded_mtime() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("a.txt");
     create_file(dir.path(), "a.txt", "unchanged content");
-    set_file_mtime(&path, OLD_MTIME).unwrap();
+    set_file_mtime(&path, old_mtime()).unwrap();
 
     let manifest = snapshot(dir.path(), &[]).unwrap();
 
     // Simulate a checkout stamping the file with a fresh mtime.
-    set_file_mtime(&path, FRESH_MTIME).unwrap();
+    set_file_mtime(&path, fresh_mtime()).unwrap();
 
     let report = replay(dir.path(), &manifest);
     assert_eq!(report.applied, 1);
     assert_eq!(report.total, 1);
-    assert_eq!(mtime_of(&path), OLD_MTIME);
+    assert_eq!(mtime_of(&path), old_mtime());
 }
 
 #[test]
@@ -55,18 +60,18 @@ fn same_size_content_change_is_modified_and_mtime_untouched() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("a.txt");
     create_file(dir.path(), "a.txt", "aaaaaaaa");
-    set_file_mtime(&path, OLD_MTIME).unwrap();
+    set_file_mtime(&path, old_mtime()).unwrap();
 
     let manifest = snapshot(dir.path(), &[]).unwrap();
     let entry = entry_for(&manifest, "a.txt").clone();
 
     // Same length, different bytes.
     fs::write(&path, "bbbbbbbb").unwrap();
-    set_file_mtime(&path, FRESH_MTIME).unwrap();
+    set_file_mtime(&path, fresh_mtime()).unwrap();
 
     let outcome = replay_one(dir.path(), &entry);
     assert_eq!(outcome, ReplayOutcome::Modified);
-    assert_eq!(mtime_of(&path), FRESH_MTIME);
+    assert_eq!(mtime_of(&path), fresh_mtime());
 }
 
 #[test]
@@ -74,17 +79,17 @@ fn size_change_is_size_mismatch() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("a.txt");
     create_file(dir.path(), "a.txt", "short");
-    set_file_mtime(&path, OLD_MTIME).unwrap();
+    set_file_mtime(&path, old_mtime()).unwrap();
 
     let manifest = snapshot(dir.path(), &[]).unwrap();
     let entry = entry_for(&manifest, "a.txt").clone();
 
     fs::write(&path, "this content is much longer now").unwrap();
-    set_file_mtime(&path, FRESH_MTIME).unwrap();
+    set_file_mtime(&path, fresh_mtime()).unwrap();
 
     let outcome = replay_one(dir.path(), &entry);
     assert_eq!(outcome, ReplayOutcome::SizeMismatch);
-    assert_eq!(mtime_of(&path), FRESH_MTIME);
+    assert_eq!(mtime_of(&path), fresh_mtime());
 }
 
 #[test]
@@ -153,7 +158,7 @@ fn changed_file_is_never_stamped_old() {
     create_file(dir.path(), "c.txt", "unchanged"); // stays untouched
 
     for name in ["a.txt", "b.txt", "c.txt"] {
-        set_file_mtime(dir.path().join(name), OLD_MTIME).unwrap();
+        set_file_mtime(&dir.path().join(name), old_mtime()).unwrap();
     }
 
     let manifest = snapshot(dir.path(), &[]).unwrap();
@@ -164,7 +169,7 @@ fn changed_file_is_never_stamped_old() {
 
     // Simulate a checkout stamping every file with a fresh mtime.
     for name in ["a.txt", "b.txt", "c.txt"] {
-        set_file_mtime(dir.path().join(name), FRESH_MTIME).unwrap();
+        set_file_mtime(&dir.path().join(name), fresh_mtime()).unwrap();
     }
 
     let report = replay(dir.path(), &manifest);
@@ -184,12 +189,12 @@ fn changed_file_is_never_stamped_old() {
     let b_mtime_ns = mtime_of(&dir.path().join("b.txt")).unix_seconds() * 1_000_000_000;
     assert!(a_mtime_ns > a_entry.mtime_ns);
     assert!(b_mtime_ns > b_entry.mtime_ns);
-    assert_eq!(mtime_of(&dir.path().join("a.txt")), FRESH_MTIME);
-    assert_eq!(mtime_of(&dir.path().join("b.txt")), FRESH_MTIME);
+    assert_eq!(mtime_of(&dir.path().join("a.txt")), fresh_mtime());
+    assert_eq!(mtime_of(&dir.path().join("b.txt")), fresh_mtime());
 
     // The unchanged file gets its recorded (old) mtime back.
-    assert_eq!(mtime_of(&dir.path().join("c.txt")), OLD_MTIME);
-    assert_eq!(c_entry.mtime_ns, OLD_MTIME.unix_seconds() * 1_000_000_000);
+    assert_eq!(mtime_of(&dir.path().join("c.txt")), old_mtime());
+    assert_eq!(c_entry.mtime_ns, old_mtime().unix_seconds() * 1_000_000_000);
 }
 
 #[test]
@@ -197,18 +202,18 @@ fn set_times_failure_reports_modified() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("a.txt");
     create_file(dir.path(), "a.txt", "content");
-    set_file_mtime(&path, OLD_MTIME).unwrap();
+    set_file_mtime(&path, old_mtime()).unwrap();
 
     let manifest = snapshot(dir.path(), &[]).unwrap();
     let entry = entry_for(&manifest, "a.txt").clone();
 
-    set_file_mtime(&path, FRESH_MTIME).unwrap();
+    set_file_mtime(&path, fresh_mtime()).unwrap();
 
-    let outcome = replay_one_with(dir.path(), &entry, |_path, _atime, _mtime| {
-        Err(std::io::Error::other("simulated set_file_times failure"))
+    let outcome = replay_one_with(dir.path(), &entry, |_path, _mtime| {
+        Err(std::io::Error::other("simulated set_file_mtime failure"))
     });
     assert_eq!(outcome, ReplayOutcome::Modified);
-    assert_eq!(mtime_of(&path), FRESH_MTIME);
+    assert_eq!(mtime_of(&path), fresh_mtime());
 }
 
 #[test]
@@ -219,7 +224,7 @@ fn rejects_escaping_manifest_paths() {
     let base = MtimeEntry {
         path: String::new(),
         size: 7,
-        mtime_ns: OLD_MTIME.unix_seconds() * 1_000_000_000,
+        mtime_ns: old_mtime().unix_seconds() * 1_000_000_000,
         blake3: "0".repeat(64),
     };
 
@@ -297,7 +302,7 @@ fn mtime_ns_preserves_subsecond_and_pre_epoch() {
     let entry = entry_for(&manifest, "a.txt").clone();
 
     // Simulate a checkout stamping the file with a fresh mtime.
-    set_file_mtime(&path, FRESH_MTIME).unwrap();
+    set_file_mtime(&path, fresh_mtime()).unwrap();
 
     assert_eq!(replay_one(dir.path(), &entry), ReplayOutcome::Applied);
 

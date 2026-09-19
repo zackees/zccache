@@ -11,15 +11,14 @@ description = "Download engine and shared download types for zccache"
 publish = false
 
 [dependencies]
+kernal-api = { workspace = true }
 zccache-core = { workspace = true }
 
-blake3 = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

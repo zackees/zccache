@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
-use filetime::{set_file_mtime, FileTime};
+use kernal_api::platform::fs::{set_file_mtime, FileTime};
 use zccache_fingerprint::mtime_replay::ReplayReport;
 
 use super::super::args::{Cli, Commands, KNOWN_SUBCOMMANDS};

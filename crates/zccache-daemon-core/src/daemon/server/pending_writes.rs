@@ -46,7 +46,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::sync::Notify;
+use kernal_api::async_engine::Notify;
 
 /// Per-key publication state. Multiple compiles can publish independent
 /// verdict/output metadata for the same shared Rust artifact concurrently.
@@ -171,12 +171,12 @@ async fn await_pending_capped(
     // Register the waiter while the map guard prevents `complete` from
     // removing/notifying this entry. Otherwise a completion between cloning
     // the Notify and first polling the future could be lost until timeout.
-    let notified = Arc::clone(&entry.notify).notified_owned();
-    tokio::pin!(notified);
+    let notified = Arc::clone(&entry.notify).owned_notified();
+    let mut notified = std::pin::pin!(notified);
     let notified_before_unlock = notified.as_mut().enable();
     drop(entry);
     if !notified_before_unlock {
-        let _ = tokio::time::timeout(capped, notified).await;
+        let _ = kernal_api::async_engine::timeout(capped, notified).await;
     }
     true
 }
@@ -185,15 +185,17 @@ async fn await_pending_capped(
 /// `timeout`. Used during graceful shutdown before draining the artifact-index
 /// WAL so deferred persist tasks can publish their `(key, ArtifactIndex)` rows.
 pub(super) async fn await_all(pending: &DashMap<String, PendingWrite>, timeout: Duration) -> bool {
-    let deadline = tokio::time::sleep(timeout);
-    tokio::pin!(deadline);
+    let deadline = kernal_api::async_engine::sleep(timeout);
+    let mut deadline = std::pin::pin!(deadline);
     loop {
         if pending.is_empty() {
             return true;
         }
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_millis(10)) => {}
-            () = &mut deadline => {
+        let retry = kernal_api::async_engine::sleep(Duration::from_millis(10));
+        let mut retry = std::pin::pin!(retry);
+        match kernal_api::fair_race!((retry.as_mut()), (deadline.as_mut())).await {
+            kernal_api::async_engine::FairRace2::First(()) => {}
+            kernal_api::async_engine::FairRace2::Second(()) => {
                 return pending.is_empty();
             }
         }

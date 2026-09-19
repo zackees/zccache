@@ -69,5 +69,5 @@ pub fn canonicalize_path(path: &Path, cwd: &Path) -> NormalizedPath {
 /// Strip the `\\?\` extended-length prefix on Windows.
 /// No-op on other platforms.
 pub fn strip_win_prefix(path: NormalizedPath) -> NormalizedPath {
-    NormalizedPath::new(crate::platform::fs::path::strip_verbatim_prefix(&path))
+    NormalizedPath::new(zccache_core::path::strip_verbatim_prefix(&path))
 }

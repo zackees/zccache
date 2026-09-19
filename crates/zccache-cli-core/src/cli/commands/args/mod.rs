@@ -375,7 +375,7 @@ pub(crate) enum Commands {
     },
     /// Sum byte size of regular files under a target directory, with optional
     /// pruning. Used by `action/cleanup/prepare-target-snapshot.sh` instead of
-    /// Python `os.walk` because jwalk parallelizes readdir+stat across cores —
+    /// Python `os.walk` because the facade walk parallelizes readdir+stat across cores —
     /// big win on Windows where per-file Defender callbacks dominate the walk.
     /// Prints total bytes as a decimal integer on stdout. See zccache#189.
     #[command(name = "snapshot-bytes")]

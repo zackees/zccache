@@ -348,12 +348,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let runtime = dir.path().join("runtime.dll");
         fs::write(&runtime, b"v1").unwrap();
-        let fixed_mtime = filetime::FileTime::from_unix_time(1_700_000_000, 0);
-        filetime::set_file_mtime(&runtime, fixed_mtime).unwrap();
+        let fixed_mtime = kernal_api::platform::fs::FileTime::from_unix_time(1_700_000_000, 0);
+        kernal_api::platform::fs::set_file_mtime(&runtime, fixed_mtime).unwrap();
         let snap = snapshot(dir.path());
 
         fs::write(&runtime, b"v2").unwrap();
-        filetime::set_file_mtime(&runtime, fixed_mtime).unwrap();
+        kernal_api::platform::fs::set_file_mtime(&runtime, fixed_mtime).unwrap();
 
         let found = complete(
             detect_side_effects(&snap, dir.path(), OsStr::new("app.exe"), &HashSet::new()).unwrap(),

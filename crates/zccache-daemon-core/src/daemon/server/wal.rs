@@ -7,8 +7,8 @@ pub(super) enum IndexWriterCommand {
     /// Refresh retention age without replacing newer artifact metadata.
     Touch(String, u64),
     Remove(Vec<String>),
-    Clear(tokio::sync::oneshot::Sender<()>),
-    Flush(tokio::sync::oneshot::Sender<()>),
+    Clear(kernal_api::async_engine::OneshotSender<()>),
+    Flush(kernal_api::async_engine::OneshotSender<()>),
 }
 
 /// Default WAL flush interval. Persist tasks return immediately after sending
@@ -97,8 +97,8 @@ const PENDING_WRITES_SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration =
 /// AND a durable lifecycle event.
 pub(super) async fn drain_durable_state_for_shutdown(
     state: &SharedState,
-    index_writer_handle: Option<tokio::task::JoinHandle<()>>,
-) -> tokio::sync::RwLockWriteGuard<'_, ()> {
+    index_writer_handle: Option<kernal_api::async_engine::Task<()>>,
+) -> kernal_api::async_engine::RwLockWriteGuard<'_, ()> {
     // 1. Deferred persist tasks (#799).
     let pending_drained = pending_writes::await_all(
         &state.pending_cache_writes,
@@ -150,7 +150,7 @@ pub(super) async fn drain_durable_state_for_shutdown(
     // window.
     state.index_writer_shutdown.notify_one();
     if let Some(mut handle) = index_writer_handle {
-        if tokio::time::timeout(INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT, &mut handle)
+        if kernal_api::async_engine::timeout(INDEX_WRITER_SHUTDOWN_JOIN_TIMEOUT, &mut handle)
             .await
             .is_err()
         {
@@ -171,7 +171,7 @@ pub(super) async fn drain_durable_state_for_shutdown(
                                drain attempt; task aborted",
                 }),
             );
-            handle.abort();
+            handle.cancel();
             let _ = handle.await;
         }
     }
@@ -224,34 +224,44 @@ pub(super) async fn drain_durable_state_for_shutdown(
 /// an abrupt crash (where the files-on-disk are durable but the next
 /// session's `load_all()` won't see them, forcing a one-time re-miss).
 pub(super) async fn run_index_writer(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<IndexWriterCommand>,
+    mut rx: kernal_api::async_engine::UnboundedReceiver<IndexWriterCommand>,
     store: Arc<ArtifactStore>,
-    shutdown: Arc<Notify>,
+    shutdown: Arc<kernal_api::async_engine::Notify>,
 ) {
     use std::collections::HashMap;
     let flush_interval = wal_flush_interval();
     let max_pending = wal_max_pending();
     let mut wal: HashMap<String, ArtifactIndex> = HashMap::with_capacity(max_pending);
-    let mut ticker = tokio::time::interval(flush_interval);
+    let mut ticker = kernal_api::async_engine::PeriodicTimer::new_unbounded(flush_interval)
+        .expect("WAL flush interval must be valid inside the daemon runtime");
     // Don't immediately fire on the first tick — wait one interval.
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let _ = ticker.tick().await;
+    ticker.set_missed_tick_behavior(kernal_api::async_engine::MissedTickBehavior::Delay);
+    ticker.tick().await;
 
     loop {
-        tokio::select! {
-            msg = rx.recv() => {
+        let winner = {
+            let message = rx.recv();
+            let tick = ticker.tick();
+            let shutdown_wait = shutdown.notified();
+            let mut message = std::pin::pin!(message);
+            let mut tick = std::pin::pin!(tick);
+            let mut shutdown_wait = std::pin::pin!(shutdown_wait);
+            kernal_api::fair_race!(
+                (message.as_mut()),
+                (tick.as_mut()),
+                (shutdown_wait.as_mut()),
+            )
+            .await
+        };
+        match winner {
+            kernal_api::async_engine::FairRace3::First(msg) => {
                 match msg {
                     Some(command) => {
                         process_index_writer_command(command, &store, &mut wal, max_pending).await;
                         // Drain whatever else is already queued in this tick.
                         while let Ok(command) = rx.try_recv() {
-                            process_index_writer_command(
-                                command,
-                                &store,
-                                &mut wal,
-                                max_pending,
-                            )
-                            .await;
+                            process_index_writer_command(command, &store, &mut wal, max_pending)
+                                .await;
                         }
                     }
                     None => {
@@ -261,12 +271,12 @@ pub(super) async fn run_index_writer(
                     }
                 }
             }
-            _ = ticker.tick() => {
+            kernal_api::async_engine::FairRace3::Second(()) => {
                 if !wal.is_empty() {
                     flush_wal_to_disk(&store, &mut wal).await;
                 }
             }
-            _ = shutdown.notified() => {
+            kernal_api::async_engine::FairRace3::Third(()) => {
                 // Daemon-initiated graceful shutdown. Drain anything still
                 // queued and flush before the runtime aborts us.
                 while let Ok(command) = rx.try_recv() {
@@ -336,25 +346,31 @@ async fn process_index_writer_command(
 }
 
 pub(super) async fn flush_index_writer(
-    tx: &tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    tx: &kernal_api::async_engine::UnboundedSender<IndexWriterCommand>,
     timeout: std::time::Duration,
 ) -> bool {
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let (ack_tx, ack_rx) = kernal_api::async_engine::oneshot_channel();
     if tx.send(IndexWriterCommand::Flush(ack_tx)).is_err() {
         return false;
     }
-    matches!(tokio::time::timeout(timeout, ack_rx).await, Ok(Ok(())))
+    matches!(
+        kernal_api::async_engine::timeout(timeout, ack_rx).await,
+        Ok(Ok(()))
+    )
 }
 
 pub(super) async fn clear_index_writer(
-    tx: &tokio::sync::mpsc::UnboundedSender<IndexWriterCommand>,
+    tx: &kernal_api::async_engine::UnboundedSender<IndexWriterCommand>,
     timeout: std::time::Duration,
 ) -> bool {
-    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let (ack_tx, ack_rx) = kernal_api::async_engine::oneshot_channel();
     if tx.send(IndexWriterCommand::Clear(ack_tx)).is_err() {
         return false;
     }
-    matches!(tokio::time::timeout(timeout, ack_rx).await, Ok(Ok(())))
+    matches!(
+        kernal_api::async_engine::timeout(timeout, ack_rx).await,
+        Ok(Ok(()))
+    )
 }
 
 pub(super) async fn flush_wal_to_disk(
@@ -380,6 +396,15 @@ pub(super) async fn flush_wal_to_disk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn wal_timer_accepts_a_legacy_long_interval_without_env_mutation() {
+        let mut timer = kernal_api::async_engine::PeriodicTimer::new_unbounded(
+            std::time::Duration::from_secs(366 * 24 * 60 * 60),
+        )
+        .expect("legacy WAL intervals above the policy-bounded timer limit remain valid");
+        timer.set_missed_tick_behavior(kernal_api::async_engine::MissedTickBehavior::Delay);
+    }
 
     #[tokio::test]
     async fn access_touch_merges_into_newest_pending_verdict_row() {

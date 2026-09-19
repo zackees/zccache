@@ -8,10 +8,10 @@ For the protocol message types see [overview.md](overview.md) (section 2.4). For
 
 ## Transport Abstraction
 
-`zccache-platform::ipc` provides one neutral, statically dispatched facade over
-Unix domain sockets and Windows named pipes. Product crates use `Endpoint`,
-`Listener`, `Stream`, `PeerIdentity`, and `connect`; the only host selection is
-the `std::cfg_select!` in `zccache-platform`:
+`kernal-api::platform::ipc` provides the canonical, statically dispatched
+transport primitives over Unix domain sockets and Windows named pipes.
+`zccache-ipc::platform` owns only zccache endpoint spelling and translates that
+product policy to `Endpoint`, `Listener`, `Stream`, `PeerIdentity`, and `connect`:
 
 ```rust
 let endpoint = Endpoint::select(unix_path, windows_pipe_name);
@@ -20,12 +20,12 @@ let client = connect(&endpoint).await?;
 let (server, peer) = listener.accept().await?;
 ```
 
-The facade owns native prefixing, path limits, stale endpoint retirement,
+Kernal-api owns native prefixing, path limits, stale endpoint retirement,
 same-user peer facts, Windows pipe pooling/backoff, and owner-only endpoint
 security. `zccache-ipc` retains product endpoint naming, framing, protocol
-selection, timeouts, broker behavior, and user-facing diagnostics. The facade
-uses concrete stream enums rather than trait objects, so it adds neither a
-handshake nor dynamic dispatch to the request path.
+selection, timeouts, broker behavior, and user-facing diagnostics. The native
+facade uses concrete stream enums rather than trait objects, so it adds neither
+a handshake nor dynamic dispatch to the request path.
 
 ## Socket Discovery
 

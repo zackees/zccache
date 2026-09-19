@@ -116,26 +116,25 @@ fn materialized_executable_runs_while_a_child_is_between_fork_and_exec() {
     // is stretched to 500 ms so the inherited descriptor demonstrably
     // outlives the rename below.
     let spawner = std::thread::spawn(|| {
-        let mut cmd = tokio::process::Command::new("true");
+        let mut cmd = std::process::Command::new("true");
         // SAFETY: the closure only sleeps; it is async-signal-safe enough
         // for a test and touches no locks or allocations.
         unsafe {
-            cmd.as_std_mut().pre_exec(|| {
+            cmd.pre_exec(|| {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 Ok(())
             });
         }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            crate::daemon::process::tokio_leaf_command_output_with_priority(
-                &mut cmd,
-                crate::daemon::process::CompilePriority::Normal,
-            )
-            .await
-        })
+        // The production spawn boundary holds exactly this shared guard
+        // across the native fork/exec through its `SpawnAdmission`
+        // (`process::tests::semantic_session_admission_holds_materialization_lock_through_native_spawn`).
+        // The facade offers no pre-exec seam to stretch that window, so the
+        // same protocol is exercised here on a std spawn.
+        let child = {
+            let _spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
+            cmd.spawn()
+        };
+        child.and_then(std::process::Child::wait_with_output)
     });
     // Give the spawner time to reach the lock (or, without the lock, to
     // fork while the temporary's write descriptor is still open).

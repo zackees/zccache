@@ -131,14 +131,15 @@ pub(super) async fn discover_system_includes(
             if let Some(snapshot) = inserted_snapshot {
                 if state.system_includes_loaded.load(Ordering::Acquire) {
                     let path = state.system_includes_cache_path.clone();
-                    tokio::task::spawn_blocking(move || {
+                    kernal_api::async_engine::launch_blocking(move || {
                         if let Err(e) = snapshot.save_to_disk(path.as_path()) {
                             tracing::warn!(
                                 path = %path.display(),
                                 "system include cache write-through failed: {e}"
                             );
                         }
-                    });
+                    })
+                    .detach();
                 }
             }
             (resolved, empty_discovery)
@@ -287,13 +288,13 @@ async fn run_discovery_command(
     lineage: &crate::daemon::lineage::Lineage,
     compiler_priority: CompilePriority,
 ) -> std::io::Result<std::process::Output> {
-    let mut cmd = tokio::process::Command::new(compiler);
-    cmd.args(args);
-    lineage.apply_to_tokio(&mut cmd, None);
-    crate::daemon::process::tokio_command_output_with_priority_timeout(
-        &mut cmd,
+    let builder = kernal_api::SpawnSpec::new(compiler.as_path()).args(args);
+    let builder = lineage.apply_to_async_builder(builder, None);
+    crate::daemon::process::async_builder_output_with_priority_timeout(
+        builder,
         compiler_priority,
         SYSTEM_INCLUDE_DISCOVERY_TIMEOUT,
+        compiler.display().to_string(),
     )
     .await
 }

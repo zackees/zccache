@@ -1,4 +1,5 @@
-use std::fs::{self, File, OpenOptions};
+use kernal_api::platform::fs::OwnedFileLock;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use crate::download::stable_download_id;
@@ -7,7 +8,10 @@ use super::resolve::ResolvedFetchRequest;
 use super::WaitMode;
 
 pub(super) struct FetchLock {
-    _file: File,
+    // The lock owns the handle: under `fs2` the open `File` *was* the token,
+    // released when it closed. `OwnedFileLock` says that rather than implying
+    // it, and still releases on drop.
+    _lock: OwnedFileLock,
 }
 
 pub(super) fn acquire_fetch_lock(request: &ResolvedFetchRequest) -> Result<FetchLock, String> {
@@ -22,15 +26,14 @@ pub(super) fn acquire_fetch_lock(request: &ResolvedFetchRequest) -> Result<Fetch
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| e.to_string())?;
-    match request.wait_mode {
-        WaitMode::Block => fs2::FileExt::lock_exclusive(&file).map_err(|e| e.to_string())?,
-        WaitMode::NoWait => {
-            if fs2::FileExt::try_lock_exclusive(&file).is_err() {
-                return Err("locked".to_string());
-            }
+    let lock = match request.wait_mode {
+        WaitMode::Block => {
+            kernal_api::platform::fs::lock_exclusive_owned(file).map_err(|e| e.to_string())?
         }
-    }
-    Ok(FetchLock { _file: file })
+        WaitMode::NoWait => kernal_api::platform::fs::try_lock_exclusive_owned(file)
+            .map_err(|_| "locked".to_string())?,
+    };
+    Ok(FetchLock { _lock: lock })
 }
 
 fn fetch_lock_path(request: &ResolvedFetchRequest) -> PathBuf {

@@ -234,8 +234,8 @@ pub(crate) struct StagedProfiler {
     failures: [AtomicU64; FAILURES.len()],
 }
 
-tokio::task_local! {
-    static REQUEST_STAGED_PROFILE: Arc<StagedProfiler>;
+kernal_api::task_local! {
+    static REQUEST_STAGED_PROFILE: Arc<StagedProfiler> = REQUEST_STAGED_PROFILE_TLS;
 }
 
 /// Mirror staged observations made while `future` runs into one request's

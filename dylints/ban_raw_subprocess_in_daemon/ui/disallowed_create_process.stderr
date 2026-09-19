@@ -1,4 +1,4 @@
-error: raw platform process API `CreateProcessW` bypasses running-process; remove the declaration or call and use `running_process::spawn`, `running_process::spawn_tokio`, or `running_process::spawn_daemon*`
+error: raw platform process API `CreateProcessW` bypasses kernal-api; remove the declaration or call a daemon process helper backed by `kernal_api::async_process`
   --> $DIR/disallowed_create_process.rs:1:1
    |
 LL | / extern "C" {
@@ -8,7 +8,7 @@ LL | | }
    |
    = note: `#[deny(ban_raw_subprocess_in_daemon)]` on by default
 
-error: raw platform process API `CreateProcessW` bypasses running-process; remove the declaration or call and use `running_process::spawn`, `running_process::spawn_tokio`, or `running_process::spawn_daemon*`
+error: raw platform process API `CreateProcessW` bypasses kernal-api; remove the declaration or call a daemon process helper backed by `kernal_api::async_process`
   --> $DIR/disallowed_create_process.rs:7:9
    |
 LL |         CreateProcessW();

@@ -75,7 +75,7 @@ async fn a_saturated_compile_gate_reports_queued_then_delivers_the_terminal_resp
     let temp = tempfile::tempdir().expect("temp cache root");
     let endpoint = crate::ipc::unique_test_endpoint();
     let mut server = super::super::tests::bind_isolated_server_at(&endpoint, temp.path());
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let semaphore = Arc::new(kernal_api::async_engine::Semaphore::new(1));
     Arc::get_mut(&mut server.state)
         .expect("test owns the only SharedState reference")
         .compile_concurrency = Some(Arc::clone(&semaphore));

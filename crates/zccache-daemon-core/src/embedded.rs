@@ -1,14 +1,13 @@
 //! First-class in-process zccache service API.
 //!
 //! This module exposes the embedded service contract used by host daemons that
-//! already own a Tokio runtime. The service reuses the daemon compile/session
+//! already own an async runtime. The service reuses the daemon compile/session
 //! machinery directly and does not bind or listen on zccache IPC endpoints.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
-use tokio_util::sync::CancellationToken;
+use kernal_api::async_engine::{CancellationSource, CancellationToken, Semaphore, SemaphorePermit};
 
 use crate::core::NormalizedPath;
 use crate::daemon::server::{
@@ -59,12 +58,12 @@ pub struct ZccacheService {
     /// Service-owned token fired by `shutdown(Force)`. Unlike the optional
     /// host token, this is always present so forced shutdown can abort work
     /// submitted through any cloned handle.
-    force_cancellation: CancellationToken,
+    force_cancellation: CancellationSource,
     /// Fired when any shutdown begins so admission waiters do not outlive the
     /// service. This is intentionally separate from `force_cancellation`:
     /// graceful shutdown rejects queued work without aborting work already in
     /// the daemon engine.
-    admission_shutdown: CancellationToken,
+    admission_shutdown: CancellationSource,
     /// Optional admission gate implementing `max_parallel_compiles`.
     compile_permits: Option<Arc<Semaphore>>,
     /// RAII handle for the optional host-in-flight counter registration
@@ -97,11 +96,13 @@ pub struct ZccacheConfig {
     pub runtime: RuntimeHooks,
     /// Optional cooperative cancellation token (zccache#923).
     ///
-    /// Compile dispatch races the token via `tokio::select!`. If the token is
+    /// Compile dispatch races the token via the canonical ordered race. If the token is
     /// cancelled before a compile finishes, the operation returns
     /// [`EmbeddedError::Cancelled`] and the suspended future is dropped —
-    /// which in turn drops any [`tokio::process::Child`] configured with
-    /// `kill_on_drop(true)`, killing the subprocess. Flush checks for an
+    /// which drops the canonical process session's lifecycle owner and
+    /// requests native child-tree termination and reaping. Cancellation is
+    /// not itself an acknowledgement that native cleanup has completed.
+    /// Flush checks for an
     /// already-cancelled token before entering persistence, but an accepted
     /// flush is owned to completion so cancellation cannot strand a partial
     /// checkpoint.
@@ -169,9 +170,9 @@ impl HostIdentity {
     /// in a host daemon, but the resulting id is less unique. Callers that
     /// want a stronger guarantee should construct `HostIdentity` directly.
     pub fn default_for_product(product: impl Into<String>) -> Self {
-        use blake3::Hasher;
+        use kernal_api::hash::Blake3Hasher;
         let product = product.into();
-        let mut hasher = Hasher::new();
+        let mut hasher = Blake3Hasher::new();
         hasher.update(product.as_bytes());
         hasher.update(b"\0zccache-host-identity-v1\0");
         if let Ok(exe) = crate::platform::executable::current_image() {
@@ -191,28 +192,19 @@ impl HostIdentity {
     }
 }
 
-/// Runtime integration hooks reserved for host-owned Tokio runtimes.
+/// Runtime integration hooks for a host-owned canonical runtime.
 ///
-/// `service_name` is a diagnostic label only — tokio-console uses it to tag
-/// the embedded service's tasks in its display.
-///
-/// `handle` makes the host's tokio runtime explicit. When set, every
-/// long-lived background task the embedded service owns is spawned via
-/// `handle.spawn(…)` rather than `tokio::spawn(…)`. When `None`, tasks
-/// spawn on the ambient runtime — today's behaviour, which works because
-/// `ZccacheService::start` is `async` so it is necessarily called from
-/// inside a runtime, and `tokio::spawn` resolves to that runtime. Setting
-/// `handle` is the contract the embedded-service doc calls for in the
-/// "Sync and Blocking Bridge" section — it lets a host daemon assert "all
-/// my zccache work runs on THIS runtime" rather than relying on the
-/// implicit calling-runtime convention.
+/// `service_name` labels tasks for runtime diagnostics. When `handle` is set,
+/// every embedded background task is launched through it; otherwise launch
+/// resolves against the ambient runtime, preserving the historical behavior.
+/// The explicit handle lets a host keep all zccache work on its chosen runtime.
 ///
 /// (zccache#922 — added in 1.12.12; backward compatible because `handle:
 /// None` exactly matches the prior implicit-runtime behaviour.)
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeHooks {
     pub service_name: Option<String>,
-    pub handle: Option<tokio::runtime::Handle>,
+    pub handle: Option<kernal_api::async_engine::RuntimeHandle>,
 }
 
 /// Optional service limits. `None` means zccache's existing daemon defaults.
@@ -257,7 +249,7 @@ pub struct ServiceLimits {
 /// guard is still usable but carries no semaphore reservation.
 #[must_use = "keep this permit alive while the admitted host work runs"]
 pub struct ExternalWorkPermit {
-    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    _permit: Option<SemaphorePermit>,
 }
 
 /// Optional artifact-store limits for [`ZccacheService::start_with_disk_limits`].
@@ -507,16 +499,16 @@ pub struct ServiceStats {
 }
 
 impl ZccacheService {
-    /// Start an in-process zccache service on the caller's Tokio runtime.
+    /// Start an in-process zccache service on the caller's canonical runtime.
     ///
     /// When `config.runtime.handle` is `Some`, persistent background tasks
     /// owned by the embedded daemon (the artifact-index writer plus memory
     /// and disk maintenance loops) spawn via the supplied
-    /// [`tokio::runtime::Handle`]. When `None`, they spawn on the ambient
+    /// [`kernal_api::async_engine::RuntimeHandle`]. When `None`, they spawn on the ambient
     /// runtime — which works because this function is `async` and therefore
     /// runs inside one. The explicit form is the zccache#922 contract for
     /// host daemons that want to assert all embedded work shares their
-    /// runtime (for tokio-console attach unity, graceful-shutdown signalling,
+    /// runtime (for runtime diagnostics, graceful-shutdown signalling,
     /// and related diagnostics).
     pub async fn start(config: ZccacheConfig) -> Result<Self> {
         Self::start_with_options(config, ZccacheStartOptions::default()).await
@@ -672,9 +664,9 @@ impl ZccacheService {
     /// Honors [`ZccacheConfig::cancellation`] and forced shutdown: if either
     /// cancellation source fires before the compile finishes, the call returns
     /// [`EmbeddedError::Cancelled`] and drops the in-flight compile future.
-    /// The daemon's [`tokio::process::Child`] handles
-    /// use `kill_on_drop(true)`, so the subprocess is reaped as a side
-    /// effect — there is no orphaned `rustc` left behind. Hosts should
+    /// Canonical process sessions use kill-on-drop ownership, requesting
+    /// native termination and reaping when that future is dropped. The
+    /// cancellation result does not wait for a cleanup acknowledgement; hosts should
     /// treat `Cancelled` as terminal (no retry inside the same shutdown).
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse> {
         let mut stdout = Vec::new();
@@ -834,21 +826,22 @@ impl ZccacheService {
         F: FnMut(CompileChunk),
     {
         const CHUNK_BYTES: usize = 64 * 1024;
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        let (sender, mut receiver) = kernal_api::async_engine::channel(8);
         let context = crate::daemon::compile_output::OutputContext::new(sender);
         let compile =
             crate::daemon::compile_output::scope(context.clone(), self.compile_inner(request));
-        tokio::pin!(compile);
+        let mut compile = std::pin::pin!(compile);
 
         let response = loop {
-            tokio::select! {
-                biased;
-                chunk = receiver.recv() => {
+            let chunk = receiver.recv();
+            let mut chunk = std::pin::pin!(chunk);
+            match kernal_api::biased_race!((chunk.as_mut()), (compile.as_mut())).await {
+                kernal_api::async_engine::BiasedRace2::First(chunk) => {
                     if let Some(chunk) = chunk {
                         emit_output_chunk(&mut on_chunk, chunk);
                     }
                 }
-                result = &mut compile => break result?,
+                kernal_api::async_engine::BiasedRace2::Second(result) => break result?,
             }
         };
         while let Ok(chunk) = receiver.try_recv() {

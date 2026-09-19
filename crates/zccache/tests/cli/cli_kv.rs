@@ -63,7 +63,7 @@ fn run_kv(cache_dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> std::process
 }
 
 fn hex_key(seed: &[u8]) -> String {
-    let h = blake3::hash(seed);
+    let h = kernal_api::hash::blake3_bytes(seed);
     let mut out = String::with_capacity(64);
     for b in h.as_bytes() {
         out.push_str(&format!("{b:02x}"));

@@ -294,7 +294,7 @@ pub fn normalize(path: &Path) -> PathBuf {
 #[must_use]
 pub fn normalize_for_key(path: &Path) -> String {
     let normalized = normalize(path);
-    if crate::platform::host::is_linux() {
+    if crate::host::is_linux() {
         // Issue #550: zero-copy `OsString::into_string()` when the path is
         // valid UTF-8 (always true for the C/C++ headers in the hot
         // `compute_artifact_key` loop). Falls back to lossy conversion if
@@ -306,10 +306,8 @@ pub fn normalize_for_key(path: &Path) -> String {
             .into_string()
             .unwrap_or_else(|os| os.to_string_lossy().into_owned())
     } else {
-        let stripped = crate::platform::fs::path::strip_verbatim_prefix(&normalized);
-        crate::platform::fs::path::case_fold(&stripped)
-            .to_string_lossy()
-            .into_owned()
+        let stripped = strip_verbatim_prefix(&normalized);
+        case_fold(&stripped).to_string_lossy().into_owned()
     }
 }
 
@@ -341,7 +339,7 @@ pub fn stable_path_id(path: &Path) -> String {
 /// Already-native paths (e.g., `C:\...`) pass through unchanged.
 #[must_use]
 pub fn normalize_msys_path(path: &str) -> String {
-    match crate::platform::fs::path::from_msys(Path::new(path)) {
+    match from_msys(Path::new(path)) {
         Some(converted) => {
             let mut text = converted.to_string_lossy().into_owned();
             // `from_msys` renders the bare-drive form (`/c`) as `C:\`; the
@@ -352,6 +350,66 @@ pub fn normalize_msys_path(path: &str) -> String {
             text
         }
         None => path.to_string(),
+    }
+}
+
+/// Preserve zccache's Windows verbatim-prefix cache-key convention.
+pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    if !crate::host::is_windows() {
+        return path.to_path_buf();
+    }
+    let text = path.to_string_lossy();
+    if let Some(stripped) = text.strip_prefix(r"\\?\") {
+        let stripped = if let Some(unc) = stripped.strip_prefix("UNC\\") {
+            format!(r"\\{unc}")
+        } else {
+            stripped.to_string()
+        };
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Resolve a compiler path whose leading native root separator was omitted.
+/// Windows drive-relative paths are deliberately ambiguous and return `None`.
+#[must_use]
+pub fn system_root_candidate(path: &Path) -> Option<PathBuf> {
+    match kernal_api::platform::host::process_target().os {
+        "linux" | "macos" => Some(Path::new("/").join(path)),
+        _ => None,
+    }
+}
+
+/// Preserve zccache's target-selected lexical cache-key case convention.
+fn case_fold(path: &Path) -> PathBuf {
+    match kernal_api::platform::host::process_target().os {
+        "windows" => PathBuf::from(
+            path.to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase(),
+        ),
+        "macos" => PathBuf::from(path.to_string_lossy().to_lowercase()),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Preserve the product's MSYS spelling conversion for Windows cache inputs.
+fn from_msys(path: &Path) -> Option<PathBuf> {
+    if !crate::host::is_windows() {
+        return None;
+    }
+    let text = path.to_str()?;
+    let rest = text.strip_prefix('/')?;
+    let mut chars = rest.chars();
+    let drive = chars.next()?.to_ascii_uppercase();
+    let remainder: String = chars.collect();
+    if remainder.is_empty() {
+        Some(PathBuf::from(format!("{drive}:\\")))
+    } else {
+        remainder
+            .strip_prefix('/')
+            .map(|rest| PathBuf::from(format!("{drive}:\\{}", rest.replace('/', "\\"))))
     }
 }
 
@@ -381,7 +439,7 @@ mod tests {
 
     #[test]
     fn normalized_starts_with_accepts_extended_prefix_and_case_variants() {
-        if !crate::platform::host::is_windows() {
+        if !crate::host::is_windows() {
             return;
         }
         let path = NormalizedPath::new(r"C:\Users\Builder\include\vector");
@@ -394,7 +452,7 @@ mod tests {
 
     #[test]
     fn normalized_starts_with_accepts_macos_case_variants() {
-        if !crate::platform::host::is_macos() {
+        if !crate::host::is_macos() {
             return;
         }
         let path = NormalizedPath::new("/private/var/folders/T/include/vector");
@@ -419,7 +477,7 @@ mod tests {
 
     #[test]
     fn normalize_for_key_windows_equivalent_spellings_match() {
-        if !crate::platform::host::is_windows() {
+        if !crate::host::is_windows() {
             return;
         }
         let a = normalize_for_key(Path::new(r"\\?\C:\Work\src\..\src\main.cpp"));
@@ -430,7 +488,7 @@ mod tests {
     #[test]
     fn msys_path_drive_letter() {
         let result = normalize_msys_path("/c/Users/foo/bar");
-        if crate::platform::host::is_windows() {
+        if crate::host::is_windows() {
             assert_eq!(result, r"C:\Users\foo\bar");
         } else {
             assert_eq!(result, "/c/Users/foo/bar");
@@ -440,7 +498,7 @@ mod tests {
     #[test]
     fn msys_path_uppercase_drive() {
         let result = normalize_msys_path("/D/project/build");
-        if crate::platform::host::is_windows() {
+        if crate::host::is_windows() {
             assert_eq!(result, r"D:\project\build");
         } else {
             assert_eq!(result, "/D/project/build");
@@ -450,7 +508,7 @@ mod tests {
     #[test]
     fn msys_path_bare_drive() {
         let result = normalize_msys_path("/c");
-        if crate::platform::host::is_windows() {
+        if crate::host::is_windows() {
             assert_eq!(result, "C:");
         } else {
             assert_eq!(result, "/c");
@@ -575,6 +633,18 @@ mod tests {
                 Some(i),
                 "DashMap::get must find entry for equivalent NormalizedPath",
             );
+        }
+    }
+
+    #[test]
+    fn system_root_candidate_preserves_the_product_root_policy() {
+        let path = Path::new("sdk/header.h");
+        match kernal_api::platform::host::process_target().os {
+            "linux" | "macos" => assert_eq!(
+                system_root_candidate(path),
+                Some(PathBuf::from("/").join(path))
+            ),
+            _ => assert_eq!(system_root_candidate(path), None),
         }
     }
 }

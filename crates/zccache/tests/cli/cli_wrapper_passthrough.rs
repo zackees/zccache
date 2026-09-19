@@ -14,7 +14,7 @@
 //! `cmd_compile` (with one). Wrapping a non-compiler binary forces the
 //! daemon's `run_compiler_direct` path, which is also the path that
 //! exercises the stdin pipe (see `crates/zccache-daemon/src/server.rs`
-//! `run_compiler_direct` and `process::tokio_command_output_with_priority_stdin`).
+//! `run_compiler_direct` and `process::async_builder_output_with_priority_stdin`).
 //!
 //! Marked `#[ignore]` so the unit-test pass stays sub-second; the
 //! `./test --integration` and `./test --full` runners pick this up.

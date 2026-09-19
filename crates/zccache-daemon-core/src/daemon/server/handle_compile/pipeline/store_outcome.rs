@@ -86,7 +86,7 @@ async fn collect_compile_outputs_blocking(
     cwd_path: NormalizedPath,
     staged_output_paths: Option<Vec<NormalizedPath>>,
 ) -> std::io::Result<CompileOutputCollection> {
-    tokio::task::spawn_blocking(move || {
+    kernal_api::async_engine::launch_blocking(move || {
         if is_rustc {
             let Some(rustc_args) = rustc_args else {
                 return Err(std::io::Error::new(
@@ -124,6 +124,7 @@ async fn collect_compile_outputs_blocking(
             std::fs::read(&output_path).map(CompileOutputCollection::Bytes)
         }
     })
+    .detach_on_drop()
     .await
     .map_err(|e| std::io::Error::other(format!("compile output worker failed: {e}")))?
 }

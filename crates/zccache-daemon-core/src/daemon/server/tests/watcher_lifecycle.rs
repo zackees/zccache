@@ -143,7 +143,7 @@ async fn a_watcher_consumer_that_stops_before_shutdown_degrades_the_daemon() {
     // Dropping the raw sender ends the settle task, which drops the settled
     // sender, which ends the consumer — the same shape as the consumer dying,
     // without needing to induce a panic inside tokio.
-    let (raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (raw_tx, raw_rx) = kernal_api::async_engine::unbounded_channel();
     start_watcher_tasks(&state, raw_rx);
     drop(raw_tx);
 

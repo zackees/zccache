@@ -26,9 +26,12 @@ mod download_ipc;
 pub use zccache_gha as gha;
 pub use zccache_hash as hash;
 pub use zccache_ipc as ipc;
-// The facade is consumed only by feature-gated CLI/download modules.
-#[allow(unused_imports)]
-pub(crate) use zccache_platform as platform;
+// Local product policy plus canonical kernal-api capability aliases used by
+// feature-gated CLI/download modules. This replaces the former external
+// former standalone platform boundary; no native dependency or copied
+// capability type lives here.
+// here.
+pub(crate) mod platform;
 pub use zccache_protocol as protocol;
 #[cfg(feature = "symbols")]
 pub use zccache_symbols as symbols;

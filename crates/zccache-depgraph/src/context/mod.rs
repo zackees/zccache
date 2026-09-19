@@ -287,7 +287,7 @@ pub fn compute_context_key_with_native_cpu_salt<F>(
 where
     F: FnMut(&Path, Option<&Path>) -> Arc<str>,
 {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
 
     hasher.update(b"zccache-context-key-v1\0");
 
@@ -558,7 +558,7 @@ impl RustcCompileContext {
         key_root: Option<&Path>,
         native_cpu_salt: Option<&str>,
     ) -> ContextKey {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = kernal_api::hash::Blake3Hasher::new();
 
         hasher.update(b"zccache-rustc-context-key-v4\0");
 
@@ -775,7 +775,7 @@ impl RustcCompileContext {
             return None;
         }
 
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = kernal_api::hash::Blake3Hasher::new();
         hasher.update(b"zccache-rustc-check-metadata-compat-key-v1\0");
 
         // Unconditional (non-Option field, issue #1166) — see

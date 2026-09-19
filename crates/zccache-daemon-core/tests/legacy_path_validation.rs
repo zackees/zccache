@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 use zccache_daemon_core::artifact::{
     resolve_artifact_payloads, ResolvedArtifactPayload, LEGACY_PATH_VALIDATE_ENV,
 };
@@ -73,8 +71,8 @@ impl Drop for EnvGuard {
 
 struct Daemon {
     client: IpcConnection,
-    task: JoinHandle<()>,
-    shutdown: Arc<Notify>,
+    task: kernal_api::async_engine::Task<()>,
+    shutdown: Arc<kernal_api::async_engine::Notify>,
 }
 
 impl Daemon {
@@ -108,7 +106,7 @@ impl Daemon {
             server.set_dep_graph(graph);
         }
         let shutdown = server.shutdown_handle();
-        let task = tokio::spawn(async move {
+        let task = kernal_api::async_engine::launch(async move {
             server.run(0).await.expect("run daemon");
         });
         let client = zccache_daemon_core::ipc::connect(&endpoint)

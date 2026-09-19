@@ -96,8 +96,9 @@ fn session_phase_profile(
 /// Returns `Some((response, journal_ctx))` when the handler finished first, or
 /// `None` when the client disconnected while the handler was still running — in
 /// which case the handler future has already been dropped, which drops the
-/// daemon-owned compiler [`tokio::process::Child`] (spawned `kill_on_drop(true)`)
-/// and reaps the subprocess and its compile-concurrency permit.
+/// canonical compiler-session lifecycle owner (configured kill-on-drop),
+/// requests native termination/reaping, and releases its compile-concurrency
+/// permit. Returning `None` does not certify that asynchronous cleanup finished.
 ///
 /// Before this guard existed, the daemon parked inside the compile/link await
 /// and never read the socket again, so a client that gave up (its 600 s recv
@@ -120,10 +121,12 @@ pub(in crate::daemon::server) async fn guarded_dispatch<F>(
 where
     F: std::future::Future<Output = (Response, Option<PendingJournalContext>)>,
 {
-    tokio::select! {
-        biased;
-        out = handler => Some(out),
-        () = conn.wait_for_disconnect() => None,
+    let mut handler = std::pin::pin!(handler);
+    let disconnect = conn.wait_for_disconnect();
+    let mut disconnect = std::pin::pin!(disconnect);
+    match kernal_api::biased_race!((handler.as_mut()), (disconnect.as_mut())).await {
+        kernal_api::async_engine::BiasedRace2::First(out) => Some(out),
+        kernal_api::async_engine::BiasedRace2::Second(()) => None,
     }
 }
 
@@ -224,17 +227,25 @@ where
     let slot = Arc::new(super::compile_progress::CompileProgressSlot::default());
     let handler = super::compile_progress::scope(Arc::clone(&slot), handler);
     let mut handler = std::pin::pin!(handler);
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut ticker = kernal_api::async_engine::PeriodicTimer::new_unbounded(interval)
+        .expect("compile-progress interval must fit the runtime timer");
+    ticker.set_missed_tick_behavior(kernal_api::async_engine::MissedTickBehavior::Delay);
     // `interval` fires immediately on first tick; burn it so the first
     // heartbeat lands one full interval into the compile rather than at t=0.
     ticker.tick().await;
     loop {
-        tokio::select! {
-            biased;
-            out = &mut handler => return Some(out),
-            () = conn.wait_for_disconnect() => return None,
-            _ = ticker.tick() => {}
+        let winner = {
+            let disconnect = conn.wait_for_disconnect();
+            let tick = ticker.tick();
+            let mut disconnect = std::pin::pin!(disconnect);
+            let mut tick = std::pin::pin!(tick);
+            kernal_api::biased_race!((handler.as_mut()), (disconnect.as_mut()), (tick.as_mut()),)
+                .await
+        };
+        match winner {
+            kernal_api::async_engine::BiasedRace3::First(out) => return Some(out),
+            kernal_api::async_engine::BiasedRace3::Second(()) => return None,
+            kernal_api::async_engine::BiasedRace3::Third(()) => {}
         }
         // Borrow of `conn` from the `select!` above has ended here.
         let progress = super::compile_progress::progress_response(&slot, &state.compile_queue);
@@ -304,7 +315,7 @@ pub(super) async fn handle_connection(
     state: Arc<SharedState>,
 ) -> Result<(), crate::ipc::IpcError> {
     if conn
-        .try_serve_backend_handle_probe(&state.backend_identity)
+        .try_serve_backend_handle_probe(&state.backend_probe)
         .await?
     {
         state.last_activity.store(now_secs(), Ordering::Relaxed);

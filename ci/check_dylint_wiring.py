@@ -25,7 +25,7 @@ def check_platform_baseline(root: Path, path: Path) -> list[str]:
     """Validate enforce_platform_boundary's exact-occurrence baseline.
 
     Each row is `path<TAB>kind<TAB>normalized<TAB>ordinal`. Rows must point at
-    existing production sources (never the platform crate's allowed zones or
+    existing production sources (never an approved adapter zone or
     test trees), must be unique, and ordinals must be contiguous from zero
     per (path, kind, normalized) group. The header's total must match.
     """
@@ -59,7 +59,12 @@ def check_platform_baseline(root: Path, path: Path) -> list[str]:
         target = root / file_path
         if not target.is_file():
             errors.append(f"stale platform-boundary baseline path: {file_path}")
-        if file_path.startswith("crates/zccache-platform/src/"):
+        if file_path in {
+            "crates/zccache-ipc/src/platform.rs",
+            "crates/zccache-daemon-core/src/platform.rs",
+            "crates/zccache-cli-core/src/platform.rs",
+            "crates/zccache/src/platform.rs",
+        }:
             errors.append(
                 f"platform baseline entry in an allowed zone: {file_path}"
             )

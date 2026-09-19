@@ -59,20 +59,23 @@ download-protocol = ["download", "dep:zccache-download-protocol"]
 gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
-heap-profile = ["dep:mimalloc-pprof"]
+heap-profile = ["kernal-api/allocator"]
 # Re-export `mimalloc_pprof` so an embedding host (soldr) can use it as its
 # `#[global_allocator]` without adding a separate, version-drifted
 # `mimalloc-pprof` pin of its own (soldr#3053). The dependency carries default
 # features, i.e. mimalloc-pprof's `pprof` (`MI_PPROF=1`) is on, so the
-# re-exported `MiMalloc` exposes the exact allocator counters.
+# re-exported `MiMalloc` exposes the exact allocator counters. soldr reads
+# `prof::stats()` / `prof::dump_file`, which `kernal_api::allocator` does not
+# expose, so this one feature still names the crate directly; its pin matches
+# kernal-api's own `mimalloc-pprof` pin so both resolve to one allocator.
 mimalloc-allocator = ["dep:mimalloc-pprof"]
 # The release binary hosts both daemons behind argv[0] dispatch. The legacy
 # daemon [[bin]] features remain available as source-build/test shims.
-zccache-bin = ["cli", "download-daemon-entry", "dep:mimalloc-pprof"]
-daemon-bin = ["daemon-entry", "symbols", "dep:mimalloc-pprof"]
-download-bin = ["dep:clap", "dep:mimalloc-pprof", "download-client"]
-download-daemon-bin = ["dep:mimalloc-pprof", "download-daemon-entry"]
-fingerprint-bin = ["dep:clap", "dep:mimalloc-pprof"]
+zccache-bin = ["cli", "download-daemon-entry", "kernal-api/allocator"]
+daemon-bin = ["daemon-entry", "symbols", "kernal-api/allocator"]
+download-bin = ["dep:clap", "kernal-api/allocator", "download-client"]
+download-daemon-bin = ["kernal-api/allocator", "download-daemon-entry"]
+fingerprint-bin = ["dep:clap", "kernal-api/allocator"]
 stamp-bin = ["symbols"]
 ci-bin = ["ci", "dep:md5"]
 crash-tools = ["dep:sadness-generator"]
@@ -94,7 +97,6 @@ zccache-fscache = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
 zccache-ipc = { workspace = true }
-zccache-platform = { workspace = true }
 zccache-protocol = { workspace = true }
 zccache-symbols = { workspace = true, optional = true }
 zccache-watcher = { workspace = true }
@@ -104,11 +106,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-crash-handler = "0.7"
 
 # hash
-blake3 = { workspace = true }
-memmap2 = { workspace = true }
 
 # gha
 reqwest = { workspace = true, features = ["json"], optional = true }
@@ -139,9 +138,6 @@ rayon = { workspace = true }
 tempfile = { workspace = true }
 
 # watcher
-notify = { workspace = true }
-jwalk = { workspace = true }
-globset = "0.4"
 
 # compiler
 clang = { workspace = true }
@@ -153,7 +149,6 @@ uuid = { version = "1", features = ["v4"] }
 
 # fingerprint
 clap = { workspace = true, optional = true }
-fs2 = { workspace = true }
 
 # exec (issue #272): regex compiles `--key-args-filter` patterns
 regex = { workspace = true }
@@ -161,7 +156,6 @@ regex = { workspace = true }
 # download stack. These remain declared here because the crates.io release
 # amalgamates zccache-cli-core into this public crate.
 futures = { workspace = true, optional = true }
-tokio-util = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 zip = { workspace = true, optional = true }
@@ -170,17 +164,12 @@ lzma-rs = { workspace = true, optional = true }
 sevenz-rust = { workspace = true, optional = true }
 
 # daemon
-running-process = { workspace = true }
 # Slice 11 of #782: promote `interprocess` from dev-dependencies to a
 # regular dependency so `ipc::broker_v2::probe_local_socket` can use
 # the local-socket Stream::connect primitive without pulling
-# `running_process::broker::client::connect_local_socket` (the v1 path).
+# `kernal_api::broker::client::connect_local_socket` (the v1 path).
 # The version is already locked transitively via running-process; making
 # it explicit in [dependencies] does not add a new resolved crate.
-interprocess = "2.4.2"
-filetime = { workspace = true }
-reflink-copy = { workspace = true }
-sysinfo = "0.30.13"
 sadness-generator = { version = "0.6", optional = true }
 
 # ci
@@ -190,16 +179,32 @@ wait-timeout = { version = "0.2", optional = true }
 # shared: used by test_support, download-daemon bin, etc.
 tracing-subscriber = { workspace = true, optional = true }
 
-# Global allocator on every target. mimalloc-pprof vendors mimalloc and is
-# pure C with no autotools step, so it cross-compiles cleanly in every
-# direction. tikv-jemalloc
-# was the previous choice on unix but its bundled autoconf invokes a
-# hidden `$(CC) -MM` dep-tracking pass that silently drops the
-# `--sysroot` flag — broke Linux->*-apple-darwin (and would equally
-# break Windows->Linux); see tikv/jemallocator#170. Using one allocator
-# everywhere also removes a per-platform variable from perf analysis. The
-# profiler stays dormant unless explicitly enabled by API or environment.
-mimalloc-pprof = { workspace = true, optional = true }
+# Global allocator on every target, now owned by the shared facade
+# (kernal-api#71). `kernal_api::allocator::Allocator` is the one allocator
+# type and dump implementation; this crate no longer names mimalloc.
+#
+# The reasoning that selected mimalloc is preserved because it is still the
+# constraint the facade satisfies: it vendors mimalloc and is pure C with no
+# autotools step, so it cross-compiles cleanly in every direction.
+# tikv-jemalloc was the previous choice on unix but its bundled autoconf
+# invokes a hidden `$(CC) -MM` dep-tracking pass that silently drops the
+# `--sysroot` flag — broke Linux->*-apple-darwin (and would equally break
+# Windows->Linux); see tikv/jemallocator#170. Using one allocator everywhere
+# also removes a per-platform variable from perf analysis. The profiler stays
+# dormant unless explicitly enabled by API or environment.
+#
+# The #1439 floor moves with the pin rather than being lost: mimalloc-pprof
+# before 0.9.3 compiles the vendored amalgamation with MSVC's deprecated
+# C-mode Interlocked atomics wrapper, whose `_acq`/`_rel` ARM64 intrinsics
+# clang-cl does not declare, so the cargo-xwin `aarch64-pc-windows-msvc`
+# release lane cannot build them. That choice is package-scoped, so it can
+# only be made by whoever declares the dependency -- which is now kernal-api,
+# and it pins `=0.9.4`. If that pin ever regresses below 0.9.3 the aarch64
+# Windows release lane breaks here, so it is a facade-side constraint now.
+kernal-api = { workspace = true, features = ["fs", "ipc", "daemon-identity"] }
+# Only for the `mimalloc-allocator` re-export (soldr#3053); pinned to the same
+# exact version kernal-api declares so the graph holds one mimalloc.
+mimalloc-pprof = { version = "=0.9.4", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

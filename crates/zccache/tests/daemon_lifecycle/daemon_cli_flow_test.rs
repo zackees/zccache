@@ -75,7 +75,7 @@ async fn start_daemon(
 ) -> (
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<kernal_api::async_engine::Notify>,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
     let cache_dir: zccache::core::NormalizedPath = cache_root.join("zccache-cache").into();

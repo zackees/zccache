@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-zccache is a local-first compiler cache (24 crates) for C/C++/Rust/Emscripten, inspired by sccache but optimized for warm-hit latency. Architecture: a persistent `zccache-daemon` holds an in-memory metadata cache and a filesystem watcher; the `zccache` CLI shells out per compile but talks to the daemon over a single length-prefixed IPC roundtrip (Unix sockets / Windows named pipes via `zccache-ipc`). Message bodies are **prost**; unset or `auto` resolves to `ProstV16`, while legacy bincode values are unsupported (#840). The shipped `zccache` binary is a multi-call binary defined in `crates/zccache`; `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`, and the CLI subcommand surface lives in `zccache-cli-core`. The daemon is lazily started by the CLI when not running. See @docs/CLAUDE.md for which architecture doc to read based on what you're working on, and where to document new features.
+zccache is a local-first compiler cache (23 crates) for C/C++/Rust/Emscripten, inspired by sccache but optimized for warm-hit latency. Architecture: a persistent `zccache-daemon` holds an in-memory metadata cache and a filesystem watcher; the `zccache` CLI shells out per compile but talks to the daemon over a single length-prefixed IPC roundtrip (Unix sockets / Windows named pipes via `zccache-ipc`). Message bodies are **prost**; unset or `auto` resolves to `ProstV16`, while legacy bincode values are unsupported (#840). The shipped `zccache` binary is a multi-call binary defined in `crates/zccache`; `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`, and the CLI subcommand surface lives in `zccache-cli-core`. The daemon is lazily started by the CLI when not running. See @docs/CLAUDE.md for which architecture doc to read based on what you're working on, and where to document new features.
 
 > [!IMPORTANT]
 > ## Performance work → read [PERF.md](PERF.md) FIRST
@@ -50,6 +50,32 @@ RUSTDOCFLAGS="-D warnings" soldr cargo doc --workspace --no-deps
 soldr cargo bench -p zccache            # criterion benches live in crates/zccache/benches/
 ./perf.sh                   # performance benchmark (zccache vs sccache vs bare clang)
 ```
+
+## Temporary dependent subgit integration
+
+When a cross-repository migration needs an unreleased dependency capability,
+keep the editable dependency as a nested git checkout at
+`_vender/<dependency>/`; do not copy its source into this repository and do
+not leave a host-specific absolute path in a release branch.
+
+1. Ask the coordinating owner before creating or repointing the checkout, so
+   every consumer resolves the same edited source.
+2. Clone the dependency into `_vender/<dependency>/` as its own git worktree
+   on the producer's migration branch. Keep its origin and branch visible in
+   that checkout; zccache does not commit the dependency's source changes.
+3. During integration only, add a root `[patch]` or exact workspace dependency
+   path that resolves the named package from `_vender/<dependency>/...`.
+   Enable only the capability features the migrated call sites use.
+4. Record the required producer revision and the temporary override in the
+   migration handoff. Make contract tests cover the frozen product behavior
+   before changing a facade call site.
+5. Before a zccache release branch, remove every local path/patch override,
+   replace it with the producer's exact published version, regenerate the
+   lockfile through the normal validation pass, and verify no `_vender` path
+   remains in manifests or the resolved release package.
+
+`_vender` is intentionally spelled this way for migration tooling. It is a
+temporary integration boundary, not a vendored-source ownership transfer.
 
 See [PERF.md](PERF.md) for the scenario-driven local Docker gate (cold-tar-untar-warm and friends).
 

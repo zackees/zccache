@@ -25,7 +25,7 @@ type ClientConn = zccache::ipc::IpcClientConnection;
 async fn start_daemon() -> (
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<kernal_api::async_engine::Notify>,
 ) {
     let endpoint = zccache::ipc::unique_test_endpoint();
     let mut server = DaemonServer::bind(&endpoint).unwrap();
@@ -42,7 +42,7 @@ async fn start_daemon() -> (
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // integration-level: starts a real daemon and compiler
 async fn test_packed_linux_dwarf_sidecar_cached() {
-    if !zccache::platform::host::is_linux() {
+    if !kernal_api::platform::host::target_is_linux() {
         return;
     }
     let compiler = match zccache::test_support::find_rustc() {

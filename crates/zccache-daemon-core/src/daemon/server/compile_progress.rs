@@ -1,7 +1,7 @@
 //! Issue #1216 — compile-queue visibility.
 //!
 //! Under contention a `Compile` request can sit for minutes inside
-//! `Semaphore::acquire_owned().await` (see
+//! `kernal_api::async_engine::Semaphore::acquire().await` (see
 //! [`super::compile_concurrency`]). Before this module that wait was
 //! completely silent: the wrapper did exactly one blocking `recv` with a
 //! 180 s wedge budget, so a legitimately-queued compile was
@@ -12,7 +12,7 @@
 //! Two pieces live here:
 //!
 //! - [`CompileQueueGauge`] — the daemon-global counters the semaphore
-//!   itself cannot report. `tokio::sync::Semaphore` exposes
+//!   itself cannot report. The kernel-owned semaphore exposes
 //!   `available_permits()` but no waiter count, and the initial capacity is
 //!   unrecoverable once permits are handed out. Every gated compile
 //!   registers via [`CompileQueueGauge::enqueue`] and calls
@@ -29,7 +29,7 @@
 //! the only place holding the `IpcConnection`. The queue ticket, however, is
 //! only known deep inside the compile pipeline. The compile handler is
 //! `await`ed inline by `guarded_dispatch` — never spawned — so both ends run
-//! on the same tokio task and a task-local scoped around the handler
+//! on the same async task and a task-local scoped around the handler
 //! future reaches the acquire site without touching five function
 //! signatures. If the ticket is ever taken on a *different* task the
 //! task-local lookup simply misses and the heartbeat reports position 0 —
@@ -39,7 +39,7 @@
 //!
 //! Tickets are monotonic and `admitted` counts how many tickets have left
 //! the queue (granted a permit, or cancelled — a cancelled waiter still
-//! advances the cursor so the requests behind it do not stall). tokio's
+//! advances the cursor so the requests behind it do not stall). The
 //! semaphore is FIFO-fair, so `ticket - admitted` is the number of compiles
 //! still ahead of this one.
 
@@ -121,7 +121,7 @@ pub(in crate::daemon) struct CompileQueueGuard {
 /// the diagnostic gauge, matching the inline production sequence this type
 /// replaces.
 pub(in crate::daemon) struct CompileGateGuard {
-    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    _permit: Option<kernal_api::async_engine::SemaphorePermit>,
     _queue_guard: CompileQueueGuard,
 }
 
@@ -130,16 +130,13 @@ pub(in crate::daemon) struct CompileGateGuard {
 /// Returns the available-permit count sampled before waiting so the existing
 /// `compile_start` diagnostic can retain its exact payload.
 pub(in crate::daemon) async fn acquire_compile_gate(
-    semaphore: Option<&Arc<tokio::sync::Semaphore>>,
+    semaphore: Option<&Arc<kernal_api::async_engine::Semaphore>>,
     gauge: &Arc<CompileQueueGauge>,
 ) -> (CompileGateGuard, Option<usize>) {
     let mut queue_guard = gauge.enqueue();
     let (permit, available_before) = if let Some(semaphore) = semaphore {
         let available_before = semaphore.available_permits();
-        let permit = Arc::clone(semaphore)
-            .acquire_owned()
-            .await
-            .expect("compile concurrency semaphore must remain open");
+        let permit = semaphore.acquire().await;
         (Some(permit), Some(available_before))
     } else {
         (None, None)
@@ -241,8 +238,8 @@ pub(in crate::daemon) fn progress_response(
     }
 }
 
-tokio::task_local! {
-    static PROGRESS_SLOT: Arc<CompileProgressSlot>;
+kernal_api::task_local! {
+    static PROGRESS_SLOT: Arc<CompileProgressSlot> = PROGRESS_SLOT_TLS;
 }
 
 /// Run `future` with `slot` installed as the current request's progress slot.

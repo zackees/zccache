@@ -1,6 +1,6 @@
 # Crates Architecture
 
-24 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
+23 crates split into two product surfaces: the **compile cache** and a separate **download cache**, plus utility binaries (`zccache-fp`, `zccache-stamp`) and one CI lib (`zccache-ci`).
 
 > [!NOTE]
 > **Binary layout (#997–#1000).** Release archives and wheels ship `zccache` plus the intentionally separate `zccache-fp`. `zccache` is a **multi-call binary**: copies named `zccache-daemon` and `zccache-download-daemon` dispatch to their respective daemon entry points. Both daemons are self-deployed beneath `~/.zccache/v<VERSION>/`; their legacy `[[bin]]` targets remain buildable as transitional source/test shims but are not distribution artifacts. `crates/zccache-cli` is **not** the CLI — it is the PyO3 `cdylib` hosting `zccache._native`. See [docs/architecture/runtime.md § Standalone daemon identity, deployment & lifecycle](../docs/architecture/runtime.md#standalone-daemon-identity-deployment--lifecycle).
@@ -45,8 +45,7 @@ zccache-fingerprint ── hash, core
 zccache-protocol ──── core
 zccache-ipc ──────── protocol, core
                                                       │
-zccache-platform ── (dependency leaf: no zccache-* deps;
-                      host mechanics behind neutral facades)
+kernal-api ──────── (canonical host mechanics; product adapters stay local)
                                                       │
 DOWNLOAD-CACHE SUBSYSTEM LIBS                         │
 ─────────────────────────────                         │
@@ -73,7 +72,10 @@ zccache-test-support (dev-only test utilities)
 ### Shared foundations
 - **zccache-core** — Shared error types (`Error`/`Result`), `Config`, `NormalizedPath` for cross-platform path handling
 - **zccache-hash** — `ContentHash` (blake3), `CacheKeyBuilder` with domain-separated deterministic hashing
-- **zccache-platform** — Dependency-leaf crate for host-platform mechanics (#1365): one `cfg_select!` host selector in its `lib.rs` and five neutral facades (`process`, `fs`, `ipc`, `executable`, `host`). Every consuming crate aliases it as `crate::platform`; concrete `platform_{win,linux,macos}` trees are private. Never depends on a zccache crate and never contains product types. Amalgamated as a private `platform` module of the published `zccache` crate.
+- **kernal-api adapters** — `kernal-api` owns native host mechanics. Private
+  `platform.rs` modules in IPC, daemon-core, and CLI-core contain only
+  zccache-specific policy and delegate native operations to the canonical
+  dependency. They are not a public zccache platform API.
 
 ### Compile-cache subsystem libs
 - **zccache-protocol** — `Request`/`Response` enums, `ArtifactData`, length-prefixed prost framing; bump `PROTOCOL_VERSION` on any wire-format change

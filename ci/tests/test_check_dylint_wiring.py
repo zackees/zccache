@@ -101,7 +101,7 @@ def test_platform_baseline_rejects_stale_paths_and_zones(tmp_path: Path) -> None
         tmp_path,
         "# total = 3\n"
         "crates/gone/src/lib.rs\tattr_cfg\twindows\t0\n"
-        "crates/zccache-platform/src/lib.rs\tattr_cfg\twindows\t0\n"
+        "crates/zccache-ipc/src/platform.rs\tattr_cfg\twindows\t0\n"
         "crates/zccache-ipc/src/tests/x.rs\tattr_cfg\twindows\t0\n",
     )
 

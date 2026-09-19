@@ -26,7 +26,7 @@ where
         return Ok(None);
     }
 
-    let hash = blake3::Hash::from_bytes(hash_current_exe()?);
+    let hash = kernal_api::hash::Blake3Digest::from_bytes(hash_current_exe()?);
     let hex = hash.to_hex();
     let hash_prefix = &hex.as_str()[..HASH_PREFIX_BYTES * 2];
     Ok(Some(format!("{}-{hash_prefix}", crate::core::VERSION)))
@@ -45,7 +45,7 @@ pub fn initialize() -> io::Result<()> {
         return Ok(());
     }
 
-    let current_exe = crate::platform::executable::current_image().map_err(|error| {
+    let current_exe = kernal_api::platform::executable::current_image().map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("cannot locate the development zccache executable: {error}"),
@@ -53,11 +53,11 @@ pub fn initialize() -> io::Result<()> {
     })?;
     let release_build = crate::symbols::read_marker_from_path(&current_exe).is_some();
     let namespace = namespace_for_process(inherited, release_build, || {
-        running_process::blake3_file(&current_exe)
+        kernal_api::hash::blake3_file(&current_exe, kernal_api::hash::Blake3ReadOptions::new())
             .map(|hash| *hash.as_bytes())
             .map_err(|error| {
                 io::Error::new(
-                    error.kind(),
+                    error.io_error_kind().unwrap_or(io::ErrorKind::Other),
                     format!(
                         "cannot hash development zccache executable {}: {error}",
                         current_exe.display()

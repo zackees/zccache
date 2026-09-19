@@ -38,7 +38,8 @@ fn zccache_bin() -> NormalizedPath {
 }
 
 fn expected_dev_namespace(bin: &Path) -> String {
-    let hash = running_process::blake3_file(bin).expect("hash development zccache binary");
+    let hash = kernal_api::hash::blake3_file(bin, kernal_api::hash::Blake3ReadOptions::new())
+        .expect("hash development zccache binary");
     format!(
         "{}-{}",
         zccache::core::VERSION,

@@ -155,9 +155,9 @@ mod cancellation_tests {
     //! only when cancellation is already latched before persistence begins.
 
     use super::*;
+    use kernal_api::async_engine::{CancellationSource, CancellationToken};
     use std::path::PathBuf;
     use tempfile::TempDir;
-    use tokio_util::sync::CancellationToken;
 
     fn fake_compile_request() -> CompileRequest {
         // Compiler path that does not exist on disk — the embedded
@@ -213,9 +213,9 @@ mod cancellation_tests {
         // soldr's request handler can short-circuit" — is exactly this
         // path.
         let temp = TempDir::new().expect("temp cache root");
-        let token = CancellationToken::new();
-        token.cancel();
-        let service = start_service_with_token(&temp, Some(token), "precancel")
+        let cancellation = CancellationSource::new();
+        cancellation.cancel();
+        let service = start_service_with_token(&temp, Some(cancellation.token()), "precancel")
             .await
             .expect("service start");
 
@@ -235,8 +235,8 @@ mod cancellation_tests {
     async fn token_fired_during_compile_returns_cancelled() {
         // Mid-flight cancellation: the compile begins (the inner
         // EmbeddedDaemon::compile future is polled at least once) and
-        // the token fires while it's in flight. The `tokio::select!`
-        // race must win for the cancel branch.
+        // the token fires while it's in flight. The ordered race must win for
+        // the cancel branch.
         //
         // We use a token that is cancelled by a sibling task with a
         // very short delay so the compile future is guaranteed to have
@@ -244,9 +244,9 @@ mod cancellation_tests {
         // path is non-existent so the compile would otherwise fail
         // with a Compile error after spawn — we want Cancelled instead.
         let temp = TempDir::new().expect("temp cache root");
-        let token = CancellationToken::new();
-        let token_clone = token.clone();
-        let service = start_service_with_token(&temp, Some(token), "midflight")
+        let cancellation = CancellationSource::new();
+        let cancellation_clone = cancellation.clone();
+        let service = start_service_with_token(&temp, Some(cancellation.token()), "midflight")
             .await
             .expect("service start");
 
@@ -255,7 +255,7 @@ mod cancellation_tests {
             // 10 ms is a generous floor on Windows scheduling jitter
             // while still being a snappy test.
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            token_clone.cancel();
+            cancellation_clone.cancel();
         });
 
         let outcome = service.compile(fake_compile_request()).await;
@@ -304,9 +304,9 @@ mod cancellation_tests {
         // A pre-cancelled token is safe to honor because no persistence worker
         // has started. Once a flush begins, it remains owned to quiescence.
         let temp = TempDir::new().expect("temp cache root");
-        let token = CancellationToken::new();
-        token.cancel();
-        let service = start_service_with_token(&temp, Some(token), "flush-cancel")
+        let cancellation = CancellationSource::new();
+        cancellation.cancel();
+        let service = start_service_with_token(&temp, Some(cancellation.token()), "flush-cancel")
             .await
             .expect("service start");
 
@@ -394,7 +394,10 @@ mod runtime_hooks_tests {
             .thread_name("host-runtime-worker")
             .build()
             .expect("failed to build host runtime");
-        let host_handle = host_rt.handle().clone();
+        let host_handle = host_rt.block_on(async {
+            kernal_api::async_engine::RuntimeHandle::current()
+                .expect("host runtime must expose a canonical handle")
+        });
 
         // Sentinel: a thread-local-style atomic that increments when a
         // task observes it's on the host runtime.
@@ -439,7 +442,7 @@ mod runtime_hooks_tests {
         // can observe the worker's thread name — this proves the handle
         // we passed in is the one running our work.
         let landed_clone2 = Arc::clone(&landed_clone);
-        let probe = host_handle.spawn(async move {
+        let probe = host_handle.launch(async move {
             if std::thread::current()
                 .name()
                 .map(|n| n.starts_with("host-runtime-worker"))

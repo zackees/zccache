@@ -3,7 +3,7 @@ name = "ban_raw_subprocess_in_daemon"
 # Bust the Dylint library cache when matcher or scope rules change.
 # See ban_std_pathbuf for the same workaround rationale.
 version = "0.3.0"
-description = "Require running-process for all zccache-daemon child creation"
+description = "Require kernal-api for all zccache-daemon child creation"
 edition = "2021"
 publish = false
 

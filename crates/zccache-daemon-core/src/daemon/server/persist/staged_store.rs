@@ -358,7 +358,7 @@ fn copy_independent(source: &Path, destination: &Path) -> io::Result<(bool, u64)
             true
         }
     };
-    if reflink_allowed && reflink_copy::reflink(source, destination).is_ok() {
+    if reflink_allowed && kernal_api::platform::fs::reflink_file(source, destination).is_ok() {
         return Ok((true, 0));
     }
     // A failed reflink probe may leave a partial destination, including
@@ -386,14 +386,14 @@ fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
     // Keep the destination writable while restoring timestamps. On Windows,
     // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
     crate::platform::fs::permissions::make_writable(destination)?;
-    let mtime = filetime::FileTime::from_last_modification_time(&source_metadata);
-    filetime::set_file_mtime(destination, mtime)?;
+    let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&source_metadata);
+    kernal_api::platform::fs::set_file_mtime(destination, mtime)?;
     result
 }
 
 fn digest_file(path: &Path) -> io::Result<(u64, String)> {
     let mut file = File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     let mut buffer = [0_u8; 1024 * 1024];
     let mut size = 0_u64;
     loop {
@@ -408,7 +408,7 @@ fn digest_file(path: &Path) -> io::Result<(u64, String)> {
 }
 
 fn generation_digest(key_hex: &str, outputs: &[StagedOutput]) -> String {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     hasher.update(key_hex.as_bytes());
     for output in outputs {
         hasher.update(&output.index.to_le_bytes());
@@ -505,7 +505,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
     let root = staged_root(artifact_dir);
     let store_lock = open_store_lock(&root)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
-    fs2::FileExt::lock_shared(&store_lock)
+    let _store_lock_guard = kernal_api::platform::fs::lock_shared(&store_lock)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
     #[cfg(test)]
     hook::pause(artifact_dir, StagedHookPoint::PublicationStoreLocked);
@@ -519,7 +519,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
         .truncate(false)
         .open(key_root.join(PUBLISH_LOCK))
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
-    fs2::FileExt::lock_exclusive(&publish_lock)
+    let _publish_lock_guard = kernal_api::platform::fs::lock_exclusive(&publish_lock)
         .map_err(|error| publish_error(StagedPublishFailure::StoreSetup, error))?;
     let temporary_generation = key_root.join(format!(
         ".tmp-{}-{}",
@@ -910,7 +910,7 @@ pub(in crate::daemon::server) fn cleanup_staged_artifact_temps(
         return Ok(0);
     }
     let store_lock = open_store_lock(&root)?;
-    fs2::FileExt::lock_exclusive(&store_lock)?;
+    let _store_lock_guard = kernal_api::platform::fs::lock_exclusive(&store_lock)?;
     let entries = fs::read_dir(&root)?;
     let mut removed = 0;
     for entry in entries.flatten() {

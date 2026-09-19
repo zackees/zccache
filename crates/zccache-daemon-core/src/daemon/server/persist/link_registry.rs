@@ -33,7 +33,7 @@ static WATCHER_AVAILABLE: AtomicBool = AtomicBool::new(true);
 
 fn stat_signature(path: &Path) -> Option<StatSignature> {
     let metadata = std::fs::metadata(path).ok()?;
-    let mtime = filetime::FileTime::from_last_modification_time(&metadata);
+    let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&metadata);
     let mtime_ns =
         i128::from(mtime.unix_seconds()) * 1_000_000_000 + i128::from(mtime.nanoseconds());
     Some((mtime_ns, metadata.len()))
@@ -51,7 +51,7 @@ fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = kernal_api::hash::Blake3Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer)?;
@@ -65,7 +65,10 @@ fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
 
 fn digest_path(blob_path: &Path) -> NormalizedPath {
     let name = blob_path.file_name().unwrap_or_default().to_string_lossy();
-    let sidecar_name = format!(".cowhash-{}", blake3::hash(name.as_bytes()).to_hex());
+    let sidecar_name = format!(
+        ".cowhash-{}",
+        kernal_api::hash::blake3_bytes(name.as_bytes()).to_hex()
+    );
     blob_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -530,8 +533,8 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
         event = "cow_blob_corruption_detected",
         cache_key,
         blob_path = %record.blob_path.display(),
-        expected_hash = %blake3::Hash::from_bytes(record.expected_hash),
-        actual_hash = %blake3::Hash::from_bytes(actual),
+        expected_hash = %kernal_api::hash::Blake3Digest::from_bytes(record.expected_hash),
+        actual_hash = %kernal_api::hash::Blake3Digest::from_bytes(actual),
         link_count,
         outputs = ?outputs,
         elapsed_ns,
@@ -542,8 +545,8 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
         serde_json::json!({
             "blob_path": record.blob_path,
             "cache_key": cache_key,
-            "expected_hash": blake3::Hash::from_bytes(record.expected_hash).to_hex().to_string(),
-            "actual_hash": blake3::Hash::from_bytes(actual).to_hex().to_string(),
+            "expected_hash": kernal_api::hash::Blake3Digest::from_bytes(record.expected_hash).to_hex().to_string(),
+            "actual_hash": kernal_api::hash::Blake3Digest::from_bytes(actual).to_hex().to_string(),
             "link_count": link_count,
             "registered_outputs": outputs,
             "elapsed_ns": elapsed_ns,

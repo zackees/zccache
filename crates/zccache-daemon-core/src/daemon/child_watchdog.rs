@@ -31,12 +31,19 @@
 //! alive-but-genuinely-hung child (no exit, no progress) is a complementary
 //! CPU/output-progress watchdog tracked separately under #889/#891.
 
-use std::process::{ExitStatus, Output};
-use std::time::{Duration, Instant};
+use std::process::ExitStatus;
+use std::time::Duration;
 
+#[cfg(test)]
+use std::process::Output;
+#[cfg(test)]
+use std::time::Instant;
+
+use kernal_api::async_engine::Sender;
+#[cfg(test)]
 use tokio::io::{AsyncRead, AsyncReadExt};
+#[cfg(test)]
 use tokio::process::Child;
-use tokio::sync::mpsc;
 
 use super::compile_output::RawOutputChunk;
 
@@ -54,7 +61,7 @@ const POST_EXIT_GRACE_ENV: &str = "ZCCACHE_POST_EXIT_DRAIN_MS";
 
 /// Resolve the post-exit drain grace from the environment, falling back to
 /// [`DEFAULT_POST_EXIT_GRACE`]. `Some(Duration::ZERO)` means "disabled".
-fn post_exit_grace() -> Duration {
+pub(crate) fn post_exit_grace() -> Duration {
     match std::env::var(POST_EXIT_GRACE_ENV) {
         Ok(v) => match v.trim().parse::<u64>() {
             Ok(ms) => Duration::from_millis(ms),
@@ -79,20 +86,29 @@ const DEFAULT_STALL_WINDOW: Duration = Duration::from_secs(300);
 /// `/proc/<pid>/stat` read per tick.
 const STALL_TICK: Duration = Duration::from_secs(5);
 
+/// Sampling cadence shared by every alive-stall watchdog implementation.
+pub(crate) const fn stall_tick() -> Duration {
+    STALL_TICK
+}
+
 /// How often the watchdog samples the child's resident-memory high-water mark
 /// (soldr#3152). The kernel maintains the high-water mark itself, so the tick
 /// only bounds how much growth in the child's final instant goes unseen. One
 /// `/proc/<pid>/status` / `proc_pid_rusage` / `GetProcessMemoryInfo` read.
-const MEMORY_SAMPLE_TICK: Duration = Duration::from_millis(250);
+pub(crate) const MEMORY_SAMPLE_TICK: Duration = Duration::from_millis(250);
 
 /// The memory samples taken for one child: its own high-water mark and the
 /// largest resident total of its live process tree (zccache#1588), published
 /// to the enclosing compile scope when the wait ends — on every return path,
 /// including errors and cancellation, because it publishes from `Drop`.
-struct ChildMemorySample(crate::daemon::compile_journal::ChildMemory);
+pub(crate) struct ChildMemorySample(crate::daemon::compile_journal::ChildMemory);
 
 impl ChildMemorySample {
-    fn observe(&mut self, pid: Option<u32>) {
+    pub(crate) fn new() -> Self {
+        Self(crate::daemon::compile_journal::ChildMemory::default())
+    }
+
+    pub(crate) fn observe(&mut self, pid: Option<u32>) {
         let Some(pid) = pid else {
             return;
         };
@@ -121,7 +137,7 @@ impl Drop for ChildMemorySample {
 const STALL_WINDOW_ENV: &str = "ZCCACHE_STALL_WINDOW_MS";
 
 /// Resolve the alive-hung stall window from the environment.
-fn stall_window() -> Duration {
+pub(crate) fn stall_window() -> Duration {
     match std::env::var(STALL_WINDOW_ENV) {
         Ok(v) => match v.trim().parse::<u64>() {
             Ok(ms) => Duration::from_millis(ms),
@@ -136,7 +152,7 @@ fn stall_window() -> Duration {
 /// advanced across the last sample. Requiring BOTH conditions is what keeps a
 /// silent-but-CPU-bound compile (advancing CPU) and a chatty-but-slow compile
 /// (advancing output) alive. Pure so it is trivially unit-testable.
-fn should_kill_stalled(
+pub(crate) fn should_kill_stalled(
     since_progress: Duration,
     stall_window: Duration,
     cpu_advanced: bool,
@@ -152,6 +168,7 @@ fn should_kill_stalled(
 /// unsupported platform, or the handle/pid is already gone). Callers treat
 /// `None` as "assume progress" so Mode B can never false-kill on a platform it
 /// cannot measure — it simply falls back to the output-only signal there.
+#[cfg(test)]
 fn child_cpu_ticks(child: &Child) -> Option<u64> {
     child
         .id()
@@ -172,6 +189,7 @@ fn child_cpu_ticks(child: &Child) -> Option<u64> {
 /// The caller is expected to have spawned `child` with piped stdout/stderr and
 /// `kill_on_drop(true)`; `cmd_desc` is a human-readable program identifier used
 /// only in diagnostics.
+#[cfg(test)]
 pub(crate) async fn wait_with_output_watchdog(
     child: Child,
     cmd_desc: &str,
@@ -182,25 +200,6 @@ pub(crate) async fn wait_with_output_watchdog(
         post_exit_grace(),
         stall_window(),
         STALL_TICK,
-    )
-    .await
-}
-
-/// Streaming variant of [`wait_with_output_watchdog`]. The watchdog remains
-/// the only owner of the child pipes, but forwards each read through a bounded
-/// channel instead of retaining stdout/stderr itself.
-pub(crate) async fn wait_with_output_watchdog_streaming(
-    child: Child,
-    cmd_desc: &str,
-    sender: mpsc::Sender<RawOutputChunk>,
-) -> std::io::Result<Output> {
-    watchdog_inner_impl(
-        child,
-        cmd_desc,
-        post_exit_grace(),
-        stall_window(),
-        STALL_TICK,
-        Some(sender),
     )
     .await
 }
@@ -230,6 +229,7 @@ async fn wait_with_output_watchdog_with_grace(
 ///   long. See [`should_kill_stalled`].
 ///
 /// With both zero this is a plain `wait_with_output`.
+#[cfg(test)]
 async fn watchdog_inner(
     child: Child,
     cmd_desc: &str,
@@ -240,13 +240,14 @@ async fn watchdog_inner(
     watchdog_inner_impl(child, cmd_desc, grace, stall_window, stall_tick, None).await
 }
 
+#[cfg(test)]
 async fn watchdog_inner_impl(
     mut child: Child,
     cmd_desc: &str,
     grace: Duration,
     stall_window: Duration,
     stall_tick: Duration,
-    stream: Option<mpsc::Sender<RawOutputChunk>>,
+    stream: Option<Sender<RawOutputChunk>>,
 ) -> std::io::Result<Output> {
     // Both modes disabled: historical behavior (host opt-out for exotic
     // pipelines needing strict EOF semantics).
@@ -263,9 +264,12 @@ async fn watchdog_inner_impl(
     // so a Unix sample can never read a reused pid. Where the platform keeps a
     // held handle's final peak readable (Windows), it is re-read once after
     // exit.
-    let mut peak_rss = ChildMemorySample(crate::daemon::compile_journal::ChildMemory::default());
-    let mut memory_tick = tokio::time::interval(MEMORY_SAMPLE_TICK);
-    memory_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut peak_rss = ChildMemorySample::new();
+    // The race has five arms, so memory sampling shares the progress-sample
+    // arm: each tick fires at the earlier of the two persistent deadlines. The
+    // first memory sample is due immediately, matching an interval's first tick.
+    let mut next_memory_sample = Instant::now();
+    let mut next_stall_sample = Instant::now() + stall_tick;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut out: Vec<u8> = Vec::new();
@@ -345,39 +349,66 @@ async fn watchdog_inner_impl(
             exited.map(|(_, at)| grace.saturating_sub(at.elapsed()));
         let grace_deadline = async move {
             match grace_remaining {
-                Some(remaining) => tokio::time::sleep(remaining).await,
+                Some(remaining) => kernal_api::async_engine::sleep(remaining).await,
                 None => std::future::pending::<()>().await,
             }
         };
 
-        // Mode B tick: armed only while the child is still running and Mode B
-        // is enabled. Fires every `STALL_TICK` to sample progress; `pending()`
-        // otherwise so it never competes once the child has exited (Mode A
-        // takes over then).
-        let stall_armed = mode_b && exited.is_none();
-        let stall_tick_fut = async move {
-            if stall_armed {
-                tokio::time::sleep(stall_tick).await;
+        // Sample tick: armed only while the child is still running. Fires at
+        // the next memory sample (every `MEMORY_SAMPLE_TICK`) or, when Mode B
+        // is enabled, the next progress sample (every `STALL_TICK`), whichever
+        // is earlier; `pending()` once the child has exited so it never
+        // competes with Mode A.
+        let sample_armed = exited.is_none();
+        let stall_armed = mode_b && sample_armed;
+        let sample_wait = sample_armed.then(|| {
+            let next = if stall_armed {
+                next_memory_sample.min(next_stall_sample)
             } else {
-                std::future::pending::<()>().await;
+                next_memory_sample
+            };
+            next.saturating_duration_since(Instant::now())
+        });
+        let sample_tick_fut = async move {
+            match sample_wait {
+                Some(wait) => kernal_api::async_engine::sleep(wait).await,
+                None => std::future::pending::<()>().await,
             }
         };
 
-        tokio::select! {
+        // Keep the borrows made by `wait` and `read_opt` inside this block.
+        // Their futures must be dropped before the winning handler touches
+        // the child, pipe slots, or read buffers again.
+        let winner = {
+            let wait = child.wait();
+            let stdout_read = read_opt(stdout.as_mut(), &mut sbuf);
+            let stderr_read = read_opt(stderr.as_mut(), &mut ebuf);
+            let mut wait = std::pin::pin!(wait);
+            let mut stdout_read = std::pin::pin!(stdout_read);
+            let mut stderr_read = std::pin::pin!(stderr_read);
+            let mut grace_deadline = std::pin::pin!(grace_deadline);
+            let mut sample_tick_fut = std::pin::pin!(sample_tick_fut);
+            kernal_api::fair_race!(
+                (wait.as_mut(); exited.is_none()),
+                (stdout_read.as_mut(); !stdout_done),
+                (stderr_read.as_mut(); !stderr_done),
+                (grace_deadline.as_mut(); exited.is_some()),
+                (sample_tick_fut.as_mut(); sample_armed),
+            )
+            .await
+        };
+        match winner {
             // Concurrent drain of both pipes prevents the classic
             // fill-the-pipe-then-block deadlock; the child-exit wait runs
             // alongside so we notice exit promptly.
-            status = child.wait(), if exited.is_none() => {
+            kernal_api::async_engine::FairRace5::First(status) => {
                 let status = status?;
                 if crate::platform::process::inspect::PEAK_RSS_READABLE_AFTER_EXIT {
                     peak_rss.observe(child_pid);
                 }
                 exited = Some((status, Instant::now()));
             }
-            _ = memory_tick.tick(), if exited.is_none() => {
-                peak_rss.observe(child.id());
-            }
-            r = read_opt(stdout.as_mut(), &mut sbuf), if !stdout_done => match r {
+            kernal_api::async_engine::FairRace5::Second(r) => match r {
                 Ok(0) => stdout_done = true,
                 Ok(n) => {
                     stdout_bytes += n;
@@ -385,10 +416,12 @@ async fn watchdog_inner_impl(
                         sender
                             .send(RawOutputChunk::Stdout(sbuf[..n].to_vec()))
                             .await
-                            .map_err(|_| std::io::Error::new(
-                                std::io::ErrorKind::BrokenPipe,
-                                "compiler output consumer disconnected",
-                            ))?;
+                            .map_err(|_| {
+                                std::io::Error::new(
+                                    std::io::ErrorKind::BrokenPipe,
+                                    "compiler output consumer disconnected",
+                                )
+                            })?;
                     } else {
                         out.extend_from_slice(&sbuf[..n]);
                     }
@@ -399,7 +432,7 @@ async fn watchdog_inner_impl(
                     stdout_done = true;
                 }
             },
-            r = read_opt(stderr.as_mut(), &mut ebuf), if !stderr_done => match r {
+            kernal_api::async_engine::FairRace5::Third(r) => match r {
                 Ok(0) => stderr_done = true,
                 Ok(n) => {
                     stderr_bytes += n;
@@ -407,10 +440,12 @@ async fn watchdog_inner_impl(
                         sender
                             .send(RawOutputChunk::Stderr(ebuf[..n].to_vec()))
                             .await
-                            .map_err(|_| std::io::Error::new(
-                                std::io::ErrorKind::BrokenPipe,
-                                "compiler output consumer disconnected",
-                            ))?;
+                            .map_err(|_| {
+                                std::io::Error::new(
+                                    std::io::ErrorKind::BrokenPipe,
+                                    "compiler output consumer disconnected",
+                                )
+                            })?;
                     } else {
                         err.extend_from_slice(&ebuf[..n]);
                     }
@@ -421,7 +456,7 @@ async fn watchdog_inner_impl(
                     stderr_done = true;
                 }
             },
-            () = grace_deadline, if exited.is_some() => {
+            kernal_api::async_engine::FairRace5::Fourth(()) => {
                 if let Some((status, at)) = exited {
                     emit_orphan_pipe_diagnostics(
                         cmd_desc,
@@ -445,7 +480,16 @@ async fn watchdog_inner_impl(
                     });
                 }
             }
-            () = stall_tick_fut, if stall_armed => {
+            kernal_api::async_engine::FairRace5::Fifth(()) => {
+                let now = Instant::now();
+                if now >= next_memory_sample {
+                    peak_rss.observe(child.id());
+                    next_memory_sample = now + MEMORY_SAMPLE_TICK;
+                }
+                if !stall_armed || now < next_stall_sample {
+                    continue;
+                }
+                next_stall_sample = now + stall_tick;
                 // Mode B (issue #891): the child is still running. Sample CPU
                 // and decide whether it is wedged — no output for the whole
                 // stall window AND no CPU burned since the last sample. Either
@@ -518,10 +562,10 @@ async fn watchdog_inner_impl(
 /// streaming path too (where `err` stays empty because bytes went to the
 /// consumer rather than the buffer). A compile that produced real diagnostics
 /// is never touched.
-async fn deliver_fault_note(
+pub(crate) async fn deliver_fault_note(
     status: &ExitStatus,
     stderr_bytes: usize,
-    stream: Option<&mpsc::Sender<RawOutputChunk>>,
+    stream: Option<&Sender<RawOutputChunk>>,
     err: &mut Vec<u8>,
     reason: &str,
 ) {
@@ -551,7 +595,7 @@ async fn deliver_fault_note(
 /// broken pipe the one output-loss path in this file with **no** telemetry at
 /// all, so a non-zero exit with empty stderr was unattributable after the fact.
 #[allow(clippy::too_many_arguments)]
-fn emit_pipe_read_error_diagnostics(
+pub(crate) fn emit_pipe_read_error_diagnostics(
     cmd_desc: &str,
     pid: Option<u32>,
     error: &std::io::Error,
@@ -612,8 +656,9 @@ fn emit_pipe_read_error_diagnostics(
 }
 
 /// Read into `buf` from an optional reader, or pend forever when the reader is
-/// gone. Lets a `tokio::select!` branch stay disabled (via its `if` guard)
+/// gone. Lets a selection branch stay disabled (via its guard)
 /// without ever evaluating a missing reader.
+#[cfg(test)]
 async fn read_opt<R: AsyncRead + Unpin>(
     reader: Option<&mut R>,
     buf: &mut [u8],
@@ -628,7 +673,7 @@ async fn read_opt<R: AsyncRead + Unpin>(
 /// daemon's "every timeout/watchdog fire is logged loud + durable for
 /// forensics" rule.
 #[allow(clippy::too_many_arguments)]
-fn emit_orphan_pipe_diagnostics(
+pub(crate) fn emit_orphan_pipe_diagnostics(
     cmd_desc: &str,
     pid: Option<u32>,
     grace: Duration,
@@ -693,7 +738,7 @@ fn emit_orphan_pipe_diagnostics(
 /// forensics rule. Emitted only when the child made no progress — no output AND
 /// no CPU — for the whole stall window, so it is a genuine wedge, not a slow
 /// build.
-fn emit_stall_diagnostics(
+pub(crate) fn emit_stall_diagnostics(
     cmd_desc: &str,
     pid: Option<u32>,
     stall_window: Duration,

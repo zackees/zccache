@@ -298,7 +298,7 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
         let mut output_names = std::collections::HashSet::new();
         if compilations.iter().any(|compilation| {
             let output = compilation.output_file.to_string_lossy();
-            let output = if crate::platform::host::is_windows() {
+            let output = if kernal_api::platform::host::target_is_windows() {
                 output.to_ascii_lowercase()
             } else {
                 output.into_owned()

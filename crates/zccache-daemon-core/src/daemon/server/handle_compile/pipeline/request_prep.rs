@@ -518,20 +518,21 @@ pub(super) async fn wait_for_startup_depgraph_load(state: &SharedState, sid: &Se
         "[DIAG] depgraph_load_pending: waiting before compile context registration",
     );
 
-    let deadline = tokio::time::sleep(DEPGRAPH_STARTUP_WAIT_TIMEOUT);
-    tokio::pin!(deadline);
+    let deadline = kernal_api::async_engine::sleep(DEPGRAPH_STARTUP_WAIT_TIMEOUT);
+    let mut deadline = std::pin::pin!(deadline);
     loop {
         let notified = state.dep_graph_load_notify.notified();
         if state.dep_graph_load_complete.load(Ordering::Acquire) {
             return;
         }
-        tokio::select! {
-            () = notified => {
+        let mut notified = std::pin::pin!(notified);
+        match kernal_api::fair_race!((notified.as_mut()), (deadline.as_mut())).await {
+            kernal_api::async_engine::FairRace2::First(()) => {
                 if state.dep_graph_load_complete.load(Ordering::Acquire) {
                     return;
                 }
             }
-            () = &mut deadline => {
+            kernal_api::async_engine::FairRace2::Second(()) => {
                 write_session_log(
                     &state.sessions,
                     sid,

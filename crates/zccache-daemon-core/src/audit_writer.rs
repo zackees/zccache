@@ -3,9 +3,9 @@
 //! `AuditSink` is the bounded async pipe that takes [`crate::audit::AuditEvent`]s
 //! emitted by the embedded service and persists them to a JSONL file
 //! under the host-configured `output_root`. The writer task runs on the
-//! host's tokio runtime (using [`crate::embedded::RuntimeHooks`] when
+//! host's canonical async runtime (using [`crate::embedded::RuntimeHooks`] when
 //! supplied), shares the runtime with the embedded compile / persist
-//! tasks so tokio-console attach unity holds, and exits cleanly when
+//! tasks so host-level runtime observability holds, and exits cleanly when
 //! the host calls `flush()` or `shutdown()`.
 //!
 //! ## What this module ships
@@ -47,9 +47,9 @@
 //!
 //! ```text
 //! AuditSink::start(config)
-//!      └──► writer task: tokio::spawn (or runtime_hooks.handle.spawn)
+//!      └──► writer task: async_engine::launch (or runtime_hooks.handle.launch)
 //!                ├──► owns BufWriter<File> for output_root/audit.jsonl
-//!                ├──► loops on mpsc::Receiver<AuditEvent>:
+//!                ├──► loops on async_engine::Receiver<AuditEvent>:
 //!                │       drain N events  ───►  serialize JSONL  ───►  buf.write_all
 //!                │       buf.flush() every BUF_FLUSH_INTERVAL or BUF_FLUSH_COUNT
 //!                └──► exits on shutdown signal (mpsc closed)
@@ -75,7 +75,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot};
+use kernal_api::async_engine::{self, OneshotSender, RuntimeHandle, Sender, TrySendError};
 
 use crate::audit::{AuditConfig, AuditEvent, AuditLevel, AuditMode, AuditSinkPolicy};
 
@@ -126,14 +126,14 @@ pub enum AuditSinkError {
 /// slot allocates space for the largest variant.
 enum Command {
     Event(Box<AuditEvent>),
-    Flush(oneshot::Sender<()>),
-    Shutdown(oneshot::Sender<()>),
+    Flush(OneshotSender<()>),
+    Shutdown(OneshotSender<()>),
 }
 
 /// Public sink handle. Cheap to clone — the inner channel is `Arc`-shared.
 #[derive(Clone, Debug)]
 pub struct AuditSink {
-    sender: mpsc::Sender<Command>,
+    sender: Sender<Command>,
     lost_events: Arc<AtomicU64>,
     policy: AuditSinkPolicy,
     /// Tracks the "degraded" state for `Degrade` policy. Once a single
@@ -144,7 +144,7 @@ pub struct AuditSink {
 
 impl AuditSink {
     /// Start the writer task for `config`. Returns a sink handle the
-    /// embedded service holds for its lifetime. The host's tokio
+    /// embedded service holds for its lifetime. The host's canonical async
     /// runtime handle (when supplied via `runtime_handle`) owns the
     /// writer task; passing `None` uses the ambient runtime — same
     /// rule as `ZccacheService::start`.
@@ -153,7 +153,7 @@ impl AuditSink {
     /// the embedded service stores the absence as a no-op marker.
     pub fn start(
         config: &AuditConfig,
-        runtime_handle: Option<tokio::runtime::Handle>,
+        runtime_handle: Option<RuntimeHandle>,
     ) -> Result<Option<Self>, AuditSinkError> {
         if matches!(config.mode, AuditMode::Off) {
             return Ok(None);
@@ -177,7 +177,7 @@ impl AuditSink {
         let rotate_path = path.clone();
         let mut writer = BufWriter::with_capacity(64 * 1024, file);
 
-        let (sender, mut receiver) = mpsc::channel::<Command>(WRITER_QUEUE_CAPACITY);
+        let (sender, mut receiver) = async_engine::channel::<Command>(WRITER_QUEUE_CAPACITY);
         let lost_events = Arc::new(AtomicU64::new(0));
         let degraded = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -223,10 +223,13 @@ impl AuditSink {
 
         match runtime_handle {
             Some(handle) => {
-                handle.spawn(writer_task);
+                // Tokio JoinHandle drop detached this persistent writer. KA
+                // Tasks cancel on drop, so detach is required to preserve the
+                // writer lifetime and its later Flush/Shutdown acknowledgements.
+                handle.launch(writer_task).detach();
             }
             None => {
-                tokio::spawn(writer_task);
+                async_engine::launch(writer_task).detach();
             }
         }
 
@@ -253,7 +256,7 @@ impl AuditSink {
         let level = event.level;
         match self.sender.try_send(Command::Event(Box::new(event))) {
             Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_cmd)) => match self.policy {
+            Err(TrySendError::Full(_cmd)) => match self.policy {
                 AuditSinkPolicy::Block => {
                     // Block is not literally `send().await` here
                     // because emit is a sync entry — return an explicit
@@ -284,14 +287,14 @@ impl AuditSink {
                 }
                 AuditSinkPolicy::FailLossless => Err(AuditSinkError::Backpressure),
             },
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(AuditSinkError::Closed),
+            Err(TrySendError::Closed(_)) => Err(AuditSinkError::Closed),
         }
     }
 
     /// Drain the queue and `fsync` the underlying file. Called from
     /// [`crate::embedded::ZccacheService::flush`].
     pub async fn flush(&self) -> Result<(), AuditSinkError> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = async_engine::oneshot_channel();
         self.sender
             .send(Command::Flush(tx))
             .await
@@ -303,7 +306,7 @@ impl AuditSink {
     /// Drain, close, and await the writer task. Called from
     /// [`crate::embedded::ZccacheService::shutdown`].
     pub async fn shutdown(&self) -> Result<(), AuditSinkError> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx) = async_engine::oneshot_channel();
         // If the writer is already closed, the send will fail — that's
         // also acceptable because the contract guarantees only that
         // pending events are drained on a best-effort basis.

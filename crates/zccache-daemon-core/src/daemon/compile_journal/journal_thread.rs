@@ -1,13 +1,13 @@
 //! Background writer thread + JSONL rotation/GC.
 //!
 //! Lock-free channel + background `std::thread`: serialization happens on the
-//! caller's tokio task; this thread does file I/O only. Zero contention on the
+//! caller's async task; this thread does file I/O only. Zero contention on the
 //! hot path.
 //!
 //! Performance notes (ISSUE-101 / ISSUE-301 / ISSUE-302):
 //! - Channel is `std::sync::mpsc` (sync receiver) instead of
-//!   `tokio::sync::mpsc::UnboundedReceiver` so the background `std::thread`
-//!   no longer traverses tokio's parking_lot chain on every wakeup.
+//!   runtime-owned receiver so the background `std::thread` no longer
+//!   traverses a runtime parking chain on every wakeup.
 //! - The loop drains all currently-queued messages into a batch after each
 //!   blocking `recv()`, mirroring the WAL writer drain pattern in
 //!   `server/wal.rs`. This coalesces wakeups across burst arrivals (e.g. a

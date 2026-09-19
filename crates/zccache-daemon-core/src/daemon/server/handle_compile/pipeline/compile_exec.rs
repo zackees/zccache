@@ -257,16 +257,16 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     }
     let break_outputs_ns = t_break_outputs.elapsed().as_nanos() as u64;
 
-    let mut cmd = tokio::process::Command::new(compiler);
+    let mut builder = kernal_api::SpawnSpec::new(compiler);
     if let Some(ref rsp) = _rsp_guard {
-        cmd.arg(rsp.at_arg()).current_dir(cwd);
+        builder = builder.arg(rsp.at_arg()).current_dir(cwd);
     } else {
-        cmd.args(&compiler_args).current_dir(cwd);
+        builder = builder.args(&compiler_args).current_dir(cwd);
         if !extra_args.is_empty() {
-            cmd.args(&extra_args);
+            builder = builder.args(&extra_args);
         }
     }
-    apply_client_env(&mut cmd, client_env, lineage);
+    builder = apply_client_env_builder(builder, client_env, lineage);
     let t_compiler_process = std::time::Instant::now();
     let is_link_like = rustc_args_opt
         .is_some_and(|rustc_args| rustc_args.emit_types.iter().any(|emit| emit == "link"));
@@ -379,7 +379,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     let (result, compiler_priority_decision, streamed_output) = if let Some(context) =
         crate::daemon::compile_output::current()
     {
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let (sender, receiver) = kernal_api::async_engine::channel(8);
         let filter = if depfile_strategy == DepfileStrategy::ShowIncludes {
             crate::daemon::compile_output::OutputFilter::ShowIncludes {
                 source: source_path.as_path(),
@@ -394,19 +394,21 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         } else {
             crate::daemon::compile_output::OutputFilter::None
         };
-        let process = crate::daemon::process::tokio_command_output_streaming_with_priority_decision(
-            &mut cmd,
+        let process = crate::daemon::process::async_builder_output_streaming_with_priority_decision(
+            builder,
             compiler_priority,
             sender,
+            compiler.display().to_string(),
         );
         let consume = crate::daemon::compile_output::consume(receiver, context, filter);
         let (process_result, capture_result) = tokio::join!(process, consume);
         (process_result.0, process_result.1, Some(capture_result))
     } else {
         let (result, decision) =
-            crate::daemon::process::tokio_command_output_with_priority_decision(
-                &mut cmd,
+            crate::daemon::process::async_builder_output_with_priority_decision(
+                builder,
                 compiler_priority,
+                compiler.display().to_string(),
             )
             .await;
         (result, decision, None)
@@ -537,12 +539,12 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
 async fn schedule_pre_hash<T, F>(
     exclusive: bool,
     work: F,
-) -> (Option<tokio::task::JoinHandle<T>>, Option<T>)
+) -> (Option<kernal_api::async_engine::Task<T>>, Option<T>)
 where
     T: Default + Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    let task = tokio::task::spawn_blocking(work);
+    let task = kernal_api::async_engine::launch_blocking(work).detach_on_drop();
     if exclusive {
         (None, Some(task.await.unwrap_or_default()))
     } else {
@@ -550,7 +552,10 @@ where
     }
 }
 
-async fn finish_pre_hash<T>(task: Option<tokio::task::JoinHandle<T>>, ready: Option<T>) -> Option<T>
+async fn finish_pre_hash<T>(
+    task: Option<kernal_api::async_engine::Task<T>>,
+    ready: Option<T>,
+) -> Option<T>
 where
     T: Default + Send + 'static,
 {
