@@ -34,7 +34,9 @@ fn run_with_released_cwd(cmd: &mut std::process::Command) -> std::io::Result<i32
     // descriptors and the caller's process group, with no daemon containment
     // or descriptor sanitization. Keep this boundary local rather than
     // borrowing formatter policy for an unrelated compiler invocation.
-    Ok(kernal_api::platform::process::foreground_status(cmd)?.code().unwrap_or(1))
+    Ok(kernal_api::platform::process::foreground_status(cmd)?
+        .code()
+        .unwrap_or(1))
 }
 
 /// Run the compiler/tool directly without caching.

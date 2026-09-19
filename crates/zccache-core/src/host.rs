@@ -158,7 +158,8 @@ fn mutate_defender(command: &str, path: &Path) -> Result<(), DefenderError> {
 fn run_powershell(args: &[&str]) -> Result<String, DefenderError> {
     let mut command = std::process::Command::new("powershell.exe");
     command.args(args);
-    let output = kernal_api::platform::process::foreground_output(&mut command).map_err(map_powershell_error)?;
+    let output = kernal_api::platform::process::foreground_output(&mut command)
+        .map_err(map_powershell_error)?;
     if !output.status.success() {
         return Err(DefenderError::CommandFailed {
             exit_code: output.status.code(),

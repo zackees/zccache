@@ -266,39 +266,6 @@ fn clang_library_candidates() -> Vec<PathBuf> {
     candidates.iter().map(PathBuf::from).collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clang_library_candidates_preserve_zccache_product_order() {
-        let expected: &[&str] = match kernal_api::platform::host::process_target().os {
-            "linux" => &[
-                "/usr/lib/llvm-18/lib/libclang.so",
-                "/usr/lib/llvm-17/lib/libclang.so",
-                "/usr/lib/llvm-16/lib/libclang.so",
-                "/usr/lib/libclang.so",
-                "/usr/local/lib/libclang.so",
-            ],
-            "macos" => &[
-                "/opt/homebrew/opt/llvm/lib/libclang.dylib",
-                "/usr/local/opt/llvm/lib/libclang.dylib",
-                "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib",
-            ],
-            "windows" => &[
-                r"C:\Program Files\LLVM\bin\libclang.dll",
-                r"C:\Program Files\LLVM\lib\libclang.dll",
-                r"C:\Program Files\doxygen\bin\libclang.dll",
-            ],
-            _ => &[],
-        };
-        assert_eq!(
-            clang_library_candidates(),
-            expected.iter().map(PathBuf::from).collect::<Vec<_>>()
-        );
-    }
-}
-
 fn collect_existing_declarations(entities: &[Entity<'_>]) -> HashSet<String> {
     entities
         .iter()
@@ -472,4 +439,37 @@ fn build_generated_cpp(
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clang_library_candidates_preserve_zccache_product_order() {
+        let expected: &[&str] = match kernal_api::platform::host::process_target().os {
+            "linux" => &[
+                "/usr/lib/llvm-18/lib/libclang.so",
+                "/usr/lib/llvm-17/lib/libclang.so",
+                "/usr/lib/llvm-16/lib/libclang.so",
+                "/usr/lib/libclang.so",
+                "/usr/local/lib/libclang.so",
+            ],
+            "macos" => &[
+                "/opt/homebrew/opt/llvm/lib/libclang.dylib",
+                "/usr/local/opt/llvm/lib/libclang.dylib",
+                "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib",
+            ],
+            "windows" => &[
+                r"C:\Program Files\LLVM\bin\libclang.dll",
+                r"C:\Program Files\LLVM\lib\libclang.dll",
+                r"C:\Program Files\doxygen\bin\libclang.dll",
+            ],
+            _ => &[],
+        };
+        assert_eq!(
+            clang_library_candidates(),
+            expected.iter().map(PathBuf::from).collect::<Vec<_>>()
+        );
+    }
 }
