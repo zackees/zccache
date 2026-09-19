@@ -222,8 +222,11 @@ tests = ["crates/zccache-daemon-core/src/embedded/tests.rs", "crates/zccache-dae
 contract = "process containment, bounded probe, detached launch, priority, jobserver, and executable identity"
 tests = ["crates/zccache-daemon-core/src/daemon/process_tests.rs", "crates/zccache-cli-core/src/cli/runtime/tests.rs", "crates/zccache-daemon-core/src/platform.rs"]
 [[characterization]]
+contract = "SpawnSpec/ProcessSession child lifecycle: stdin feeding, output capture/streaming, stall kill, post-exit drain, and child peak/tree RSS sampling"
+tests = ["crates/zccache-daemon-core/src/daemon/process_session_tests.rs", "crates/zccache-daemon-core/src/embedded/contract_tests.rs"]
+[[characterization]]
 contract = "local IPC peer security, endpoint retirement, broker identity/probe, manifest, route, and refusal behavior"
-tests = ["crates/zccache-ipc/src/mod_tests.rs", "crates/zccache-ipc/src/transport/tests.rs", "crates/zccache-ipc/src/platform.rs"]
+tests = ["crates/zccache-ipc/src/mod_tests.rs", "crates/zccache-ipc/src/mod_tests/identity.rs", "crates/zccache-ipc/src/transport/tests.rs", "crates/zccache-ipc/src/transport/probe.rs", "crates/zccache-ipc/src/broker.rs", "crates/zccache-ipc/src/platform.rs"]
 [[characterization]]
 contract = "frozen frame bytes, payload protocol 0x7A63, and single-round-trip path"
 tests = ["crates/zccache/tests/wire/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/wire/daemon_wire_prost_roundtrip.rs"]
