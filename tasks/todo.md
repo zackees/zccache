@@ -38,7 +38,29 @@ either (a) migrating zccache to a facade-owned surface 0.1.14 already has, or
 ## Phase B: zccache branch
 
 - [x] B0 Merge `origin/main` into `feat/complete-kernal-integration`.
-- [ ] B1 wire_frame.rs → `daemon_frame_v1` (frozen-bytes wire tests stay green).
+- [x] B1 wire_frame.rs → `daemon_frame_v1` (frozen-bytes wire tests stay green).
+- [ ] **BLOCKED (Phase B, 2026-09-18):** kernal-api main 04bd695 also lacks
+      ~60 *non*-running-process facade items the branch took from #258's
+      "migrate canonical kernel capability surfaces" commit (423f734), so
+      zccache-artifact/depgraph/fingerprint/ipc/daemon-core/cli-core cannot
+      compile regardless of B2-B5. Missing groups: `platform::fs`
+      (`replacement::*`, `LinkKind`/`classify`, `set_readonly`, `make_executable`,
+      mode/identity/volume/change-marker helpers, `native_call_path`,
+      `path_from_raw_bytes`, `symlink_file`, `sync_directory_if_supported`),
+      `platform::ipc` (`LocalSocketListener`/`Stream`, `LocalPipeClient`,
+      `OwnerOnlyPipeInstance`, `SocketPeerCredentials`, `retire_socket_endpoint`),
+      `platform::process` (`NativeJobserver`, `native_jobserver_supported`,
+      `apply_priority_to_async_child`, `cpu_ticks_for_pid`,
+      `executable_path_for_pid`, `detach_standard_streams`,
+      `redirect_standard_streams_to_log`, `force_terminate_pid`,
+      `force_terminate_process_group`, `configure_session_leader_command`),
+      `platform::host::{is_linux,is_macos,is_windows}`,
+      `platform::executable::{file_name_os,native_name}`,
+      `async_engine::{RwLock*, OwnedRwLock*Guard, MissedTickBehavior,
+      TerminationSignal}`, `allocator::{dump_to, dump_to_vec}`, plus
+      process RSS readers (`peak_rss_bytes`/`tree_rss_bytes`, from main #1586/#1588)
+      and mimalloc `prof::stats`/`dump_file` (soldr#3053). Needs a coordinator
+      decision: land these in kernal-api, or restore zccache-owned adapters.
 - [ ] B2 Identity/probe → `daemon_identity`; keep the lockfile/sidecar JSON
       readable across versions or confirm version-namespaced endpoints make it moot.
 - [ ] B3 `process_session.rs` and builder sites → `SpawnSpec`/`ProcessSession`.
