@@ -39,33 +39,32 @@ either (a) migrating zccache to a facade-owned surface 0.1.14 already has, or
 
 - [x] B0 Merge `origin/main` into `feat/complete-kernal-integration`.
 - [x] B1 wire_frame.rs → `daemon_frame_v1` (frozen-bytes wire tests stay green).
-- [ ] **BLOCKED (Phase B, 2026-09-18):** kernal-api main 04bd695 also lacks
-      ~60 *non*-running-process facade items the branch took from #258's
-      "migrate canonical kernel capability surfaces" commit (423f734), so
-      zccache-artifact/depgraph/fingerprint/ipc/daemon-core/cli-core cannot
-      compile regardless of B2-B5. Missing groups: `platform::fs`
-      (`replacement::*`, `LinkKind`/`classify`, `set_readonly`, `make_executable`,
-      mode/identity/volume/change-marker helpers, `native_call_path`,
-      `path_from_raw_bytes`, `symlink_file`, `sync_directory_if_supported`),
-      `platform::ipc` (`LocalSocketListener`/`Stream`, `LocalPipeClient`,
-      `OwnerOnlyPipeInstance`, `SocketPeerCredentials`, `retire_socket_endpoint`),
-      `platform::process` (`NativeJobserver`, `native_jobserver_supported`,
-      `apply_priority_to_async_child`, `cpu_ticks_for_pid`,
-      `executable_path_for_pid`, `detach_standard_streams`,
-      `redirect_standard_streams_to_log`, `force_terminate_pid`,
-      `force_terminate_process_group`, `configure_session_leader_command`),
-      `platform::host::{is_linux,is_macos,is_windows}`,
-      `platform::executable::{file_name_os,native_name}`,
-      `async_engine::{RwLock*, OwnedRwLock*Guard, MissedTickBehavior,
-      TerminationSignal}`, plus
-      process RSS readers (`peak_rss_bytes`/`tree_rss_bytes`, from main #1586/#1588)
-      and mimalloc `prof::stats`/`dump_file` (soldr#3053). Needs a coordinator
-      decision: land these in kernal-api, or restore zccache-owned adapters.
-- [ ] B2 Identity/probe → `daemon_identity`; keep the lockfile/sidecar JSON
-      readable across versions or confirm version-namespaced endpoints make it moot.
-- [ ] B3 `process_session.rs` and builder sites → `SpawnSpec`/`ProcessSession`.
-- [ ] B4 `spawn_daemon*` → `spawn_sync_daemon`.
-- [ ] B5 `zccache-ipc/src/broker.rs` → the A6 broker-client facade.
+- [x] ~~BLOCKED (Phase B, 2026-09-18)~~: the ~60 fs/ipc/process/host/executable
+      items landed on kernal-api main (#333-#336, 07db3bd).
+- [x] B2 Identity/probe → `daemon_identity` (sidecar JSON fields unchanged).
+- [x] B3 `process_session.rs` and builder sites → `SpawnSpec`/`ProcessSession`;
+      child peak/tree RSS sampling restored on the session path.
+- [x] B4 `spawn_daemon*` → `spawn_sync_daemon` (Inherit env, no breakaway).
+- [x] B5 `zccache-ipc/src/broker.rs` → `broker_client` facade.
+- [ ] **Round 2 gaps (2026-09-19)** — against 07db3bd, daemon-core/cli-core
+      still need these facade items (validated with a local-only probe patch,
+      `_vender/kernal-api` branch `zccache-gap-probe`):
+      - `async_engine::{Mutex<T>, MutexGuard, OwnedMutexGuard, MutexTryLockError}`
+        (`new`, `lock`, `lock_owned(self: Arc<Self>)`, `try_lock`,
+        `try_lock_owned(self: Arc<Self>)`, `blocking_lock`, `Default`);
+        `OwnedMutexGuard` must keep the facade `Arc<Mutex<T>>` alive
+        (Weak-keyed lock maps, link_output_locks / #912).
+      - `Task::detach_on_drop(self) -> Self`.
+      - `Notify::notified(&self) -> Notified<'_>` and
+        `Notify::owned_notified(self: Arc<Self>) -> OwnedNotified`, both
+        `Future<Output = ()>` with `enable(self: Pin<&mut Self>) -> bool`.
+      - `impl<T> Debug for Sender<T>` without `T: Debug`.
+      - `RuntimeBuilder::max_blocking_threads(self, usize) -> Self`.
+      - `VerifiedDaemon::has_exited(&self) -> io::Result<bool>`.
+      - Behavior (not compile) gaps: `SyncEnvironment` has no user-baseline
+        variant (old `spawn_daemon` used `EnvironmentPolicy::Auto`);
+        `DirectoryWalk` has no non-aborting parallelism (soldr#2760);
+        `ProcessOutputFault` has no public constructor for tests.
 - [ ] B6 Pin `=0.1.15`, delete `_vender`, regenerate the lockfile, verify no
       `_vender` path remains; `./test`, workspace clippy, dylint, wire
       characterization, `ci/check_kernal_api_baseline.py`; open the PR.
