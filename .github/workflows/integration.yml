@@ -44,8 +44,8 @@ permissions:
 concurrency:
   # Keep scheduled/manual discovery runs together while separating them from
   # normal push/PR gates on the same ref.
-  group: integration-${{ github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'discovery' || github.event_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always

@@ -13,6 +13,7 @@ pub mod detect;
 pub mod dylint_driver;
 pub mod modules;
 pub mod rustc;
+mod rustc_host;
 
 /// Shared helper: lift a `&[&str]` literal into the `&[String]` that
 /// `parse_invocation` expects.

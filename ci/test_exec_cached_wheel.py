@@ -15,14 +15,33 @@ import uuid
 from pathlib import Path
 
 
+def _dump_daemon_logs() -> None:
+    cache_dir = os.environ.get("ZCCACHE_CACHE_DIR")
+    if not cache_dir:
+        return
+    for log in sorted(Path(cache_dir).rglob("*.log")):
+        try:
+            text = log.read_text(errors="replace")
+        except OSError as error:
+            text = f"<unreadable: {error}>"
+        print(f"----- {log} -----\n{text}", flush=True)
+
+
 def _run(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    result = subprocess.run(
         [binary, *args],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=30,
     )
+    if result.returncode != 0:
+        print(f"zccache {' '.join(args)} exited {result.returncode}", flush=True)
+        print(f"----- stdout -----\n{result.stdout}", flush=True)
+        print(f"----- stderr -----\n{result.stderr}", flush=True)
+        _dump_daemon_logs()
+        result.check_returncode()
+    return result
 
 
 def main() -> None:
@@ -33,7 +52,9 @@ def main() -> None:
         raise AssertionError("installed wheel did not place zccache on PATH")
 
     namespace = f"python-exec-cached-{uuid.uuid4().hex}"
-    with tempfile.TemporaryDirectory(prefix="zccache-exec-cached-") as temp:
+    with tempfile.TemporaryDirectory(
+        prefix="zccache-exec-cached-", ignore_cleanup_errors=True
+    ) as temp:
         os.environ["ZCCACHE_CACHE_DIR"] = str(Path(temp) / "cache")
         os.environ["ZCCACHE_DAEMON_NAMESPACE"] = namespace
         source = Path(temp) / "input.txt"

@@ -109,6 +109,21 @@ pub fn maybe_emit_first_run_banner(cache_root: &Path) {
     }
 }
 
+/// Run [`maybe_emit_first_run_banner`] on a detached background thread.
+///
+/// The Defender query shells out to `powershell.exe`, which is unbounded:
+/// on the `windows-11-arm64` 20260914 runner image it outlived the CLI's
+/// 10 s lockfile grace and failed every `zccache start`. The banner is a
+/// perf hint, so daemon startup must never wait for it.
+pub fn spawn_first_run_banner(cache_root: crate::NormalizedPath) {
+    let spawned = std::thread::Builder::new()
+        .name("zccache-defender-banner".to_owned())
+        .spawn(move || maybe_emit_first_run_banner(cache_root.as_path()));
+    if let Err(error) = spawned {
+        tracing::debug!(%error, "failed to spawn Defender banner thread");
+    }
+}
+
 /// Errors returned by the Windows Defender PowerShell wrappers.
 #[derive(Debug)]
 pub enum DefenderError {
@@ -279,6 +294,18 @@ mod tests {
         let mut sorted = paths.clone();
         sorted.sort();
         assert_eq!(paths, sorted);
+    }
+
+    #[test]
+    fn spawn_first_run_banner_does_not_block_caller() {
+        let tmp = TempDir::new().unwrap();
+        let started = std::time::Instant::now();
+        spawn_first_run_banner(crate::NormalizedPath::new(tmp.path()));
+        let elapsed_ns = started.elapsed().as_nanos();
+        assert!(
+            elapsed_ns < 250_000_000,
+            "banner must not block daemon startup; took {elapsed_ns} ns"
+        );
     }
 
     #[test]

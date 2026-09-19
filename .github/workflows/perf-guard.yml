@@ -22,8 +22,8 @@ on:
       - ".github/workflows/perf-guard.yml"
 
 concurrency:
-  group: perf-guard-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: bench-fingerprint-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Tests every hypothesis for why zccache cache hits break cargo fingerprints.
 # Each job does: cold build -> clean -> warm build -> no-op build (measure + diagnose)

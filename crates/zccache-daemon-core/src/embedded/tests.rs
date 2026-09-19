@@ -39,17 +39,23 @@ mod streaming_tests {
     #[test]
     fn compile_chunk_done_carries_outcome_fields() {
         // Pin the public shape of the terminal Done event.
+        let memory = ChildMemory {
+            peak_rss_bytes: Some(7),
+            tree_peak_rss_bytes: Some(9),
+        };
         let done = CompileChunk::Done {
             exit_code: 0,
             cached: true,
             cache_outcome: CacheOutcome::Hit,
             compile_id: "test-id".to_string(),
+            child_memory: memory,
         };
         let CompileChunk::Done {
             exit_code,
             cached,
             cache_outcome,
             compile_id,
+            child_memory,
         } = done
         else {
             panic!("constructor must produce a Done variant");
@@ -58,6 +64,7 @@ mod streaming_tests {
         assert!(cached);
         assert_eq!(cache_outcome, CacheOutcome::Hit);
         assert_eq!(compile_id, "test-id");
+        assert_eq!(child_memory, memory);
     }
 
     #[test]

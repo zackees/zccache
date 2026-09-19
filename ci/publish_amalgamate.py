@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -167,6 +167,8 @@ def write_publish_lib_rs(
 //! still get parallel compilation from the internal workspace crates.
 
 {internal_declarations}
+#[cfg(feature = "mimalloc-allocator")]
+pub use mimalloc_pprof;
 /// Issue zccache#926 - durable audit JSONL writer for the embedded service.
 pub use daemon_core::audit_writer;
 #[cfg(feature = "ci")]
@@ -241,6 +243,11 @@ def rewrite_rust_source_for_amalgamation(
     module: str,
     module_map: dict[str, str],
 ) -> str:
+    if module in {"hash", "compiler"}:
+        # The published native facade embeds these crates with their native
+        # default enabled. Crate-local feature names do not survive amalgamation.
+        text = text.replace('#[cfg(feature = "native")]\n', "")
+        text = text.replace('#[cfg(all(test, feature = "native"))]', "#[cfg(test)]")
     text = re.sub(r"\bcrate::", f"crate::{module}::", text)
     for crate_name, module_name in sorted(
         module_map.items(),
@@ -392,7 +399,7 @@ def assert_publish_crate_is_self_contained(
     manifest_errors = [
         crate
         for crate in sorted(module_map)
-        if re.search(rf"^{re.escape(crate)}\s*=", manifest, re.M)
+        if re.search(rf"^{re.escape(crate)}\s*=", manifest, re.MULTILINE)
     ]
     source_errors = [
         rust_crate_ident(crate)
@@ -412,7 +419,9 @@ def assert_publish_crate_is_self_contained(
             details.append("manifest dependencies: " + ", ".join(manifest_errors))
         if source_errors:
             details.append("source references: " + ", ".join(source_errors))
-        raise RuntimeError("amalgamated crate is not self-contained: " + "; ".join(details))
+        raise RuntimeError(
+            "amalgamated crate is not self-contained: " + "; ".join(details)
+        )
 
 
 def main() -> None:

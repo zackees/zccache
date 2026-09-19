@@ -34,6 +34,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | Compile journal record shape | [journal-schema.md](journal-schema.md) |
 | `ZCCACHE_CACHE_DIR` contract + `zccache cache-root` | [runtime.md § Cache root invariants](architecture/runtime.md#cache-root-invariants) |
 | zccache vs sccache feature matrix | [FEATURE-MATRIX.md](FEATURE-MATRIX.md) — generated from [feature-matrix.yaml](feature-matrix.yaml) by `ci/render_feature_matrix.py` |
+| mtime snapshot/replay (`zccache snapshot`/`replay`, #1595) | `crates/zccache-fingerprint/README.md` — `mtime_replay` module; CLI in `cli/commands/mtime.rs` |
 
 ## Where to document new features
 

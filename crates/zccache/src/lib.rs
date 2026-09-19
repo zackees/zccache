@@ -5,6 +5,8 @@
 //! should `use crate::<module>::*` instead of the legacy
 //! `zccache_<module>::*` paths, which are being deleted wave by wave.
 
+#[cfg(feature = "mimalloc-allocator")]
+pub use mimalloc_pprof;
 pub use zccache_artifact as artifact;
 pub use zccache_audit as audit;
 /// Issue zccache#926 — durable audit JSONL writer for the embedded service.

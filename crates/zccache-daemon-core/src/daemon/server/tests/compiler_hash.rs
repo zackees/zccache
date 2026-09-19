@@ -74,7 +74,7 @@ async fn changed_compiler_identity_attributes_version_skew() {
     .unwrap();
     let cache = CompilerHashCache::new();
 
-    let (_, reason, _) = crate::daemon::compile_journal::capture_miss_reason(Box::pin(async {
+    let (_, reason, _, _) = crate::daemon::compile_journal::capture_miss_reason(Box::pin(async {
         cache.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([1; 32])));
         std::fs::write(&compiler, b"second compiler").unwrap();
         kernal_api::platform::fs::set_file_mtime(

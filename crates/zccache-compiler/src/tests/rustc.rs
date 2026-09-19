@@ -252,16 +252,91 @@ fn rustc_dylint_library_cdylib_is_cacheable() {
         .ends_with(format!("liblint.{extension}")));
 }
 
+/// zackees/soldr#3044: dylint also builds lint cdylibs under
+/// `target/dylint/tests/<lint>/target/...` when it compiles a lint's own
+/// test crate. That tree is the same modeled output shape as
+/// `dylint/libraries` — same `-C linker=dylint-link`, same sole `cdylib`
+/// crate type, same absent `--target`/`-C extra-filename` — so it must be
+/// cacheable too. Before the fix the out-dir adjacency gate recorded it as
+/// `uncacheable_input`.
+///
+/// Sibling of `rustc_dylint_library_cdylib_is_cacheable`; only the out-dir
+/// differs.
 #[cfg(not(target_os = "windows"))]
 #[test]
-fn rustc_dylint_cdylib_requires_the_complete_narrow_shape() {
+fn rustc_dylint_tests_tree_cdylib_is_cacheable() {
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-name",
+            "lint",
+            "--crate-type",
+            "cdylib",
+            "--emit=link",
+            "--out-dir",
+            "/tmp/target/dylint/tests/ban_raw_process_creation/target/nightly/release/deps",
+            "-C",
+            "linker=/tools/dylint-link",
+            "src/lib.rs",
+        ]),
+    );
+    let ParsedInvocation::Cacheable(compilation) = result else {
+        panic!("expected Dylint cdylib under dylint/tests to be cacheable");
+    };
+    let extension = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    assert!(compilation
+        .output_file
+        .ends_with(format!("liblint.{extension}")));
+}
+
+/// zackees/soldr#3044 over-widening guard: dropping the output-tree
+/// conjunct must not make *any* cdylib cacheable. The `-C
+/// linker=dylint-link` signal is what identifies a Dylint lint library, and
+/// it is still required — a plain cdylib in an ordinary `target/release/deps`
+/// tree, with or without an unrelated linker, stays refused.
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn rustc_non_dylint_cdylib_without_the_dylint_linker_stays_excluded() {
     for invocation in [
         vec![
             "--crate-type=cdylib",
             "--out-dir=/tmp/target/release/deps",
-            "-Clinker=/tools/dylint-link",
             "src/lib.rs",
         ],
+        vec![
+            "--crate-type=cdylib",
+            "--out-dir=/tmp/target/release/deps",
+            "-Clinker=/tools/cc",
+            "src/lib.rs",
+        ],
+        // Not the dylint linker, merely near it in spelling.
+        vec![
+            "--crate-type=cdylib",
+            "--out-dir=/tmp/target/dylint/tests/lint/target/nightly/release/deps",
+            "-Clinker=/tools/dylint-link-wrapper",
+            "src/lib.rs",
+        ],
+    ] {
+        let result = parse_invocation("rustc", &args(&invocation));
+        assert!(
+            matches!(result, ParsedInvocation::NonCacheable { .. }),
+            "cdylib without the dylint linker must stay non-cacheable: {invocation:?}"
+        );
+    }
+}
+
+/// The remaining conjuncts of the narrow Dylint cdylib shape. The output
+/// tree is deliberately absent from this list since zackees/soldr#3044 —
+/// `dylint/tests` is now accepted, see
+/// `rustc_dylint_tests_tree_cdylib_is_cacheable`.
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn rustc_dylint_cdylib_requires_the_complete_narrow_shape() {
+    for invocation in [
         vec![
             "--crate-type=cdylib",
             "--out-dir=/tmp/target/dylint/libraries/nightly/release/deps",
@@ -401,6 +476,36 @@ fn rustc_output_from_out_dir() {
             assert_eq!(
                 c.output_file,
                 NormalizedPath::new("/target/debug/deps/libmylib-abc123.rlib")
+            );
+        }
+        other => panic!("expected cacheable, got: {other:?}"),
+    }
+}
+
+#[test]
+fn rustc_metadata_only_without_crate_name_uses_file_stem() {
+    // soldr#3241: a single-file `rustc --crate-type lib --emit metadata
+    // some_file.rs` with no `--crate-name` defaults the crate name to the
+    // source file stem, so the primary output is `libsome_file.rmeta`, not
+    // `libunknown.rmeta`. The staged plan must agree with rustc's actual
+    // output or the post-compile collector finds nothing and reports a
+    // missing primary output.
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-type",
+            "lib",
+            "--emit=metadata",
+            "--out-dir",
+            "/tmp/probe",
+            "some_file.rs",
+        ]),
+    );
+    match result {
+        ParsedInvocation::Cacheable(c) => {
+            assert_eq!(
+                c.output_file,
+                NormalizedPath::new("/tmp/probe/libsome_file.rmeta")
             );
         }
         other => panic!("expected cacheable, got: {other:?}"),

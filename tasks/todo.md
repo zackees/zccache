@@ -1,3 +1,94 @@
+# Pin kernal-api from crates.io (drop `_vender/kernal-api`)
+
+Goal: `feat/complete-kernal-integration` depends on a published, exact
+`kernal-api = "=0.1.15"` with no `_vender` path. Published 0.1.14 lacks the
+surfaces the branch took from the closed kernal-api#258 (`broker`,
+`async_process`, `process`, `fair_race!`/`biased_race!`/`task_local!`).
+kernal-api#263 forbids re-exporting running-process, so each gap is closed by
+either (a) migrating zccache to a facade-owned surface 0.1.14 already has, or
+(b) adding a facade-owned wrapper to kernal-api 0.1.15.
+
+## Gap map
+
+| zccache use (refs) | Resolution |
+|---|---|
+| `fair_race!` 13, `biased_race!` 7, `task_local!` 6 + `FairRaceN`/`BiasedRaceN`/`TaskLocal` | (b) port the owned std-only code from kernal-api 01891c7 `src/async_engine/{race,task_local}.rs` |
+| `broker` frame codec in `zccache-protocol/src/wire_frame.rs` | (a) `kernal_api::daemon_frame_v1::{DaemonFrame, DaemonFrameCodec}`; frozen frame bytes must stay identical |
+| `broker` `DaemonProcess`/`IdentityError`/`Endpoint`/`host_identity`/probe answer + `BackendHandle::probe_with_service` | (a) `kernal_api::daemon_identity::{DaemonIdentity, DaemonEndpoint, ProbeResponder, ...}`; (b) only for what is missing (service-name probe) |
+| `broker::verify_pid` (verify/force-kill/is-alive by identity) | (b) facade-owned daemon liveness/control op over a `DaemonIdentity` |
+| `broker` client refusal classification (`zccache-ipc/src/broker.rs`) | (b) facade-owned broker client: connect route, refusal kinds, client errors, error codes (decided: keep the broker lane) |
+| `async_process` session (33 builder sites, `process_session.rs`) | (a) `SpawnSpec` + `ProcessSession`; (b) add only the missing knobs (spawn admission, session queue/chunk/grace limits, best-effort priority, stream-error detail) |
+| `async_process::spawn_tokio` (test only) | rewrite the test onto `SpawnSpec` |
+| `process::spawn_daemon*` (cli-core, 2 sites) | (a) `platform::process::spawn_sync_daemon` |
+
+## Phase A: kernal-api 0.1.15 (worktree off kernal-api `main`)
+
+- [ ] A1 Race macros + `task_local!`: port from 01891c7, rewrite the async_engine
+      "no race combinator" doc, move contract tests into `tests/<category>/` modules.
+- [ ] A2 Process session gaps: extend `SpawnSpec`/`ProcessSessionOptions`/
+      `ProcessSession` through the existing private `process_adapter`.
+- [ ] A3 Daemon control: verify-by-identity, is-alive, force-kill as owned
+      types; add the service-name probe if `probe_same_endpoint` does not cover it.
+- [ ] A6 Broker client facade behind a `broker-client` feature (running-process/client stays private).
+- [ ] A4 Per-capability: feature gating, compilation-boundary RED/GREEN case,
+      facade_policy + boundary Dylint clean, docs.rs/README/COMPATIBILITY entries.
+- [ ] A5 One PR per capability (A1, A2, A3, A6), merged on green; then bump to
+      0.1.15 (all version sites per 625173e) and confirm the crates.io publish.
+
+## Phase B: zccache branch
+
+- [x] B0 Merge `origin/main` into `feat/complete-kernal-integration`.
+- [ ] B1 wire_frame.rs → `daemon_frame_v1` (frozen-bytes wire tests stay green).
+- [ ] B2 Identity/probe → `daemon_identity`; keep the lockfile/sidecar JSON
+      readable across versions or confirm version-namespaced endpoints make it moot.
+- [ ] B3 `process_session.rs` and builder sites → `SpawnSpec`/`ProcessSession`.
+- [ ] B4 `spawn_daemon*` → `spawn_sync_daemon`.
+- [ ] B5 `zccache-ipc/src/broker.rs` → the A6 broker-client facade.
+- [ ] B6 Pin `=0.1.15`, delete `_vender`, regenerate the lockfile, verify no
+      `_vender` path remains; `./test`, workspace clippy, dylint, wire
+      characterization, `ci/check_kernal_api_baseline.py`; open the PR.
+
+# kernal-api#13 portable Rustc policy
+
+- [x] RED missing output-plan seam; GREEN 384 compiler tests after extraction.
+- [x] Preserve native explicit-output and directory-join semantics across host facts (24-case fixture; complete 385-test compiler suite passes).
+- [x] Separate lexical path syntax from compiler host and expose a native-dependency-free policy surface (only typed-path remains).
+- [x] Validate 387 native tests, three no-default public API tests, native/no-default strict Clippy, no-default docs, 11 packaging tests, and Astra review.
+- [ ] Execute identical parser fixtures through Core and Component guests, then review and merge.
+- [ ] Complete controlled cache hit/miss and bounded process-output proof.
+
+# kernal-api#13 resumable request encoding
+
+- [x] RED: compare a resumable cursor with the literal existing byte protocol (missing cursor, build log 20260913T103304Z).
+- [x] Share one encoding implementation between synchronous native sinks and async guest consumers (24 hash tests and strict all-target Clippy pass).
+- [x] Preserve lazy argv consumption and first-error behavior; test, lint, review (Astra clean; focused test independently passed).
+- [x] Isolate encoder-only guest dependencies; Wasm check and empty normal dependency graph pass. Native 24 tests, encoder-only three tests, packaging ten tests, strict Clippy and Ruff pass.
+- [ ] Finish downstream daemon fingerprint validation, then open the coordinated PR.
+- [ ] Follow with actual kernel hash execution and portable compiler policy; crate compilation alone is not runtime acceptance.
+
+# kernal-api#13 explicit Rustc parser host facts
+
+- [x] RED: inject Linux/macOS/Windows naming facts independently of the test host.
+- [x] Preserve the native entry point while passing host facts into the existing parser.
+- [x] Check proc-macro/bin/Dylint policy, target override, and original argv preservation.
+- [ ] Run compiler tests, strict Clippy, review, and open a coordinated PR.
+- [ ] Follow with portable dependency/path seams and actual kernel-hosted Wasm proof; this change alone does not make the compiler crate portable.
+
+# kernal-api#13 shared request-fingerprint encoding
+
+- [x] Capture literal-byte compatibility fixtures against the existing daemon encoder.
+- [x] RED: expose a fallible, allocation-free byte emitter in the existing hash crate.
+- [x] Make the native daemon consume the same encoder with lazy normalization.
+- [x] Validate callback failure, raw depfile salts, existing normalization tests, Clippy, and review.
+- [ ] Open a coordinated PR; portable host/path policy and actual kernel guest effects remain follow-up work.
+
+Validation: original-encoder literal baseline passed; missing-emitter RED E0432;
+hash 23 passed; daemon fingerprint/path-policy 29 passed; full daemon 837 passed,
+28 existing ignored (139.73s). Strict selected-crate all-target Clippy with
+`--no-deps` passed (92.86s), rustfmt/diff checks and Astra review clean. Broader
+dependency Clippy fails on three existing `double_must_use` diagnostics in
+untouched `zccache-protocol/src/wire_prost/api.rs` (173, 185, 192).
+
 # #1555 exclusive compiler admission includes pre-hashing
 
 - [x] Trace soldr CI's signal-terminated exclusive `soldr_cli --test` compile to zccache's post-admission Rayon pre-hash overlap.

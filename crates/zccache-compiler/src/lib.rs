@@ -6,50 +6,75 @@
 //! The implementation is split across focused submodules:
 //!
 //! - `detect` (private) — `detect_family` + extension-classification helpers
-//! - `parse` (private) — Clang/GCC/MSVC dispatch entry point ([`parse_invocation`])
+//! - `parse` (private, native feature) — Clang/GCC/MSVC dispatch entry point
 //! - `parse_rustc` (private) — Rustc invocation parser (different model: crate types, --emit, etc.)
-//! - [`parse_msvc`] — MSVC / clang-cl argument parser
-//! - [`parse_archiver`], [`parse_linker`], [`parse_rustfmt`] — sibling tool parsers
-//! - [`response_file`], [`strict_paths`], [`arduino`] — utility modules
+//! - `parse_msvc` — native MSVC / clang-cl argument parser
+//! - `parse_archiver`, `parse_linker`, `parse_rustfmt` — native sibling tool parsers
+//! - `response_file`, `strict_paths`, `arduino` — native utility modules
 //!
-//! Public surface (re-exported from this module): [`CompilerFamily`],
-//! [`ParsedInvocation`], [`CacheableCompilation`], [`detect_family`],
-//! [`parse_invocation`].
+//! Disabling default features retains [`CompilerFamily`], [`detect_family`],
+//! and [`parse_rustc_plan_with_syntax`]. Native features additionally provide
+//! `ParsedInvocation`, `CacheableCompilation`, and `parse_invocation`.
 
 #![allow(clippy::missing_errors_doc)]
 
+#[cfg(feature = "native")]
 pub mod arduino;
 mod detect;
+#[cfg(feature = "native")]
 mod dylint;
+#[cfg(feature = "native")]
 mod gnu_flags;
+#[cfg(feature = "native")]
 pub mod output_policy;
+#[cfg(feature = "native")]
 mod parse;
+#[cfg(feature = "native")]
 pub mod parse_archiver;
+#[cfg(feature = "native")]
 pub mod parse_linker;
+#[cfg(feature = "native")]
 pub mod parse_msvc;
 mod parse_rustc;
+#[cfg(feature = "native")]
 pub mod parse_rustfmt;
+#[cfg(feature = "native")]
 pub mod response_file;
+mod rustc_path;
+#[cfg(feature = "native")]
 pub mod side_outputs;
+#[cfg(feature = "native")]
 pub mod strict_paths;
 
+#[cfg(feature = "native")]
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "native")]
 use std::sync::Arc;
+#[cfg(feature = "native")]
 use zccache_core::NormalizedPath;
 
 pub use detect::{detect_family, dylint_inner_rustc_args, is_dylint_driver, is_msvc_cl};
+#[cfg(feature = "native")]
 pub use dylint::{
     dylint_env_affects_output, prepare_dylint_cache_env, prepare_dylint_cache_env_with_identities,
     DYLINT_CACHE_INPUT_HASH_ENV, DYLINT_LIBS_ENV,
 };
+#[cfg(feature = "native")]
 pub use gnu_flags::{gnu_flag_takes_value, GNU_FLAGS_WITH_VALUE};
+#[cfg(feature = "native")]
 pub use output_policy::{
     rustc_archive_hardlink_eligible, rustc_output_delivery, DeliveryPolicy, MutationContract,
     OutputClassification, OutputRole,
 };
+#[cfg(feature = "native")]
 pub use parse::parse_invocation;
+#[cfg(feature = "native")]
+pub use parse_rustc::parse_rustc_invocation_with_host;
+pub use parse_rustc::{parse_rustc_plan_with_syntax, RustcHost, RustcOutputPlan, RustcPlan};
+pub use rustc_path::RustcPathSyntax;
+#[cfg(feature = "native")]
 pub use side_outputs::unmodeled_side_output_flag;
 
 /// Supported compiler families.
@@ -112,6 +137,7 @@ impl CompilerFamily {
 
 /// The result of parsing a compiler invocation.
 #[derive(Debug, Clone)]
+#[cfg(feature = "native")]
 pub enum ParsedInvocation {
     /// A cacheable compilation (single source to single object).
     Cacheable(CacheableCompilation),
@@ -134,6 +160,7 @@ pub enum ParsedInvocation {
 
 /// A cacheable compilation invocation.
 #[derive(Debug, Clone)]
+#[cfg(feature = "native")]
 pub struct CacheableCompilation {
     /// The compiler executable path.
     pub compiler: NormalizedPath,
@@ -164,6 +191,7 @@ pub enum SourceMode {
     Module,
 }
 
+#[cfg(feature = "native")]
 impl SourceMode {
     /// Whether this mode implies compilation without an explicit `-c` or `--precompile` flag.
     /// Header and header-unit modes imply compilation (like PCH generation).

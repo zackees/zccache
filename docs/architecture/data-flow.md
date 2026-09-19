@@ -133,6 +133,24 @@ Non-cacheable patterns detected by the CLI:
 - `-` as input (stdin source).
 - Unrecognized compiler.
 
+## Shared Request-Fingerprint Encoding
+
+The daemon's request-cache fast path uses
+`zccache_hash::request_fingerprint::emit_request_fingerprint`. This is the
+existing `zccache-request-v2` encoding, not the complete artifact key. It emits
+the domain, normalized compiler, ordered normalized argv, optional raw user
+depfile salt, normalized working directory, and selected sorted environment.
+The daemon still owns normalization and environment selection; detached Rust
+remap values are normalized lazily without collecting another argument vector.
+
+The emitter accepts a fallible byte sink and returns its first error without
+emitting more chunks or consuming further arguments. Native callers feed the
+existing `StreamHasher`; no whole-key buffer or extra IPC round trip is added.
+Literal-byte daemon fixtures retain the previous encoding, including `-MF -`
+and dangling depfile/remap flags. This extraction is a prerequisite for
+kernal-api#13, not proof that the native hash dependency graph or path policy
+can yet run in a Wasm guest.
+
 ## Rustc Cache-Key Specifics (zccache#1021)
 
 The rustc lane shares the pipeline above but has four key-scope rules of
@@ -188,6 +206,26 @@ its own:
   of large system libraries. Revisit if a real-world stale-bin report
   lands.
 
+## Explicit Rustc Host Policy
+
+`zccache_compiler::parse_rustc_invocation_with_host` runs the existing Rustc
+parser with a caller-supplied `RustcHost` and resolved test-cache opt-in. The
+native `parse_invocation` path keeps resolving those facts through its existing
+platform/configuration providers, then delegates to that same implementation.
+No compiler arguments or cache keys are changed by this seam.
+
+Host-side proc-macro/Dylint names use the supplied Linux/macOS/Windows family;
+an explicit compiler `--target` still controls executable naming. These are
+different inputs from the target used to compile a future Wasm policy module.
+The focused `rustc_host` tests exercise all three host families in every native
+test run, including Dylint admission and the test-harness opt-in.
+
+This is preparatory work for [kernal-api #13](https://github.com/zackees/kernal-api/issues/13),
+not a portable-crate claim. `NormalizedPath`, lexical path operations, and the
+compiler dependency graph still have native semantics. The Wasm proof must
+resolve those seams and route hashing/process effects through the kernel;
+the daemon and its native lifecycle remain outside the guest.
+
 ## Nested Dylint Driver Caching
 
 Dylint invokes Rust through a two-level compiler command:
@@ -232,13 +270,22 @@ lint output.
 
 Dylint's earlier lint-library bootstrap is a separate, narrowly modeled Rust
 `cdylib` lane on Linux and macOS. General `cdylib` and every Windows `cdylib`
-remain non-cacheable. The narrow lane requires the isolated
-`target/dylint/libraries/...` output tree, host compilation, no extra filename,
-and `dylint-link` as the linker. Its key includes the linker binary and link
-arguments. The artifact set contains both rustc's declared dynamic library and
-the toolchain-qualified sidecar that `dylint-link` byte-copies for Dylint to
-load. Missing package/toolchain identity fails back to the direct compiler
-path, so a hit cannot silently omit the sidecar.
+remain non-cacheable. The narrow lane requires `dylint-link` as the linker,
+host compilation, `cdylib` as the sole crate type, and no extra filename. Its
+key includes the linker binary and link arguments. The artifact set contains
+both rustc's declared dynamic library and the toolchain-qualified sidecar that
+`dylint-link` byte-copies for Dylint to load. Missing package/toolchain
+identity fails back to the direct compiler path, so a hit cannot silently omit
+the sidecar.
+
+The output tree is deliberately not part of that decision (zackees/soldr#3044).
+Dylint installs `dylint-link` only for its own lint libraries, but it writes
+them into more than one tree: `target/dylint/libraries/...` for a workspace's
+declared lints, and `target/dylint/tests/<lint>/target/...` when it builds a
+lint's own test crate. Requiring a `dylint`/`libraries` component pair
+therefore recorded every tests-tree lint `cdylib` as `uncacheable_input` while
+adding nothing the linker name had not already established. The linker is the
+identifying signal; the remaining conjuncts keep the lane narrow.
 
 This cache is separate from Cargo incremental compilation:
 

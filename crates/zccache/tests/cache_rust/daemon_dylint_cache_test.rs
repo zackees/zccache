@@ -663,10 +663,37 @@ async fn nested_dylint_hits_across_sibling_worktrees() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "integration-level: starts a real daemon, rustc, and system linker"]
 async fn perf_dylint_library_cdylib_restores_primary_and_toolchain_sidecar() {
+    dylint_cdylib_restores_primary_and_toolchain_sidecar(
+        "target/dylint/libraries/nightly/release/deps",
+    )
+    .await;
+}
+
+/// zackees/soldr#3044: the same end-to-end contract in the tree dylint uses
+/// when it builds a lint's *own test crate*. Nothing about the compile
+/// differs — same `-C linker=dylint-link`, same sole `cdylib` crate type,
+/// same `lib<crate>@<toolchain>.so` sidecar — only the output tree. Before
+/// the fix the `dylint`/`libraries` adjacency gate refused it, so this
+/// compile was recorded `uncacheable_input` and never hit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "integration-level: starts a real daemon, rustc, and system linker"]
+async fn perf_dylint_tests_tree_cdylib_restores_primary_and_toolchain_sidecar() {
+    dylint_cdylib_restores_primary_and_toolchain_sidecar(
+        "target/dylint/tests/lint/target/nightly/release/deps",
+    )
+    .await;
+}
+
+/// Shared body: compile a Dylint lint cdylib under `out_dir_rel`, delete both
+/// products, recompile, and require a warm hit that restores the primary
+/// artifact *and* the toolchain sidecar. Parameterized on the output tree
+/// because the tree is exactly what must no longer matter (soldr#3044).
+async fn dylint_cdylib_restores_primary_and_toolchain_sidecar(out_dir_rel: &str) {
     let Some(rustc) = zccache::test_support::find_rustc() else {
         eprintln!("skipping test: rustc not found");
         return;
     };
+    let out_dir_rel = out_dir_rel.to_string();
 
     zccache::test_support::test_timeout(async move {
         let tmp = tempfile::tempdir().unwrap();
@@ -681,9 +708,7 @@ async fn perf_dylint_library_cdylib_restores_primary_and_toolchain_sidecar() {
             "#[no_mangle]\npub extern \"C\" fn lint_fixture() -> u32 { 42 }\n",
         )
         .unwrap();
-        let out_dir = tmp
-            .path()
-            .join("target/dylint/libraries/nightly/release/deps");
+        let out_dir = tmp.path().join(&out_dir_rel);
         std::fs::create_dir_all(&out_dir).unwrap();
         let primary = out_dir.join("liblint.so");
         let sidecar = out_dir

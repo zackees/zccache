@@ -91,6 +91,42 @@ pub(crate) const fn stall_tick() -> Duration {
     STALL_TICK
 }
 
+/// How often the watchdog samples the child's resident-memory high-water mark
+/// (soldr#3152). The kernel maintains the high-water mark itself, so the tick
+/// only bounds how much growth in the child's final instant goes unseen. One
+/// `/proc/<pid>/status` / `proc_pid_rusage` / `GetProcessMemoryInfo` read.
+const MEMORY_SAMPLE_TICK: Duration = Duration::from_millis(250);
+
+/// The memory samples taken for one child: its own high-water mark and the
+/// largest resident total of its live process tree (zccache#1588), published
+/// to the enclosing compile scope when the wait ends — on every return path,
+/// including errors and cancellation, because it publishes from `Drop`.
+struct ChildMemorySample(crate::daemon::compile_journal::ChildMemory);
+
+impl ChildMemorySample {
+    fn observe(&mut self, pid: Option<u32>) {
+        let Some(pid) = pid else {
+            return;
+        };
+        // A zero reading is an image caught mid-exec, not a measurement.
+        let sample = crate::daemon::compile_journal::ChildMemory {
+            peak_rss_bytes: crate::platform::process::inspect::peak_rss_bytes(pid)
+                .filter(|&bytes| bytes > 0),
+            tree_peak_rss_bytes: crate::platform::process::inspect::tree_rss_bytes(pid)
+                .filter(|&bytes| bytes > 0),
+        };
+        self.0 = self.0.merge(sample);
+    }
+}
+
+impl Drop for ChildMemorySample {
+    fn drop(&mut self) {
+        if self.0 != crate::daemon::compile_journal::ChildMemory::default() {
+            crate::daemon::compile_journal::record_child_memory(self.0);
+        }
+    }
+}
+
 /// Env override for [`DEFAULT_STALL_WINDOW`], in milliseconds. `0` disables the
 /// alive-hung (Mode B) watchdog, leaving only the post-exit orphan-pipe (Mode A)
 /// watchdog active.
@@ -219,6 +255,17 @@ async fn watchdog_inner_impl(
     // fires the child has already exited and `child.id()` returns `None`, so we
     // record it now while it is still live.
     let child_pid = child.id();
+    // soldr#3152: sample the child's memory high-water mark while it runs.
+    // Samples use `child.id()`, which is `None` once Tokio has reaped the child,
+    // so a Unix sample can never read a reused pid. Where the platform keeps a
+    // held handle's final peak readable (Windows), it is re-read once after
+    // exit.
+    let mut peak_rss = ChildMemorySample(crate::daemon::compile_journal::ChildMemory::default());
+    // The race has five arms, so memory sampling shares the progress-sample
+    // arm: each tick fires at the earlier of the two persistent deadlines. The
+    // first memory sample is due immediately, matching an interval's first tick.
+    let mut next_memory_sample = Instant::now();
+    let mut next_stall_sample = Instant::now() + stall_tick;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut out: Vec<u8> = Vec::new();
@@ -303,16 +350,25 @@ async fn watchdog_inner_impl(
             }
         };
 
-        // Mode B tick: armed only while the child is still running and Mode B
-        // is enabled. Fires every `STALL_TICK` to sample progress; `pending()`
-        // otherwise so it never competes once the child has exited (Mode A
-        // takes over then).
-        let stall_armed = mode_b && exited.is_none();
-        let stall_tick_fut = async move {
-            if stall_armed {
-                kernal_api::async_engine::sleep(stall_tick).await;
+        // Sample tick: armed only while the child is still running. Fires at
+        // the next memory sample (every `MEMORY_SAMPLE_TICK`) or, when Mode B
+        // is enabled, the next progress sample (every `STALL_TICK`), whichever
+        // is earlier; `pending()` once the child has exited so it never
+        // competes with Mode A.
+        let sample_armed = exited.is_none();
+        let stall_armed = mode_b && sample_armed;
+        let sample_wait = sample_armed.then(|| {
+            let next = if stall_armed {
+                next_memory_sample.min(next_stall_sample)
             } else {
-                std::future::pending::<()>().await;
+                next_memory_sample
+            };
+            next.saturating_duration_since(Instant::now())
+        });
+        let sample_tick_fut = async move {
+            match sample_wait {
+                Some(wait) => kernal_api::async_engine::sleep(wait).await,
+                None => std::future::pending::<()>().await,
             }
         };
 
@@ -327,13 +383,13 @@ async fn watchdog_inner_impl(
             let mut stdout_read = std::pin::pin!(stdout_read);
             let mut stderr_read = std::pin::pin!(stderr_read);
             let mut grace_deadline = std::pin::pin!(grace_deadline);
-            let mut stall_tick_fut = std::pin::pin!(stall_tick_fut);
+            let mut sample_tick_fut = std::pin::pin!(sample_tick_fut);
             kernal_api::fair_race!(
                 (wait.as_mut(); exited.is_none()),
                 (stdout_read.as_mut(); !stdout_done),
                 (stderr_read.as_mut(); !stderr_done),
                 (grace_deadline.as_mut(); exited.is_some()),
-                (stall_tick_fut.as_mut(); stall_armed),
+                (sample_tick_fut.as_mut(); sample_armed),
             )
             .await
         };
@@ -343,6 +399,9 @@ async fn watchdog_inner_impl(
             // alongside so we notice exit promptly.
             kernal_api::async_engine::FairRace5::First(status) => {
                 let status = status?;
+                if crate::platform::process::inspect::PEAK_RSS_READABLE_AFTER_EXIT {
+                    peak_rss.observe(child_pid);
+                }
                 exited = Some((status, Instant::now()));
             }
             kernal_api::async_engine::FairRace5::Second(r) => match r {
@@ -418,6 +477,15 @@ async fn watchdog_inner_impl(
                 }
             }
             kernal_api::async_engine::FairRace5::Fifth(()) => {
+                let now = Instant::now();
+                if now >= next_memory_sample {
+                    peak_rss.observe(child.id());
+                    next_memory_sample = now + MEMORY_SAMPLE_TICK;
+                }
+                if !stall_armed || now < next_stall_sample {
+                    continue;
+                }
+                next_stall_sample = now + stall_tick;
                 // Mode B (issue #891): the child is still running. Sample CPU
                 // and decide whether it is wedged — no output for the whole
                 // stall window AND no CPU burned since the last sample. Either

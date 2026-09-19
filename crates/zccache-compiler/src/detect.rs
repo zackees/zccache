@@ -3,11 +3,13 @@
 use super::CompilerFamily;
 
 /// Source file extensions we recognize as C/C++.
+#[cfg(feature = "native")]
 pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
     "c", "cc", "cpp", "cxx", "c++", "C", "m", "mm", "i", "ii", "cppm", "ixx", "s", "S",
 ];
 
 /// File extensions that imply module-interface mode even without `-x c++-module`.
+#[cfg(feature = "native")]
 pub(crate) const MODULE_EXTENSIONS: &[&str] = &["cppm", "ixx"];
 
 fn executable_stem(executable: &str) -> &str {
@@ -114,6 +116,7 @@ pub(crate) fn is_clang_cl_name(name: &str) -> bool {
 }
 
 /// Check if a path looks like a C/C++ source file.
+#[cfg(feature = "native")]
 pub(crate) fn is_source_file(path: &str) -> bool {
     if let Some(ext) = std::path::Path::new(path)
         .extension()

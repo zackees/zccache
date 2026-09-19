@@ -1296,6 +1296,7 @@ zccache exposes watcher-related APIs in three different places, depending on
 how you want to consume change detection:
 
 - CLI: `zccache fp ...` for daemon-backed fingerprint checks in scripts and CI
+- CLI: `zccache snapshot` / `zccache replay` for content-verified mtime restore of cached build trees
 - Python: `zccache.watcher` for cross-platform library-style file watching
 - Rust: `zccache-watcher` for the daemon-facing watcher pipeline primitives
 
@@ -1328,6 +1329,48 @@ zccache fp --cache-file .cache/headers.json invalidate
 
 The fingerprint API is the best fit for shell scripts, CI jobs, and build
 steps that only need a yes/no change answer rather than a stream of file events.
+
+### Content-verified mtime snapshot / replay
+
+Restoring a cached build tree (Ninja/CMake/Cargo/make) onto a fresh checkout
+is useless because checkout stamps every source with now, which makes the
+build system rebuild everything. Blanket `touch`-ing sources old (or
+restoring exact mtimes when the content has actually moved on) is a
+correctness bug instead: the build system keeps a stale object. zccache
+restores the recorded mtime only where size and BLAKE3 still match.
+
+```bash
+# before saving the cache (after a successful build)
+zccache snapshot --workspace . --out .zccache-mtimes.json --exclude build
+
+# after restoring the cache onto a fresh checkout
+zccache replay --workspace . --manifest .zccache-mtimes.json --min-applied-ratio 0.9
+zccache replay --workspace . --manifest .zccache-mtimes.json --json
+```
+
+`replay` classifies every recorded path:
+
+- missing or not a regular file -> `missing`
+- size differs -> `size_mismatch` (checked before hashing)
+- BLAKE3 differs -> `modified`
+- otherwise the recorded atime+mtime is set -> `applied`
+
+Any hash or set-times error counts as `modified` and leaves the fresh mtime
+in place: the worst case is a rebuild, never reuse of a stale object.
+
+Walk rules: no `git` required; `.git/` and `node_modules/` are skipped by
+name at any depth; `--exclude <path>` (repeatable, relative to
+`--workspace`) skips build-output directories by resolved path, so a source
+directory merely named `build` or `target` is still recorded. Paths are
+stored POSIX-relative so manifests move across OSes.
+
+Output/exit codes: prints `applied`, `missing`, `size_mismatch`, `modified`,
+`total` (a JSON object with `applied_ratio` under `--json`); exit `0` ok,
+`1` when `applied / total < --min-applied-ratio` (lets CI fail loudly when a
+restore silently did not take), `2` on error (unreadable/invalid manifest).
+
+See [crates/zccache-fingerprint/README.md](crates/zccache-fingerprint/README.md)
+for the manifest format.
 
 ### Python API
 

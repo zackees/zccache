@@ -98,6 +98,27 @@ impl RustcParsedArgs {
             (candidate == key).then_some(value)
         })
     }
+
+    /// Effective crate name for output-filename derivation.
+    ///
+    /// rustc defaults an absent `--crate-name` to the source file stem, so a
+    /// bare `rustc --crate-type lib foo.rs` writes `libfoo.rmeta` (and
+    /// `foo.d`, `foo.o`, …) even when `--out-dir` redirects the directory.
+    /// Every consumer that turns the crate name back into an output path —
+    /// the staged-plan expected-output enumeration, the post-compile output
+    /// collector, and the dep-info probe — must agree, or a single-file
+    /// `--emit metadata` compile without `--crate-name` declares
+    /// `libunknown.rmeta`, finds nothing rustc actually wrote, and fails as a
+    /// missing primary output.
+    #[must_use]
+    pub fn effective_crate_name(&self) -> &str {
+        self.crate_name.as_deref().unwrap_or_else(|| {
+            self.source_file
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("unknown")
+        })
+    }
 }
 
 /// Codegen options excluded from cache key (cosmetic or path-dependent).

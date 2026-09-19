@@ -60,6 +60,15 @@ gha = ["dep:zccache-gha", "zccache-artifact/gha"]
 symbols = ["dep:zccache-symbols"]
 tokio-console = ["dep:console-subscriber", "zccache-daemon-core/tokio-console"]
 heap-profile = ["kernal-api/allocator"]
+# Re-export `mimalloc_pprof` so an embedding host (soldr) can use it as its
+# `#[global_allocator]` without adding a separate, version-drifted
+# `mimalloc-pprof` pin of its own (soldr#3053). The dependency carries default
+# features, i.e. mimalloc-pprof's `pprof` (`MI_PPROF=1`) is on, so the
+# re-exported `MiMalloc` exposes the exact allocator counters. soldr reads
+# `prof::stats()` / `prof::dump_file`, which `kernal_api::allocator` does not
+# expose, so this one feature still names the crate directly; its pin matches
+# kernal-api's own `mimalloc-pprof` pin so both resolve to one allocator.
+mimalloc-allocator = ["dep:mimalloc-pprof"]
 # The release binary hosts both daemons behind argv[0] dispatch. The legacy
 # daemon [[bin]] features remain available as source-build/test shims.
 zccache-bin = ["cli", "download-daemon-entry", "kernal-api/allocator"]
@@ -132,6 +141,7 @@ tempfile = { workspace = true }
 
 # compiler
 clang = { workspace = true }
+typed-path = { version = "=0.12.3", default-features = false }
 
 # depgraph
 rkyv = { workspace = true }
@@ -192,6 +202,9 @@ tracing-subscriber = { workspace = true, optional = true }
 # and it pins `=0.9.4`. If that pin ever regresses below 0.9.3 the aarch64
 # Windows release lane breaks here, so it is a facade-side constraint now.
 kernal-api = { workspace = true, features = ["fs", "ipc", "broker", "async-process-client"] }
+# Only for the `mimalloc-allocator` re-export (soldr#3053); pinned to the same
+# exact version kernal-api declares so the graph holds one mimalloc.
+mimalloc-pprof = { version = "=0.9.4", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

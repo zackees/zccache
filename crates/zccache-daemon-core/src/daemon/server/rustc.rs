@@ -238,6 +238,24 @@ pub(super) async fn build_rustc_compile_context_async(
     }
 }
 
+/// Whether this rustc invocation is the Dylint lint-cdylib shape whose full
+/// output set zccache models (the linker-identity key material below, and the
+/// `lib<crate>@<toolchain>` sidecar in
+/// [`dylint_library_sidecar_output_path`]).
+///
+/// zackees/soldr#3044: deliberately not keyed on the output tree. Dylint
+/// installs `-C linker=dylint-link` only for its own lint libraries, but it
+/// writes them into more than one tree — `dylint/libraries` for a workspace's
+/// declared lints and `dylint/tests/<lint>/target/...` when it builds a lint's
+/// own test crate. Requiring a `dylint`/`libraries` component pair therefore
+/// dropped every tests-tree lint cdylib to `uncacheable_input` while adding
+/// nothing the linker name had not already established. The remaining
+/// conjuncts keep the shape narrow.
+///
+/// Must agree with the wrapper-side decision in
+/// `zccache-compiler`'s `parse_rustc_plan` — the two are the same predicate
+/// evaluated on either side of the IPC boundary, so widening one without the
+/// other makes the compile cacheable but its output set incomplete.
 fn is_dylint_cdylib_args(args: &crate::depgraph::RustcParsedArgs) -> bool {
     !crate::platform::host::is_windows()
         && args.crate_types == ["cdylib"]
@@ -248,13 +266,6 @@ fn is_dylint_cdylib_args(args: &crate::depgraph::RustcParsedArgs) -> bool {
                 .file_stem()
                 .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|stem| stem.eq_ignore_ascii_case("dylint-link"))
-        })
-        && args.out_dir.as_ref().is_some_and(|out_dir| {
-            let components: Vec<_> = out_dir.components().collect();
-            components.windows(2).any(|pair| {
-                pair[0].as_os_str() == std::ffi::OsStr::new("dylint")
-                    && pair[1].as_os_str() == std::ffi::OsStr::new("libraries")
-            })
         })
 }
 
@@ -487,7 +498,7 @@ pub(super) fn rustc_depfile_output_path(
     {
         return Some(path.clone());
     }
-    let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let crate_name = rustc_args.effective_crate_name();
     let extra_filename = rustc_args.extra_filename.as_deref().unwrap_or("");
     let output_dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
     Some(
@@ -516,7 +527,7 @@ pub(super) fn rustc_expected_output_paths(
         .find(|(kind, _)| kind == "link")
         .map(|(_, path)| path.clone());
     let mut paths = vec![explicit_link.unwrap_or_else(|| NormalizedPath::new(primary_output_path))];
-    let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let crate_name = rustc_args.effective_crate_name();
     let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
     let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
 
@@ -600,6 +611,18 @@ pub(super) fn rustc_expected_output_paths(
     paths
 }
 
+/// The `lib<crate>@<toolchain>` copy `dylint-link` writes beside the lint
+/// cdylib — the second half of the Dylint output set, without which a replayed
+/// hit would leave dylint unable to load the library it just "built".
+///
+/// zackees/soldr#3044: the output tree is not part of the decision. See
+/// [`is_dylint_cdylib_args`] — dylint builds lint cdylibs under
+/// `dylint/libraries` *and* under `dylint/tests/<lint>/target/...`, and the
+/// adjacency check rejected the latter. Because
+/// [`dylint_cdylib_has_complete_output_identity`] treats a `None` here as
+/// "identity incomplete", that rejection is what turned a tests-tree lint
+/// compile into `uncacheable_input` daemon-side even once the wrapper
+/// accepted it.
 fn dylint_library_sidecar_output_path(
     rustc_args: &crate::depgraph::RustcParsedArgs,
     primary_output_path: &Path,
@@ -611,14 +634,6 @@ fn dylint_library_sidecar_output_path(
     }
     let linker_stem = rustc_args.linker.as_ref()?.file_stem()?.to_str()?;
     if !linker_stem.eq_ignore_ascii_case("dylint-link") {
-        return None;
-    }
-    let out_dir = rustc_args.out_dir.as_ref()?;
-    let components: Vec<_> = out_dir.components().collect();
-    if !components.windows(2).any(|pair| {
-        pair[0].as_os_str() == std::ffi::OsStr::new("dylint")
-            && pair[1].as_os_str() == std::ffi::OsStr::new("libraries")
-    }) {
         return None;
     }
     let env = client_env?;
@@ -759,7 +774,7 @@ pub(super) fn collect_rustc_output_files(
     }];
 
     // Find additional outputs based on --emit types
-    let crate_name = rustc_args.crate_name.as_deref().unwrap_or("unknown");
+    let crate_name = rustc_args.effective_crate_name();
     let ext_suffix = rustc_args.extra_filename.as_deref().unwrap_or("");
     let dir = rustc_args.out_dir.as_deref().unwrap_or(cwd);
 

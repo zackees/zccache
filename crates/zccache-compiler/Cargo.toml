@@ -10,13 +10,18 @@ readme = "README.md"
 description = "Compiler detection and invocation parsing for zccache"
 publish = false
 
+[features]
+default = ["native"]
+native = ["dep:clang", "dep:kernal-api", "dep:serde_json", "dep:thiserror", "dep:zccache-core", "dep:zccache-hash"]
+
 [dependencies]
-clang = { workspace = true }
-kernal-api = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-zccache-core = { workspace = true }
-zccache-hash = { workspace = true }
+typed-path = { version = "=0.12.3", default-features = false }
+clang = { workspace = true, optional = true }
+kernal-api = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+zccache-core = { workspace = true, optional = true }
+zccache-hash = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

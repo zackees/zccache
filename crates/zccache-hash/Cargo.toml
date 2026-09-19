@@ -10,9 +10,13 @@ readme = "README.md"
 description = "Hashing utilities and cache key builders for zccache"
 publish = false
 
+[features]
+default = ["native"]
+native = ["dep:kernal-api", "dep:serde"]
+
 [dependencies]
-kernal-api = { workspace = true }
-serde = { workspace = true }
+kernal-api = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

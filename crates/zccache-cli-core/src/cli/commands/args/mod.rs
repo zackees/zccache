@@ -432,6 +432,40 @@ pub(crate) enum Commands {
         #[arg(long, default_value_t = 60)]
         stamp_seconds_ahead: u64,
     },
+    /// Record path, size, mtime and BLAKE3 of every regular file under a
+    /// workspace into a manifest (#1595). `.git/` and `node_modules/` are
+    /// skipped by name; `--exclude` dirs are skipped by resolved path.
+    #[command(name = "snapshot")]
+    Snapshot {
+        /// Workspace root to walk.
+        #[arg(long)]
+        workspace: PathBuf,
+        /// Manifest output path (JSON).
+        #[arg(long)]
+        out: PathBuf,
+        /// Build-output directory to exclude (repeatable). Matched by resolved
+        /// path, not by name; relative paths resolve against --workspace.
+        #[arg(long = "exclude", value_name = "PATH")]
+        exclude: Vec<PathBuf>,
+    },
+    /// Restore recorded mtimes only onto files whose size and BLAKE3 still
+    /// match the manifest (#1595). Changed, missing or unverifiable files keep
+    /// their fresh mtime so the build system rebuilds them.
+    #[command(name = "replay")]
+    Replay {
+        /// Workspace root the manifest's relative paths resolve against.
+        #[arg(long)]
+        workspace: PathBuf,
+        /// Manifest input path (JSON), written by `zccache snapshot`.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Emit the counts as a JSON object on stdout.
+        #[arg(long)]
+        json: bool,
+        /// Exit 1 when applied/total is below this ratio (0.0..=1.0).
+        #[arg(long, value_name = "RATIO", value_parser = super::mtime::parse_ratio)]
+        min_applied_ratio: Option<f64>,
+    },
     /// Download and install matching debug symbols (PDB/dSYM/dwp) next to
     /// the running zccache binary. See `zccache#276`.
     Symbols {
@@ -671,6 +705,8 @@ pub(crate) const KNOWN_SUBCOMMANDS: &[&str] = &[
     "snapshot-bytes",
     "snapshot-fp-record",
     "snapshot-fp-validate",
+    "snapshot",
+    "replay",
     "symbols",
     "cache",
     "cache-root",

@@ -224,7 +224,7 @@ pub(super) async fn dispatch_request(
                     env.clone(),
                     None,
                 );
-                let (resp, attributed_miss_reason, context_key) =
+                let (resp, attributed_miss_reason, context_key, child_memory) =
                     capture_miss_reason(Box::pin(handle_compile_ephemeral(
                         state,
                         client_pid,
@@ -242,6 +242,7 @@ pub(super) async fn dispatch_request(
                         ctx,
                         attributed_miss_reason,
                         context_key,
+                        child_memory,
                     )),
                 )
             };
@@ -362,7 +363,15 @@ pub(super) async fn dispatch_request(
                 );
                 let resp =
                     handle_link_ephemeral(state, client_pid, &tool, &ctx.args, &cwd, env).await;
-                (resp, Some(PendingJournalContext::new(ctx, None, None)))
+                (
+                    resp,
+                    Some(PendingJournalContext::new(
+                        ctx,
+                        None,
+                        None,
+                        crate::daemon::compile_journal::ChildMemory::default(),
+                    )),
+                )
             };
             match guarded_dispatch(conn, handler).await {
                 Some((response, ctx)) => (response, ctx),
@@ -557,7 +566,7 @@ async fn compile_response_for_session(
         clippy::expect_used,
         reason = "ctx.session_id is set to Some(session_id) immediately above (line 704); the Option wrap is purely for the JournalContext return field"
     )]
-    let (resp, attributed_miss_reason, context_key) =
+    let (resp, attributed_miss_reason, context_key, child_memory) =
         capture_miss_reason(Box::pin(handle_compile(
             state,
             ctx.session_id
@@ -576,6 +585,7 @@ async fn compile_response_for_session(
             ctx,
             attributed_miss_reason,
             context_key,
+            child_memory,
         )),
     )
 }

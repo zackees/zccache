@@ -1,20 +1,28 @@
 from __future__ import annotations
 
 import shutil
-import tomllib
 from pathlib import Path
 
 import pytest
+import tomllib
 
 from ci import release_checks
 from ci.publish_amalgamate import (
-    AmalgamatedModule,
     INTERNAL_MODULES,
+    AmalgamatedModule,
     drop_python_extension_bindings,
     prepare_zccache_crate_for_publish,
     rewrite_rust_source_for_amalgamation,
     rewrite_zccache_manifest,
 )
+
+
+def test_compiler_amalgamation_retains_native_surface() -> None:
+    source = '#[cfg(feature = "native")]\npub mod parse;\n#[cfg(all(test, feature = "native"))]\nmod tests;\n'
+    assert (
+        rewrite_rust_source_for_amalgamation(source, module="compiler", module_map={})
+        == "pub mod parse;\n#[cfg(test)]\nmod tests;\n"
+    )
 
 
 def test_zccache_publish_manifest_keeps_gha_feature_dependencies(
@@ -188,6 +196,11 @@ sha2 = { workspace = true, optional = true }
     hash_src = root / "crates" / "zccache-hash" / "src"
     hash_src.mkdir(parents=True)
     (hash_src / "lib.rs").write_text(
+        '#[cfg(feature = "native")]\nmod native;\n'
+        '#[cfg(feature = "native")]\npub use native::*;\n',
+        encoding="utf-8",
+    )
+    (hash_src / "native.rs").write_text(
         "pub struct ContentHash;\n",
         encoding="utf-8",
     )
@@ -208,34 +221,34 @@ sha2 = { workspace = true, optional = true }
 
     assert (zccache / "src" / "core" / "mod.rs").is_file()
     assert (zccache / "src" / "hash" / "mod.rs").is_file()
+    assert (zccache / "src" / "hash" / "native.rs").is_file()
+    assert (zccache / "src" / "hash" / "mod.rs").read_text(
+        encoding="utf-8"
+    ) == "mod native;\npub use native::*;\n"
     assert (zccache / "proto" / "zccache_v1.proto").is_file()
     assert "crate::hash::ContentHash" in (
         zccache / "src" / "core" / "mod.rs"
     ).read_text(encoding="utf-8")
-    assert "crate::core::VERSION" in (
-        zccache / "src" / "core" / "config.rs"
-    ).read_text(encoding="utf-8")
-    assert "pub mod core;" in (zccache / "src" / "lib.rs").read_text(
+    assert "crate::core::VERSION" in (zccache / "src" / "core" / "config.rs").read_text(
         encoding="utf-8"
     )
+    assert "pub mod core;" in (zccache / "src" / "lib.rs").read_text(encoding="utf-8")
     assert '#[cfg(feature = "download-daemon-entry")]' in (
         zccache / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
-    assert "pub mod download_daemon_entry;" in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert "pub mod dev_daemon_identity;" in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert '#[cfg(feature = "formatter")]' in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert "pub use cli_core::formatter;" in (
-        zccache / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
-    assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(
+    assert "pub mod download_daemon_entry;" in (zccache / "src" / "lib.rs").read_text(
         encoding="utf-8"
     )
+    assert "pub mod dev_daemon_identity;" in (zccache / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert '#[cfg(feature = "formatter")]' in (zccache / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "pub use cli_core::formatter;" in (zccache / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(encoding="utf-8")
 
 
 def test_release_metadata_allows_only_public_zccache_crate(
