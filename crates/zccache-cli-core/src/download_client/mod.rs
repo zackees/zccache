@@ -192,7 +192,7 @@ fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
             stdout: kernal_api::platform::process::DaemonStdioSource::Null,
             stderr: kernal_api::platform::process::DaemonStdioSource::Null,
         },
-        kernal_api::platform::process::SyncEnvironment::Inherit,
+        kernal_api::platform::process::SyncEnvironment::UserBaseline,
         false,
     )
     .map_err(|e| format!("failed to spawn download daemon: {e}"))?;

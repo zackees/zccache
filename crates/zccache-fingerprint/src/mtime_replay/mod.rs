@@ -33,7 +33,7 @@
 
 use std::path::Path;
 
-use kernal_api::platform::fs::{DirectoryWalk, FileTime};
+use kernal_api::platform::fs::{DirectoryWalk, DirectoryWalkParallelism, FileTime};
 use rayon::prelude::*;
 use zccache_core::NormalizedPath;
 
@@ -171,6 +171,11 @@ fn walk_candidates(
     let walker = DirectoryWalk::new(root.to_path_buf())
         .follow_symbolic_links(false)
         .include_hidden_entries(true)
+        // soldr#2760: a walk on the shared pool can be aborted by its busy
+        // timeout when the machine is loaded -- a hard failure purely because
+        // the host was busy. A dedicated pool (threads: 0 = default size) has
+        // no such timeout, at the cost of one throwaway pool per snapshot.
+        .parallelism(DirectoryWalkParallelism::DedicatedPool { threads: 0 })
         .prune_directories(move |directory| {
             if directory
                 .file_name()

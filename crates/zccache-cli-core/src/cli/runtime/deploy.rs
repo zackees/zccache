@@ -477,7 +477,7 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     kernal_api::platform::process::spawn_sync_daemon(
         &mut cmd,
         kernal_api::platform::process::DaemonStdio::default(),
-        kernal_api::platform::process::SyncEnvironment::Inherit,
+        kernal_api::platform::process::SyncEnvironment::UserBaseline,
         false,
     )
     .map(|_child| ())
