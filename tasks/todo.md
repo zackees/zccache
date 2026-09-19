@@ -1,73 +1,41 @@
-# Pin kernal-api from crates.io (drop `_vender/kernal-api`)
+# Pin kernal-api from crates.io (drop `_vender/kernal-api`) — done
 
 Goal: `feat/complete-kernal-integration` depends on a published, exact
-`kernal-api = "=0.1.15"` with no `_vender` path. Published 0.1.14 lacks the
-surfaces the branch took from the closed kernal-api#258 (`broker`,
-`async_process`, `process`, `fair_race!`/`biased_race!`/`task_local!`).
-kernal-api#263 forbids re-exporting running-process, so each gap is closed by
-either (a) migrating zccache to a facade-owned surface 0.1.14 already has, or
-(b) adding a facade-owned wrapper to kernal-api 0.1.15.
+kernal-api with no `_vender` path. The branch had been built on the closed
+kernal-api#258, whose running-process re-exports kernal-api#263 forbids and
+whose ~60 owned platform items main never merged.
 
-## Gap map
+- [x] kernal-api facades, merged on green: daemon identity/control (#328),
+      process session knobs (#331), race macros + `task_local!` (#330),
+      broker client (#329) -> released 0.1.16.
+- [x] kernal-api ports of #258's owned items: fs (#336), ipc (#333),
+      process/host + memory readers (#335), async_engine + allocator (#334).
+- [x] Final gaps found by building zccache against main (#337): `Mutex` with
+      Arc-retaining owned guards, `Notify` futures, `Task::detach_on_drop`,
+      `RuntimeBuilder::max_blocking_threads`, `VerifiedDaemon::has_exited`,
+      `SyncEnvironment::UserBaseline`, `DirectoryWalk::parallelism`,
+      `ProcessOutputFault::new` -> released 0.1.17.
+- [x] B0-B5 zccache migration: frame codec, identity/probe/control, process
+      sessions (+ child RSS sampling), daemon launch, broker client.
+- [x] Restore the two behaviors the migration lost: daemons start from the
+      user's login environment (`UserBaseline`); `mtime_replay` walks on a
+      dedicated pool (soldr#2760).
+- [x] B6 Pin `kernal-api = { version = "=0.1.17", default-features = false }`,
+      remove `_vender` and its workspace exclude, regenerate the lockfile.
 
-| zccache use (refs) | Resolution |
-|---|---|
-| `fair_race!` 13, `biased_race!` 7, `task_local!` 6 + `FairRaceN`/`BiasedRaceN`/`TaskLocal` | (b) port the owned std-only code from kernal-api 01891c7 `src/async_engine/{race,task_local}.rs` |
-| `broker` frame codec in `zccache-protocol/src/wire_frame.rs` | (a) `kernal_api::daemon_frame_v1::{DaemonFrame, DaemonFrameCodec}`; frozen frame bytes must stay identical |
-| `broker` `DaemonProcess`/`IdentityError`/`Endpoint`/`host_identity`/probe answer + `BackendHandle::probe_with_service` | (a) `kernal_api::daemon_identity::{DaemonIdentity, DaemonEndpoint, ProbeResponder, ...}`; (b) only for what is missing (service-name probe) |
-| `broker::verify_pid` (verify/force-kill/is-alive by identity) | (b) facade-owned daemon liveness/control op over a `DaemonIdentity` |
-| `broker` client refusal classification (`zccache-ipc/src/broker.rs`) | (b) facade-owned broker client: connect route, refusal kinds, client errors, error codes (decided: keep the broker lane) |
-| `async_process` session (33 builder sites, `process_session.rs`) | (a) `SpawnSpec` + `ProcessSession`; (b) add only the missing knobs (spawn admission, session queue/chunk/grace limits, best-effort priority, stream-error detail) |
-| `async_process::spawn_tokio` (test only) | rewrite the test onto `SpawnSpec` |
-| `process::spawn_daemon*` (cli-core, 2 sites) | (a) `platform::process::spawn_sync_daemon` |
+## Review
 
-## Phase A: kernal-api 0.1.15 (worktree off kernal-api `main`)
+Validation against the crates.io release (no path/patch override; the
+lockfile resolves `kernal-api 0.1.17` from the registry, no `_vender` entry):
+workspace check 0, workspace clippy `-D warnings` 0, `./test` 2734 passed /
+0 failed, wire characterization 45 passed with no golden bytes changed,
+`ci/check_kernal_api_baseline.py` 0. Dylint could not run on this host
+(dylint-driver needs `libz.so.1`); CI runs it.
 
-- [ ] A1 Race macros + `task_local!`: port from 01891c7, rewrite the async_engine
-      "no race combinator" doc, move contract tests into `tests/<category>/` modules.
-- [ ] A2 Process session gaps: extend `SpawnSpec`/`ProcessSessionOptions`/
-      `ProcessSession` through the existing private `process_adapter`.
-- [ ] A3 Daemon control: verify-by-identity, is-alive, force-kill as owned
-      types; add the service-name probe if `probe_same_endpoint` does not cover it.
-- [ ] A6 Broker client facade behind a `broker-client` feature (running-process/client stays private).
-- [ ] A4 Per-capability: feature gating, compilation-boundary RED/GREEN case,
-      facade_policy + boundary Dylint clean, docs.rs/README/COMPATIBILITY entries.
-- [ ] A5 One PR per capability (A1, A2, A3, A6), merged on green; then bump to
-      0.1.15 (all version sites per 625173e) and confirm the crates.io publish.
-
-## Phase B: zccache branch
-
-- [x] B0 Merge `origin/main` into `feat/complete-kernal-integration`.
-- [x] B1 wire_frame.rs → `daemon_frame_v1` (frozen-bytes wire tests stay green).
-- [x] ~~BLOCKED (Phase B, 2026-09-18)~~: the ~60 fs/ipc/process/host/executable
-      items landed on kernal-api main (#333-#336, 07db3bd).
-- [x] B2 Identity/probe → `daemon_identity` (sidecar JSON fields unchanged).
-- [x] B3 `process_session.rs` and builder sites → `SpawnSpec`/`ProcessSession`;
-      child peak/tree RSS sampling restored on the session path.
-- [x] B4 `spawn_daemon*` → `spawn_sync_daemon` (Inherit env, no breakaway).
-- [x] B5 `zccache-ipc/src/broker.rs` → `broker_client` facade.
-- [ ] **Round 2 gaps (2026-09-19)** — against 07db3bd, daemon-core/cli-core
-      still need these facade items (validated with a local-only probe patch,
-      `_vender/kernal-api` branch `zccache-gap-probe`):
-      - `async_engine::{Mutex<T>, MutexGuard, OwnedMutexGuard, MutexTryLockError}`
-        (`new`, `lock`, `lock_owned(self: Arc<Self>)`, `try_lock`,
-        `try_lock_owned(self: Arc<Self>)`, `blocking_lock`, `Default`);
-        `OwnedMutexGuard` must keep the facade `Arc<Mutex<T>>` alive
-        (Weak-keyed lock maps, link_output_locks / #912).
-      - `Task::detach_on_drop(self) -> Self`.
-      - `Notify::notified(&self) -> Notified<'_>` and
-        `Notify::owned_notified(self: Arc<Self>) -> OwnedNotified`, both
-        `Future<Output = ()>` with `enable(self: Pin<&mut Self>) -> bool`.
-      - `impl<T> Debug for Sender<T>` without `T: Debug`.
-      - `RuntimeBuilder::max_blocking_threads(self, usize) -> Self`.
-      - `VerifiedDaemon::has_exited(&self) -> io::Result<bool>`.
-      - Behavior (not compile) gaps: `SyncEnvironment` has no user-baseline
-        variant (old `spawn_daemon` used `EnvironmentPolicy::Auto`);
-        `DirectoryWalk` has no non-aborting parallelism (soldr#2760);
-        `ProcessOutputFault` has no public constructor for tests.
-- [ ] B6 Pin `=0.1.15`, delete `_vender`, regenerate the lockfile, verify no
-      `_vender` path remains; `./test`, workspace clippy, dylint, wire
-      characterization, `ci/check_kernal_api_baseline.py`; open the PR.
+Lessons: build the consumer against the producer's real main *before* cutting
+a release -- the first attempt assumed four surfaces were the whole gap and
+found ~60 more only at compile time. A probe patch that makes the consumer
+compile is a fast, exact gap list.
 
 # kernal-api#13 portable Rustc policy
 
