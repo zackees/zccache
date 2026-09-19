@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -415,6 +416,43 @@ def git_is_worktree_root(repo: Path) -> bool:
     return Path(result.stdout.strip()).resolve() == repo.resolve()
 
 
+# A soldr manifest's exact `zccache` requirement, inline-table or plain form.
+# `zccache-foo = ...` does not match: the name must be followed by `=`.
+_ZCCACHE_REQUIREMENT = re.compile(
+    r'^(\s*zccache\s*=\s*(?:\{[^}\n]*?\bversion\s*=\s*)?")[^"]*(")',
+    re.MULTILINE,
+)
+
+
+def zccache_checkout_version() -> str:
+    """The workspace version of the zccache checkout under test."""
+    manifest = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    return manifest["workspace"]["package"]["version"]
+
+
+def align_soldr_zccache_requirement(soldr_src: Path, version: str) -> int:
+    """Pin every soldr manifest's zccache requirement to ``=version``.
+
+    Cargo applies a ``[patch]`` only when the patched package's version
+    satisfies the dependent's requirement. soldr pins zccache exactly (e.g.
+    ``=1.14.0``), so once the checkout under test is any other version the
+    patch is silently unused, crates.io's release is built instead, and
+    ``run_soldr_builder`` rightly refuses the result. Returns the number of
+    manifests rewritten.
+    """
+    rewritten = 0
+    for manifest in soldr_src.rglob("Cargo.toml"):
+        parts = set(manifest.relative_to(soldr_src).parts)
+        if parts & {"target", ".git", "_vender"}:
+            continue
+        text = manifest.read_text(encoding="utf-8")
+        updated = _ZCCACHE_REQUIREMENT.sub(rf"\g<1>={version}\g<2>", text)
+        if updated != text:
+            manifest.write_text(updated, encoding="utf-8")
+            rewritten += 1
+    return rewritten
+
+
 def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = True) -> None:
     """Build soldr with the zccache checkout under test embedded in it.
 
@@ -440,7 +478,12 @@ def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = T
             'path = "/zccache-src/crates/zccache"\n'
         )
         config_path.write_text(f"{existing}\n\n{override}", encoding="utf-8")
-        print("[perf-local] soldr registry dependency patched to the local zccache checkout")
+        version = zccache_checkout_version()
+        aligned = align_soldr_zccache_requirement(soldr_src, version)
+        print(
+            "[perf-local] soldr registry dependency patched to the local zccache checkout "
+            f"(zccache ={version} in {aligned} manifest(s))"
+        )
         return
     zccache_sha = git_head(REPO_ROOT)
     vendored = soldr_src / "_vender" / "zccache"

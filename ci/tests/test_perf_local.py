@@ -238,6 +238,31 @@ def test_pin_soldr_zccache_source_patches_current_registry_dependency(tmp_path, 
     assert 'path = "/zccache-src/crates/zccache"' in contents
 
 
+def test_pin_soldr_zccache_source_aligns_exact_zccache_requirement(tmp_path, monkeypatch):
+    soldr_src = tmp_path / "soldr-src"
+    cache = soldr_src / "crates" / "soldr-cache" / "Cargo.toml"
+    cli = soldr_src / "crates" / "soldr-cli" / "Cargo.toml"
+    ignored = soldr_src / "target" / "vendor" / "Cargo.toml"
+    for manifest in (cache, cli, ignored):
+        manifest.parent.mkdir(parents=True)
+    cache.write_text(
+        '[dependencies]\nzccache = { version = "=1.14.0", default-features = false }\n'
+        'zccache-extra = { version = "=1.14.0" }\n',
+        encoding="utf-8",
+    )
+    cli.write_text('[dependencies]\nzccache = "=1.14.0"\n', encoding="utf-8")
+    ignored.write_text('[dependencies]\nzccache = "=1.14.0"\n', encoding="utf-8")
+    monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
+    monkeypatch.setattr(perf_local, "zccache_checkout_version", lambda: "9.8.7")
+
+    perf_local.pin_soldr_zccache_source(soldr_src)
+
+    assert 'zccache = { version = "=9.8.7", default-features = false }' in cache.read_text(encoding="utf-8")
+    assert 'zccache-extra = { version = "=1.14.0" }' in cache.read_text(encoding="utf-8")
+    assert 'zccache = "=9.8.7"' in cli.read_text(encoding="utf-8")
+    assert 'zccache = "=1.14.0"' in ignored.read_text(encoding="utf-8")
+
+
 def test_ensure_soldr_source_refreshes_requested_ref(tmp_path, monkeypatch):
     scratch = tmp_path / "perf-local"
     soldr_src = scratch / "soldr-src"
