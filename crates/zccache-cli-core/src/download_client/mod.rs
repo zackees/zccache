@@ -186,13 +186,14 @@ fn spawn_daemon(bin: &Path, endpoint: &str) -> Result<(), String> {
     // Canonical daemon launch owns null standard streams and sanitized native
     // handles. This is ordinary inherited placement, not independent spawning;
     // the existing no-spawn guard and readiness loop remain authoritative.
-    let _daemon = kernal_api::process::spawn_daemon_with_stdio_and_env_policy(
+    let _daemon = kernal_api::platform::process::spawn_sync_daemon(
         &mut cmd,
-        kernal_api::process::DaemonStdio {
-            stdout: kernal_api::process::DaemonStdioSource::Null,
-            stderr: kernal_api::process::DaemonStdioSource::Null,
+        kernal_api::platform::process::DaemonStdio {
+            stdout: kernal_api::platform::process::DaemonStdioSource::Null,
+            stderr: kernal_api::platform::process::DaemonStdioSource::Null,
         },
-        kernal_api::process::EnvironmentPolicy::Inherit,
+        kernal_api::platform::process::SyncEnvironment::Inherit,
+        false,
     )
     .map_err(|e| format!("failed to spawn download daemon: {e}"))?;
     Ok(())
