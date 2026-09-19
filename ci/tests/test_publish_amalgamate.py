@@ -295,3 +295,49 @@ def test_release_metadata_allows_only_public_zccache_crate(
 
     with pytest.raises(release_checks.ReleaseCheckError, match="zccache-core"):
         release_checks.validate_rust_publish_order()
+
+
+def test_facade_kernal_api_features_cover_internal_crates() -> None:
+    """The published facade must enable every kernal-api feature any internal
+    crate enables.
+
+    `publish_amalgamate` copies each internal crate's source into
+    `crates/zccache`, but it does not merge their dependency features: the
+    facade manifest declares those by hand. A feature only one internal crate
+    turned on therefore still compiles in the workspace (that crate enables it
+    for itself) and fails only inside `cargo package --allow-dirty -p zccache`,
+    which runs at release time. zccache 1.14.4 failed to publish exactly this
+    way after #1600 (`cannot find crash in kernal_api`, `cannot find
+    broker_client in kernal_api`, then `fs_watch::Watcher`).
+    """
+    root = Path(__file__).parents[2]
+
+    def kernal_features(manifest: Path) -> set[str]:
+        table = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+            entry = table.get(section, {}).get("kernal-api")
+            if isinstance(entry, dict):
+                return set(entry.get("features", []))
+        return set()
+
+    facade = kernal_features(root / "crates" / "zccache" / "Cargo.toml")
+    required: dict[str, set[str]] = {}
+    for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
+        if manifest.parent.name == "zccache":
+            continue
+        features = kernal_features(manifest)
+        if features:
+            required[manifest.parent.name] = features
+
+    assert required, "no internal crate declares kernal-api; this guard is stale"
+    missing = {
+        crate: sorted(features - facade)
+        for crate, features in required.items()
+        if features - facade
+    }
+    assert not missing, (
+        "crates/zccache/Cargo.toml must enable every kernal-api feature its "
+        f"internal crates use; missing: {missing}. Add them to the facade's "
+        "kernal-api features list, or `cargo package -p zccache` fails during "
+        "the release."
+    )
