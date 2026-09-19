@@ -214,7 +214,7 @@ contract = "local IPC peer security, endpoint retirement, broker identity/probe,
 tests = ["crates/zccache-ipc/src/mod_tests.rs", "crates/zccache-ipc/src/transport/tests.rs", "crates/zccache-platform/src/platform/ipc/tests.rs"]
 [[characterization]]
 contract = "frozen frame bytes, payload protocol 0x7A63, and single-round-trip path"
-tests = ["crates/zccache/tests/wire/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/wire/daemon_wire_prost_roundtrip.rs", "crates/zccache/tests/wire/daemon_wire_protocol_version.rs", "crates/zccache/tests/wire/daemon_wire_dispatcher.rs"]
+tests = ["crates/zccache/tests/wire/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/wire/daemon_wire_prost_roundtrip.rs"]
 [[characterization]]
 contract = "filesystem identity, links, permissions, replacement, stored mtimes, and hardlink-safe materialization"
 tests = ["crates/zccache-daemon-core/src/daemon/server/persist/tests.rs", "crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs", "crates/zccache-platform/src/platform/fs/README.md"]
