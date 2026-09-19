@@ -34,7 +34,7 @@ pub fn run_rustfmt_cached(
 /// foreground boundary preserves caller configuration without adding
 /// containment, detachment, or descriptor sanitization.
 pub(crate) fn run_inherited_command(cmd: &mut std::process::Command) -> std::io::Result<i32> {
-    Ok(kernal_api::foreground::status(cmd)?.code().unwrap_or(1))
+    Ok(kernal_api::platform::process::foreground_status(cmd)?.code().unwrap_or(1))
 }
 
 /// Run rustfmt with format caching while delegating child execution to `runner`.

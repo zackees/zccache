@@ -212,7 +212,7 @@ pub(crate) fn cmd_configure(
     // Unlike a bounded identity probe, setup must retain the caller's process
     // group and inherited build descriptors. Explicit foreground capture owns
     // native execution without adding containment or output limits.
-    let output = match kernal_api::foreground::output(&mut command) {
+    let output = match kernal_api::platform::process::foreground_output(&mut command) {
         Ok(o) => o,
         Err(e) => {
             eprintln!(

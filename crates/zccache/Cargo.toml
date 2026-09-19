@@ -201,7 +201,7 @@ tracing-subscriber = { workspace = true, optional = true }
 # only be made by whoever declares the dependency -- which is now kernal-api,
 # and it pins `=0.9.4`. If that pin ever regresses below 0.9.3 the aarch64
 # Windows release lane breaks here, so it is a facade-side constraint now.
-kernal-api = { workspace = true, features = ["fs", "ipc", "broker", "async-process-client"] }
+kernal-api = { workspace = true, features = ["fs", "ipc", "daemon-identity"] }
 # Only for the `mimalloc-allocator` re-export (soldr#3053); pinned to the same
 # exact version kernal-api declares so the graph holds one mimalloc.
 mimalloc-pprof = { version = "=0.9.4", optional = true }

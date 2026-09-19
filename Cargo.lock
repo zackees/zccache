@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "kernal-api"
-version = "0.1.2"
+version = "0.1.15"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -2666,16 +2666,14 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.10.13"
+version = "4.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eee98b1f2f29a7852b77328f097b0a4a7350e93b84f63ba9de6ab942f04bad4"
+checksum = "02f0ff903e7b61396a074648fc6301668492de90aea4b5d09cc914eee9389e9b"
 dependencies = [
  "anyhow",
  "blake3",
- "bytes",
  "clap",
  "dirs",
- "futures-util",
  "getrandom 0.4.3",
  "interprocess",
  "libc",
@@ -2689,7 +2687,6 @@ dependencies = [
  "sysinfo",
  "thiserror",
  "tokio",
- "tokio-util",
  "toml",
  "winapi",
  "windows-sys 0.61.2",
@@ -2697,21 +2694,15 @@ dependencies = [
 
 [[package]]
 name = "running-process-platform-internal"
-version = "4.10.13"
+version = "4.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8a3a322c2972ff33785e73a04c68a1dd4590887a46d4e57b595d8703c14546d"
+checksum = "c6e5db04a966dfead09ff660b704c2461a05e8477249b8f10532b41a22219348"
 dependencies = [
  "blake3",
  "dirs",
- "getrandom 0.4.3",
  "interprocess",
  "libc",
- "prost",
- "running-process-protocol",
- "serde",
- "serde_json",
  "sysinfo",
- "tempfile",
  "thiserror",
  "tokio",
  "widestring",
@@ -2721,9 +2712,9 @@ dependencies = [
 
 [[package]]
 name = "running-process-protocol"
-version = "4.10.13"
+version = "4.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "857a9c98297410fe2b7e085e9e179337c355a2a3f0a2a0a53992e8f7c60e6a52"
+checksum = "c32daa00db0c79106d3181f1e306efe92a59bd1b0429440bdc5e6debf3cc4345"
 dependencies = [
  "prost",
  "prost-build",
@@ -3503,6 +3494,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3999,7 +3996,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -4015,6 +4012,7 @@ dependencies = [
  "libc",
  "lzma-rs",
  "md5",
+ "mimalloc-pprof",
  "prost",
  "rayon",
  "regex",
@@ -4032,6 +4030,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "typed-path",
  "uuid",
  "wait-timeout",
  "windows-sys 0.61.2",
@@ -4060,7 +4059,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-artifact"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "bincode",
  "dashmap",
@@ -4082,7 +4081,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-audit"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4092,7 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -4101,7 +4100,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli-core"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "bincode",
  "bytes",
@@ -4146,27 +4145,28 @@ dependencies = [
 
 [[package]]
 name = "zccache-compile-trace"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "zccache-audit",
 ]
 
 [[package]]
 name = "zccache-compiler"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "clang",
  "kernal-api",
  "serde_json",
  "tempfile",
  "thiserror",
+ "typed-path",
  "zccache-core",
  "zccache-hash",
 ]
 
 [[package]]
 name = "zccache-core"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "dashmap",
  "kernal-api",
@@ -4179,7 +4179,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-daemon-core"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -4218,7 +4218,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-depgraph"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "bincode",
  "dashmap",
@@ -4238,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "futures",
  "kernal-api",
@@ -4252,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download-protocol"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "bincode",
  "bytes",
@@ -4265,7 +4265,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "kernal-api",
  "rayon",
@@ -4280,7 +4280,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint-py"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -4290,7 +4290,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fscache"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "bincode",
  "dashmap",
@@ -4306,7 +4306,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-gha"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "reqwest",
  "serde",
@@ -4317,7 +4317,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-hash"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "kernal-api",
  "serde",
@@ -4326,7 +4326,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-ipc"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "bytes",
  "dashmap",
@@ -4345,7 +4345,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-protocol"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "bytes",
  "kernal-api",
@@ -4362,7 +4362,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-symbols"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "tempfile",
  "zccache-core",
@@ -4370,7 +4370,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-test-support"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "tempfile",
  "zccache-audit",
@@ -4379,7 +4379,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "kernal-api",
  "rayon",
@@ -4392,7 +4392,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher-py"
-version = "1.13.22"
+version = "1.14.2"
 dependencies = [
  "pyo3",
  "pyo3-build-config",

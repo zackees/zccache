@@ -21,7 +21,7 @@ test-support = ["dep:tracing-subscriber", "zccache-artifact/test-support"]
 tokio-console = ["dep:console-subscriber"]
 
 [dependencies]
-kernal-api = { workspace = true, features = ["fs", "broker", "async-process-client"] }
+kernal-api = { workspace = true, features = ["fs", "daemon-identity"] }
 # internal subsystem crates the daemon uses
 zccache-artifact = { workspace = true }
 zccache-audit = { workspace = true }
