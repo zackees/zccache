@@ -57,7 +57,7 @@ either (a) migrating zccache to a facade-owned surface 0.1.14 already has, or
       `platform::host::{is_linux,is_macos,is_windows}`,
       `platform::executable::{file_name_os,native_name}`,
       `async_engine::{RwLock*, OwnedRwLock*Guard, MissedTickBehavior,
-      TerminationSignal}`, `allocator::{dump_to, dump_to_vec}`, plus
+      TerminationSignal}`, plus
       process RSS readers (`peak_rss_bytes`/`tree_rss_bytes`, from main #1586/#1588)
       and mimalloc `prof::stats`/`dump_file` (soldr#3053). Needs a coordinator
       decision: land these in kernal-api, or restore zccache-owned adapters.
