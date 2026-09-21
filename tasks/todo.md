@@ -1,3 +1,18 @@
+# #1615 watcher predicate KeyboardInterrupt notification
+
+- [x] Reproduce the native watcher interruption with the workflow-equivalent PyO3 extension setup and trace predicate/dispatch ownership. Baseline: 11 tests passed, then pytest aborted from a leaked `KeyboardInterrupt`.
+- [x] Ensure a dispatch-thread predicate `KeyboardInterrupt` requests exactly one main-thread interruption while preserving direct main-thread propagation and one stop log.
+- [x] Keep the public and watcher-package Python implementations behaviorally aligned; add deterministic mocked-notification coverage.
+- [x] Run watcher native tests, formatter/lint checks, Rust extension validation, and a local review; remove generated extension artifacts. CI-equivalent watcher native pytest: 14 passed; Rust watcher tests: 60 passed; PyO3 host strict Clippy passed; staged extension/bytecode artifacts removed. Public-package pytest was blocked by the repository Python-test policy.
+- [x] Update #1615 evidence, commit/push/open the focused PR, and leave the branch clean.
+
+## Review — #1615
+
+- **Root cause:** predicate exception handling notified the main thread and re-raised; the outer dispatch handler caught the same exception and notified it again, leaking a second process-wide `KeyboardInterrupt` after the test assertion completed.
+- **Fix:** the predicate path logs once and re-raises; the dispatch loop is the single owner of `interrupt_main` notification.
+- **Validation:** workflow-equivalent native watcher pytest goes from 11 passed plus interrupt to 14 passed, including a mocked exact-one-notification regression; Rust watcher tests and strict PyO3 Clippy pass.
+- **Review:** medium local code review found no correctness findings.
+
 # #1597 cache-hit executable restore race
 
 - [x] Read the artifact materialization and execution ownership contracts; map cache-hit restoration through compiler dispatch.
