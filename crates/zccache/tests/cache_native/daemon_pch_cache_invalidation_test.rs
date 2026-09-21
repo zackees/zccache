@@ -757,6 +757,7 @@ async fn pch_rebuild_no_spurious_output_in_source_tree() {
         vec![
             "-x".into(),
             "c++-header".into(),
+            "-c".into(),
             pch_h.to_string_lossy().into_owned(),
             "-o".into(),
             pch_output.to_string_lossy().into_owned(),
@@ -802,6 +803,7 @@ async fn pch_rebuild_no_spurious_output_in_source_tree() {
         vec![
             "-x".into(),
             "c++-header".into(),
+            "-c".into(),
             pch_h.to_string_lossy().into_owned(),
             "-o".into(),
             pch_output.to_string_lossy().into_owned(),
