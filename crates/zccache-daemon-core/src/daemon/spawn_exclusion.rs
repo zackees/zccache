@@ -1,12 +1,12 @@
-//! Mutual exclusion between staged-output materialization and child spawn
-//! (zackees/zccache#1562, zackees/soldr#3098).
+//! Mutual exclusion between requested-output materialization and child spawn
+//! (zackees/zccache#1562, zackees/zccache#1597, zackees/soldr#3098).
 //!
 //! # The race
 //!
-//! A staged MISS is materialized by copying the private compiler output into a
-//! unique sibling temporary beside the requested path and then renaming that
-//! temporary over the requested path. The copy holds a write descriptor on the
-//! temporary's inode. The same daemon process spawns compiler children
+//! A cache hit or staged miss can materialize a compiler output while holding
+//! a writable descriptor: staged paths use a unique sibling temporary before
+//! renaming it over the requested path, while legacy cache-file delivery can
+//! write its requested path directly. The same daemon process spawns compiler children
 //! continuously, and on POSIX every `fork` duplicates the parent's descriptor
 //! table: a child forked while the copy's descriptor is open inherits that
 //! write descriptor and keeps it until its own `execve` closes it

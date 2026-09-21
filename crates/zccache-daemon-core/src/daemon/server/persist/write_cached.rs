@@ -146,6 +146,11 @@ fn materialize_verified_cached_file_observed(
     delivery: crate::compiler::DeliveryPolicy,
     force_observation: bool,
 ) -> std::io::Result<StagedMaterializationStats> {
+    // A legacy cache-file hit can restore a Cargo build-script executable. Hold
+    // the same exclusion as staged delivery through every materialization tier:
+    // otherwise a daemon child can inherit a write descriptor and Cargo may
+    // fail to exec its hard-linked alias with ETXTBSY (#1597).
+    let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
     let staged = is_staged_artifact_path(cache_file);
     let observe = force_observation || staged;
     let observed = |reflink_count, hardlink_count, copy_count, copy_bytes| {
@@ -391,6 +396,9 @@ pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
 ) -> MaterializationResult<StagedMaterializationStats> {
     match payload {
         CachedPayload::Bytes(data) => {
+            // Inline payloads can also be executable outputs. Keep their direct
+            // write out of every daemon child fork-to-exec window (#1597).
+            let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
             remove_materialized_output(out_path)
                 .map_err(|error| destination_write_failure(out_path, error))?;
             std::fs::write(out_path, data.as_slice())
