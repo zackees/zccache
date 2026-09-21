@@ -206,7 +206,12 @@ pub(super) async fn try_handle_staged_misses(
         } else {
             builder = builder.args(&compiler_args);
         }
-        let builder = apply_client_env_builder(builder, client_env, &lineage);
+        let builder = apply_client_env_builder(
+            builder,
+            client_env,
+            &lineage,
+            crate::compiler::is_dylint_driver(&compiler.to_string_lossy()),
+        );
         let command_description = compiler.to_string_lossy().into_owned();
         let admission_state = Arc::clone(state);
         let family = compilations[miss.unit_index].family;

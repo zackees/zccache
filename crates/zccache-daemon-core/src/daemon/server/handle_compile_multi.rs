@@ -754,7 +754,12 @@ pub(super) async fn handle_compile_multi(
     } else {
         builder = builder.args(&compiler_args);
     }
-    let builder = apply_client_env_builder(builder, &client_env, &lineage);
+    let builder = apply_client_env_builder(
+        builder,
+        &client_env,
+        &lineage,
+        crate::compiler::is_dylint_driver(&compiler.to_string_lossy()),
+    );
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let built_in_exclusive =
         crate::daemon::server::compile_resource_gate::requires_exclusive_access_for_misses(

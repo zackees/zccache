@@ -62,7 +62,7 @@ pub(super) async fn run_tool_passthrough(
         builder = builder.args(args.iter().cloned());
     }
     builder = builder.current_dir(cwd);
-    builder = apply_client_env_builder(builder, &env, lineage);
+    builder = apply_client_env_builder(builder, &env, lineage, false);
 
     let priority = CompilePriority::from_client_env(env.as_deref());
     match super::super::process::async_builder_output_with_priority(builder, priority).await {
@@ -97,6 +97,7 @@ pub(super) async fn run_archive_tool_passthrough(
             .current_dir(cwd),
         &env,
         lineage,
+        false,
     );
     let priority = CompilePriority::from_client_env(env.as_deref());
     match super::super::process::async_builder_output_with_priority_and_post_exit_grace(

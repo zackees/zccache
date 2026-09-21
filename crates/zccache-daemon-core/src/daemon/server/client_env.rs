@@ -18,6 +18,7 @@ pub(super) fn apply_client_env_builder(
     mut builder: kernal_api::SpawnSpec,
     client_env: &Option<Vec<(String, String)>>,
     lineage: &super::super::lineage::Lineage,
+    is_dylint_driver: bool,
 ) -> kernal_api::SpawnSpec {
     if let Some(vars) = client_env {
         builder = builder.clear_env(true);
@@ -27,7 +28,52 @@ pub(super) fn apply_client_env_builder(
             }
         }
     }
+    if let Some(ld_library_path) =
+        dylint_nix_ld_library_path(client_env.as_deref(), is_dylint_driver)
+    {
+        builder = builder.env("LD_LIBRARY_PATH", ld_library_path);
+    }
     lineage.apply_to_async_builder(builder, client_env.as_deref())
+}
+
+/// Return the `LD_LIBRARY_PATH` a Linux Dylint-driver child needs, if the
+/// daemon has a Nix loader path to contribute. Client entries remain first so
+/// their library selection wins; without a replayed client environment, the
+/// daemon's inherited `LD_LIBRARY_PATH` remains first for the same reason.
+fn dylint_nix_ld_library_path(
+    client_env: Option<&[(String, String)]>,
+    is_dylint_driver: bool,
+) -> Option<std::ffi::OsString> {
+    if !crate::platform::host::is_linux() || !is_dylint_driver {
+        return None;
+    }
+    let nix_ld_library_path = std::env::var_os("NIX_LD_LIBRARY_PATH")?;
+    if nix_ld_library_path.is_empty() {
+        return None;
+    }
+
+    let ld_library_path = client_env
+        .and_then(|vars| {
+            vars.iter()
+                .rev()
+                .find_map(|(key, value)| (key == "LD_LIBRARY_PATH").then_some(value))
+                .map(std::ffi::OsString::from)
+        })
+        .or_else(|| {
+            client_env
+                .is_none()
+                .then(|| std::env::var_os("LD_LIBRARY_PATH"))
+                .flatten()
+        });
+    Some(match ld_library_path {
+        Some(ld_library_path) => {
+            let mut combined = ld_library_path;
+            combined.push(":");
+            combined.push(nix_ld_library_path);
+            combined
+        }
+        None => nix_ld_library_path,
+    })
 }
 
 /// Cargo jobserver env vars name process-local file descriptors. The daemon
@@ -46,6 +92,7 @@ pub(super) fn apply_client_env_sync(
     cmd: &mut std::process::Command,
     client_env: Option<&[(String, String)]>,
     lineage: &super::super::lineage::Lineage,
+    is_dylint_driver: bool,
 ) {
     if let Some(vars) = client_env {
         cmd.env_clear();
@@ -54,6 +101,9 @@ pub(super) fn apply_client_env_sync(
                 cmd.env(key, val);
             }
         }
+    }
+    if let Some(ld_library_path) = dylint_nix_ld_library_path(client_env, is_dylint_driver) {
+        cmd.env("LD_LIBRARY_PATH", ld_library_path);
     }
     lineage.apply_to_sync(cmd, client_env);
 }

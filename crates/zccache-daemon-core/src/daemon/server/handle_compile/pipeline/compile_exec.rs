@@ -266,7 +266,12 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             builder = builder.args(&extra_args);
         }
     }
-    builder = apply_client_env_builder(builder, client_env, lineage);
+    builder = apply_client_env_builder(
+        builder,
+        client_env,
+        lineage,
+        crate::compiler::is_dylint_driver(&compiler.to_string_lossy()),
+    );
     let t_compiler_process = std::time::Instant::now();
     let is_link_like = rustc_args_opt
         .is_some_and(|rustc_args| rustc_args.emit_types.iter().any(|emit| emit == "link"));
