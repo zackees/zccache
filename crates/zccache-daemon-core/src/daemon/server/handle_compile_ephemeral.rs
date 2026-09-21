@@ -141,7 +141,12 @@ pub(super) async fn run_compiler_direct_with_family(
     } else {
         builder = builder.args(args);
     }
-    let builder = apply_client_env_builder(builder, client_env, &lineage);
+    let builder = apply_client_env_builder(
+        builder,
+        client_env,
+        &lineage,
+        crate::compiler::is_dylint_driver(&compiler.to_string_lossy()),
+    );
     let compiler_priority = CompilePriority::from_client_env(client_env.as_deref());
     let stdin = if stdin_bytes.is_empty() {
         None

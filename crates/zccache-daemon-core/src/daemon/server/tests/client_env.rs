@@ -49,6 +49,53 @@ fn test_lineage() -> super::super::super::lineage::Lineage {
     }
 }
 
+/// Temporarily set the daemon's Nix dynamic-library path. The cache-dir test
+/// guard is the daemon crate's shared process-environment lock, so this cannot
+/// race another test that reads or mutates daemon environment variables.
+#[cfg(target_os = "linux")]
+struct NixLdLibraryPathEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous_nix_ld_library_path: Option<std::ffi::OsString>,
+    previous_ld_library_path: Option<std::ffi::OsString>,
+}
+
+#[cfg(target_os = "linux")]
+impl NixLdLibraryPathEnvGuard {
+    fn set(value: &str) -> Self {
+        Self::set_with_daemon_ld_library_path(value, None)
+    }
+
+    fn set_with_daemon_ld_library_path(value: &str, ld_library_path: Option<&str>) -> Self {
+        let lock = super::CacheDirEnvGuard::lock();
+        let previous_nix_ld_library_path = std::env::var_os("NIX_LD_LIBRARY_PATH");
+        let previous_ld_library_path = std::env::var_os("LD_LIBRARY_PATH");
+        std::env::set_var("NIX_LD_LIBRARY_PATH", value);
+        match ld_library_path {
+            Some(ld_library_path) => std::env::set_var("LD_LIBRARY_PATH", ld_library_path),
+            None => std::env::remove_var("LD_LIBRARY_PATH"),
+        }
+        Self {
+            _lock: lock,
+            previous_nix_ld_library_path,
+            previous_ld_library_path,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for NixLdLibraryPathEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous_nix_ld_library_path {
+            Some(previous) => std::env::set_var("NIX_LD_LIBRARY_PATH", previous),
+            None => std::env::remove_var("NIX_LD_LIBRARY_PATH"),
+        }
+        match &self.previous_ld_library_path {
+            Some(previous) => std::env::set_var("LD_LIBRARY_PATH", previous),
+            None => std::env::remove_var("LD_LIBRARY_PATH"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn apply_client_env_filters_stale_jobserver_vars_for_compiler_spawns() {
     let env = jobserver_client_env();
@@ -61,7 +108,7 @@ async fn apply_client_env_filters_stale_jobserver_vars_for_compiler_spawns() {
             .join("cmd.exe"),
     )
     .args(["/D", "/C", "set"]);
-    let builder = apply_client_env_builder(builder, &Some(env), &test_lineage());
+    let builder = apply_client_env_builder(builder, &Some(env), &test_lineage(), false);
     let output = crate::daemon::process::async_builder_output_with_priority_timeout(
         builder,
         CompilePriority::Normal,
@@ -96,7 +143,7 @@ async fn apply_client_env_filters_stale_jobserver_vars_for_compiler_spawns() {
 fn apply_client_env_sync_filters_stale_jobserver_vars_for_tool_spawns() {
     let env = jobserver_client_env();
     let mut cmd = std::process::Command::new("env");
-    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage());
+    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage(), false);
 
     let envs = collect_command_env(cmd.get_envs());
     assert_eq!(env_value(&envs, "PATH"), Some("/usr/bin"));
@@ -122,7 +169,7 @@ fn internal_dylint_cache_salt_is_never_replayed() {
         ("DYLINT_METADATA".to_string(), "user-value".to_string()),
     ];
     let mut cmd = std::process::Command::new("env");
-    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage());
+    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage(), false);
 
     let envs = collect_command_env(cmd.get_envs());
     assert_eq!(
@@ -130,4 +177,77 @@ fn internal_dylint_cache_salt_is_never_replayed() {
         None
     );
     assert_eq!(env_value(&envs, "DYLINT_METADATA"), Some("user-value"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dylint_driver_appends_daemon_nix_library_path_after_client_path() {
+    let _nix_library_path = NixLdLibraryPathEnvGuard::set("/nix/store/daemon-lib");
+    let env = vec![("LD_LIBRARY_PATH".to_string(), "/client/lib".to_string())];
+    let mut cmd = std::process::Command::new("dylint-driver");
+    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage(), true);
+
+    let envs = collect_command_env(cmd.get_envs());
+    assert_eq!(
+        env_value(&envs, "LD_LIBRARY_PATH"),
+        Some("/client/lib:/nix/store/daemon-lib"),
+        "the client path must take precedence over daemon-provided Nix libraries"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dylint_driver_uses_daemon_nix_library_path_without_client_path() {
+    let _nix_library_path = NixLdLibraryPathEnvGuard::set("/nix/store/daemon-lib");
+    let env = vec![("PATH".to_string(), "/client/bin".to_string())];
+    let mut cmd = std::process::Command::new("dylint-driver");
+    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage(), true);
+
+    let envs = collect_command_env(cmd.get_envs());
+    assert_eq!(
+        env_value(&envs, "LD_LIBRARY_PATH"),
+        Some("/nix/store/daemon-lib")
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dylint_driver_appends_nix_path_after_inherited_daemon_library_path() {
+    let _nix_library_path = NixLdLibraryPathEnvGuard::set_with_daemon_ld_library_path(
+        "/nix/store/daemon-lib",
+        Some("/daemon/lib"),
+    );
+    let mut cmd = std::process::Command::new("dylint-driver");
+    apply_client_env_sync(&mut cmd, None, &test_lineage(), true);
+
+    let envs = collect_command_env(cmd.get_envs());
+    assert_eq!(
+        env_value(&envs, "LD_LIBRARY_PATH"),
+        Some("/daemon/lib:/nix/store/daemon-lib"),
+        "the inherited daemon path must remain ahead of its Nix loader path"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn daemon_nix_library_path_is_not_applied_to_non_dylint_compilers() {
+    let _nix_library_path = NixLdLibraryPathEnvGuard::set("/nix/store/daemon-lib");
+    let env = vec![("LD_LIBRARY_PATH".to_string(), "/client/lib".to_string())];
+    let mut cmd = std::process::Command::new("rustc");
+    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage(), false);
+
+    let envs = collect_command_env(cmd.get_envs());
+    assert_eq!(env_value(&envs, "LD_LIBRARY_PATH"), Some("/client/lib"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn empty_daemon_nix_library_path_does_not_change_dylint_environment() {
+    let _nix_library_path = NixLdLibraryPathEnvGuard::set("");
+    let env = vec![("LD_LIBRARY_PATH".to_string(), "/client/lib".to_string())];
+    let mut cmd = std::process::Command::new("dylint-driver");
+    apply_client_env_sync(&mut cmd, Some(&env), &test_lineage(), true);
+
+    let envs = collect_command_env(cmd.get_envs());
+    assert_eq!(env_value(&envs, "LD_LIBRARY_PATH"), Some("/client/lib"));
 }
