@@ -2,8 +2,8 @@
 
 use super::super::*;
 use super::cached_hit::{
-    materialize_cached_compile_hit, rustc_compat_payload_index_for, CachedHitFailure,
-    CachedHitMaterializeRequest, CachedHitPhases,
+    materialize_cached_compile_hit_offloaded, rustc_compat_payload_index_for, CachedHitFailure,
+    CachedHitPhases, OwnedCachedHitMaterializeRequest,
 };
 use crate::depgraph::depfile::user_depfile_destination;
 use crate::depgraph::UserDepFlags;
@@ -79,7 +79,7 @@ fn rustc_verdict_key_hex(
 }
 
 pub(super) struct RequestCacheHitProbe<'a> {
-    pub(super) state: &'a SharedState,
+    pub(super) state: &'a Arc<SharedState>,
     pub(super) sid: &'a SessionId,
     pub(super) compiler_path: &'a Path,
     pub(super) effective_args: &'a [String],
@@ -205,13 +205,13 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
         rustc_requested_outputs.as_deref(),
     )
     .await;
-    materialize_cached_compile_hit(CachedHitMaterializeRequest {
-        state,
-        sid,
-        artifact_key_hex,
-        verdict_key_hex: verdict_key_hex.as_deref(),
-        source_path: &source_path,
-        output_path: &output_path,
+    materialize_cached_compile_hit_offloaded(OwnedCachedHitMaterializeRequest {
+        state: Arc::clone(state),
+        sid: *sid,
+        artifact_key_hex: artifact_key_hex.to_owned(),
+        verdict_key_hex,
+        source_path,
+        output_path: output_path.clone(),
         secondary_output_dir: output_path.parent().unwrap_or(cwd).into(),
         current_depfile_dest,
         compile_start,
@@ -224,11 +224,12 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
         rustc_archive_hardlink_eligible,
         phases: CachedHitPhases::request_cache(request_cache_lookup_ns, cross_root_validate_ns),
     })
+    .await
     .ok()
 }
 
 pub(super) struct FastHitProbe<'a> {
-    pub(super) state: &'a SharedState,
+    pub(super) state: &'a Arc<SharedState>,
     pub(super) sid: &'a SessionId,
     pub(super) context_key: ContextKey,
     pub(super) source_path: &'a NormalizedPath,
@@ -334,13 +335,13 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         rustc_requested_outputs.as_deref(),
     )
     .await;
-    let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
-        state,
-        sid,
-        artifact_key_hex: &entry_artifact_key_hex,
-        verdict_key_hex: verdict_key_hex.as_deref(),
-        source_path,
-        output_path,
+    let response = materialize_cached_compile_hit_offloaded(OwnedCachedHitMaterializeRequest {
+        state: Arc::clone(state),
+        sid: *sid,
+        artifact_key_hex: entry_artifact_key_hex,
+        verdict_key_hex,
+        source_path: source_path.clone(),
+        output_path: output_path.clone(),
         secondary_output_dir,
         current_depfile_dest: current_depfile_dest.clone(),
         compile_start,
@@ -362,6 +363,7 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
             cross_root_validate_ns: 0,
         },
     })
+    .await
     .ok()?;
 
     let rfp = request_fingerprint(
@@ -387,7 +389,7 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
 }
 
 pub(super) struct DepgraphHitProbe<'a> {
-    pub(super) state: &'a SharedState,
+    pub(super) state: &'a Arc<SharedState>,
     pub(super) sid: &'a SessionId,
     pub(super) context_key: ContextKey,
     pub(super) artifact_key_hex: &'a str,
@@ -482,13 +484,13 @@ pub(super) async fn try_depgraph_cached_hit(
     )
     .await;
 
-    let response = materialize_cached_compile_hit(CachedHitMaterializeRequest {
-        state,
-        sid,
-        artifact_key_hex,
-        verdict_key_hex: verdict_key_hex.as_deref(),
-        source_path,
-        output_path,
+    let response = materialize_cached_compile_hit_offloaded(OwnedCachedHitMaterializeRequest {
+        state: Arc::clone(state),
+        sid: *sid,
+        artifact_key_hex: artifact_key_hex.to_owned(),
+        verdict_key_hex,
+        source_path: source_path.clone(),
+        output_path: output_path.clone(),
         secondary_output_dir,
         current_depfile_dest: current_depfile_dest.clone(),
         compile_start,
@@ -509,7 +511,8 @@ pub(super) async fn try_depgraph_cached_hit(
             request_cache_lookup_ns: 0,
             cross_root_validate_ns: 0,
         },
-    })?;
+    })
+    .await?;
 
     if !worktree_equivalent_context {
         state.cache_system.register_tracked(&input_paths);

@@ -48,9 +48,15 @@ impl DaemonServer {
         let listener = IpcListener::bind(endpoint)?;
         let backend_identity = crate::ipc::current_backend_identity(endpoint)
             .map_err(|err| daemon_identity_error(endpoint, &err))?;
-        let (state, index_writer_rx) =
-            new_shared_state(endpoint, cache_dir, staging_root, backend_identity, None)
-                .map_err(|error| cache_root_error(cache_dir, &error))?;
+        let (state, index_writer_rx) = new_shared_state(
+            endpoint,
+            cache_dir,
+            staging_root,
+            backend_identity,
+            None,
+            None,
+        )
+        .map_err(|error| cache_root_error(cache_dir, &error))?;
 
         Ok(Self {
             listener,
@@ -114,6 +120,7 @@ pub(super) fn new_shared_state(
     staging_root: Option<&crate::core::NormalizedPath>,
     backend_identity: kernal_api::daemon_identity::DaemonIdentity,
     host_admission_classifier: Option<Arc<dyn compile_resource_gate::HostAdmissionClassifier>>,
+    blocking_runtime: Option<kernal_api::async_engine::RuntimeHandle>,
 ) -> std::io::Result<(
     Arc<SharedState>,
     kernal_api::async_engine::UnboundedReceiver<IndexWriterCommand>,
@@ -242,6 +249,7 @@ pub(super) fn new_shared_state(
 
     Ok((
         Arc::new(SharedState {
+            blocking_runtime,
             endpoint: endpoint.to_string(),
             backend_probe: crate::ipc::backend_probe_responder(backend_identity),
             daemon_namespace: crate::core::config::daemon_namespace_label(),

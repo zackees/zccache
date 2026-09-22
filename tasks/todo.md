@@ -1181,3 +1181,14 @@ Issue: https://github.com/zackees/zccache/issues/1511
   were current Soldr/Cargo lifecycle ceilings despite cache success: sqlite
   warm phases took 55-69 s with 100% zccache hits. No threshold was widened,
   and the invalid sample is not claimed as performance evidence.
+
+# Cache-hit blocking offload
+
+Issue: https://github.com/zackees/zccache/issues/1578
+
+- [x] Carry the embedded host runtime into shared request state.
+- [x] Offload compile, exec, and link hit lookup, staged-store locking, planning, and writes.
+- [x] Preserve per-session staged telemetry across the blocking boundary.
+- [x] Attribute staged-lock time before materialization begins.
+- [x] Prove a blocked lane does not stall a one-worker host runtime.
+- [x] Run focused tests, Bosn full tests, Bosn lint, and review.

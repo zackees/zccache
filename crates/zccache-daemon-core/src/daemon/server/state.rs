@@ -279,8 +279,29 @@ impl Drop for ActiveCacheRequest<'_> {
     }
 }
 
+struct OwnedActiveCacheRequest {
+    state: Arc<SharedState>,
+}
+
+impl Drop for OwnedActiveCacheRequest {
+    fn drop(&mut self) {
+        if self
+            .state
+            .active_cache_requests
+            .fetch_sub(1, Ordering::AcqRel)
+            == 1
+        {
+            self.state.cache_requests_idle.notify_one();
+        }
+    }
+}
+
 /// Shared state accessible by all connection handlers.
 pub(super) struct SharedState {
+    /// Runtime-owned blocking lane for cache-hit lookup and materialization.
+    /// Embedded hosts supply their canonical runtime; standalone daemons use
+    /// the ambient runtime captured by each request.
+    pub(super) blocking_runtime: Option<kernal_api::async_engine::RuntimeHandle>,
     /// IPC endpoint this daemon bound. Reported through `zccache status` so
     /// wrappers can verify they reached the intended daemon identity.
     pub(super) endpoint: String,
@@ -610,6 +631,29 @@ pub(super) struct SharedState {
 }
 
 impl SharedState {
+    pub(super) fn launch_blocking<F, R>(
+        self: &Arc<Self>,
+        operation: F,
+    ) -> kernal_api::async_engine::Task<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let request_profile = crate::daemon::staged_stats::current_request_profile();
+        self.active_cache_requests.fetch_add(1, Ordering::AcqRel);
+        let activity = OwnedActiveCacheRequest {
+            state: Arc::clone(self),
+        };
+        let operation = move || {
+            let _activity = activity;
+            crate::daemon::staged_stats::scope_blocking_request_profile(request_profile, operation)
+        };
+        match &self.blocking_runtime {
+            Some(handle) => handle.launch_blocking(operation),
+            None => kernal_api::async_engine::launch_blocking(operation),
+        }
+    }
+
     pub(super) fn begin_cache_request(&self) -> ActiveCacheRequest<'_> {
         self.active_cache_requests.fetch_add(1, Ordering::AcqRel);
         ActiveCacheRequest { state: self }

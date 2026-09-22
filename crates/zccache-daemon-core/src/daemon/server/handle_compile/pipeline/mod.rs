@@ -23,7 +23,8 @@ mod time_macros;
 
 use super::super::*;
 use super::cached_hit::{
-    materialize_cached_compile_hit, CachedHitFailure, CachedHitMaterializeRequest, CachedHitPhases,
+    materialize_cached_compile_hit_offloaded, CachedHitFailure, CachedHitPhases,
+    OwnedCachedHitMaterializeRequest,
 };
 use super::error_cache::maybe_store_rustc_error_artifact;
 use super::hit_branches::{
@@ -53,7 +54,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         client_env,
         stdin,
     } = req;
-    let state = state_arc.as_ref();
+    let state = state_arc;
     let compile_start = std::time::Instant::now();
     let ParsedRequestArguments {
         sid,
@@ -732,13 +733,13 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                     )
                     .await;
                     if let Ok(response) =
-                        materialize_cached_compile_hit(CachedHitMaterializeRequest {
-                            state,
-                            sid: &sid,
-                            artifact_key_hex: &artifact_key_hex,
-                            verdict_key_hex: Some(&verdict_key_hex),
-                            source_path: &source_path,
-                            output_path: &output_path,
+                        materialize_cached_compile_hit_offloaded(OwnedCachedHitMaterializeRequest {
+                            state: Arc::clone(state),
+                            sid,
+                            artifact_key_hex: artifact_key_hex.clone(),
+                            verdict_key_hex: Some(verdict_key_hex),
+                            source_path: source_path.clone(),
+                            output_path: output_path.clone(),
                             secondary_output_dir: output_path
                                 .parent()
                                 .unwrap_or(cwd_path.as_path())
@@ -774,6 +775,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                                 cross_root_validate_ns: 0,
                             },
                         })
+                        .await
                     {
                         record_session_stat(&state.sessions, &sid, |t| {
                             t.record_depgraph_hit_artifact_hit();

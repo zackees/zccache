@@ -765,6 +765,31 @@ async fn try_exec_cache_hit(
     output_files: &[NormalizedPath],
     output_streams: ExecOutputStreams,
 ) -> Option<Response> {
+    let work_state = Arc::clone(state);
+    let key_hex = key_hex.to_owned();
+    let cwd = cwd.to_path_buf();
+    let output_files = output_files.to_vec();
+    match state
+        .launch_blocking(move || {
+            try_exec_cache_hit_blocking(&work_state, &key_hex, &cwd, &output_files, output_streams)
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::error!(%error, "exec cache-hit materialization task failed");
+            None
+        }
+    }
+}
+
+fn try_exec_cache_hit_blocking(
+    state: &SharedState,
+    key_hex: &str,
+    cwd: &Path,
+    output_files: &[NormalizedPath],
+    output_streams: ExecOutputStreams,
+) -> Option<Response> {
     let entry = lookup_artifact_with_disk_fallback(state, key_hex)?;
 
     let exit_code = entry.meta.exit_code;
@@ -802,6 +827,7 @@ async fn try_exec_cache_hit(
         matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path.as_path()))
     });
     let materialize_started = std::time::Instant::now();
+    payloads.record_staged_pre_materialization(&state.profiler.staged);
     let observed = write_payloads_par_observed(&targets, &payloads_for_write);
     payloads.record_staged_lock_timings(&state.profiler.staged);
     drop(payloads);
