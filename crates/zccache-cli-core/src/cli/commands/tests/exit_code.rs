@@ -43,6 +43,16 @@ fn exit_code_negative_preserves_failure() {
 }
 
 #[test]
+fn daemon_sigterm_exit_becomes_conventional_shell_status() {
+    assert_eq!(exit_code_from_i32(-143), ExitCode::from(143));
+}
+
+#[test]
+fn negative_value_outside_reserved_signal_range_stays_a_failure() {
+    assert_eq!(exit_code_from_i32(-256), ExitCode::from(1));
+}
+
+#[test]
 fn exit_code_257_keeps_low_byte() {
     // 257 & 0xFF == 1, non-zero, so kept as-is.
     assert_eq!(exit_code_from_i32(257), ExitCode::from(1));

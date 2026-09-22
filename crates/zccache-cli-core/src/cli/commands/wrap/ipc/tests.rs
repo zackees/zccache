@@ -39,6 +39,51 @@ fn compile_response_relay_writes_stdout_stderr_and_exit_code() {
 }
 
 #[test]
+fn compile_signal_exit_is_reported_without_truncation() {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let outcome = relay_compile_response(
+        Some(crate::protocol::Response::CompileResult {
+            exit_code: -143,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            cached: false,
+        }),
+        &mut stdout,
+        &mut stderr,
+    );
+
+    assert_eq!(outcome, RelayOutcome::Verdict(ExitCode::from(143)));
+    assert_eq!(
+        String::from_utf8(stderr).unwrap(),
+        "zccache[warn][R]: compiler terminated by signal 15 (SIGTERM)\n"
+    );
+}
+
+#[test]
+fn link_signal_exit_is_reported_without_truncation() {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let outcome = relay_link_response(
+        Some(crate::protocol::Response::LinkResult {
+            exit_code: -143,
+            stdout: Arc::new(Vec::new()),
+            stderr: Arc::new(Vec::new()),
+            cached: false,
+            warning: None,
+        }),
+        &mut stdout,
+        &mut stderr,
+    );
+
+    assert_eq!(outcome, RelayOutcome::Verdict(ExitCode::from(143)));
+    assert_eq!(
+        String::from_utf8(stderr).unwrap(),
+        "zccache[warn][R]: linker terminated by signal 15 (SIGTERM)\n"
+    );
+}
+
+#[test]
 fn compiler_exit_255_with_stderr_preserves_compiler_stderr_without_wrapper_relabeling() {
     let mut stdout = Vec::new();
     let mut compiler_stderr = Vec::new();

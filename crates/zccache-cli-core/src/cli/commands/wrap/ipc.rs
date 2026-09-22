@@ -6,7 +6,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use super::super::super::{link_retry_budget, wedge_recv_timeout};
-use super::super::util::{connect, exit_code_from_i32, slurp_stdin_if_piped};
+use super::super::util::{
+    connect, daemon_signal_from_exit_code, exit_code_from_i32, slurp_stdin_if_piped,
+};
 use crate::cli::runtime::{current_daemon_instance, ensure_daemon, stop_wedged_daemon};
 
 pub(super) async fn cmd_compile(
@@ -835,6 +837,7 @@ fn relay_compile_response_with_color<W: Write, E: Write>(
         }) => {
             let _ = stdout.write_all(&out);
             let _ = write_relay_stderr(stderr, &err, color_unknown_warning);
+            report_signal_termination(stderr, "compiler", exit_code);
             if exit_code == 255 && err.is_empty() {
                 // A terminal result remains the tool's status. This advisory
                 // only makes the otherwise-silent shape actionable; it does
@@ -900,6 +903,7 @@ fn relay_link_response_with_color<W: Write, E: Write>(
             if let Some(w) = warning {
                 let _ = writeln!(stderr, "zccache warning: {w}");
             }
+            report_signal_termination(stderr, "linker", exit_code);
             RelayOutcome::Verdict(exit_code_from_i32(exit_code))
         }
         Some(crate::protocol::Response::Error { message }) => {
@@ -916,6 +920,23 @@ fn relay_link_response_with_color<W: Write, E: Write>(
             cause: RelayFailureCause::UnexpectedResponse,
             context: format!("unexpected response from daemon: {other:?}"),
         }),
+    }
+}
+
+fn report_signal_termination(stderr: &mut dyn Write, tool: &str, exit_code: i32) {
+    let Some(signal) = daemon_signal_from_exit_code(exit_code) else {
+        return;
+    };
+    if signal == 15 {
+        let _ = writeln!(
+            stderr,
+            "zccache[warn][R]: {tool} terminated by signal {signal} (SIGTERM)"
+        );
+    } else {
+        let _ = writeln!(
+            stderr,
+            "zccache[warn][R]: {tool} terminated by signal {signal}"
+        );
     }
 }
 
