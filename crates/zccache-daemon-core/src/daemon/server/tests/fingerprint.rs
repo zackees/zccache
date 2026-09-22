@@ -703,6 +703,43 @@ fn request_fingerprint_ignores_cargo_target_dir() {
     );
 }
 
+/// Issue #1625 — request-cache lookup must use the same volatile Cargo
+/// environment policy as the depgraph context key after a Soldr cache restore.
+#[test]
+fn request_fingerprint_ignores_relocated_cargo_tools() {
+    let args = vec!["src/lib.rs".to_string()];
+    let env_a = vec![
+        ("CARGO".to_string(), "/cache-cold/bin/cargo".to_string()),
+        ("CARGO_HOME".to_string(), "/cache-cold/cargo".to_string()),
+        (
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER".to_string(),
+            "/cache-cold/shims/cc".to_string(),
+        ),
+        ("CARGO_PKG_NAME".to_string(), "fixture".to_string()),
+    ];
+    let env_b = vec![
+        ("CARGO".to_string(), "/cache-warm/bin/cargo".to_string()),
+        ("CARGO_HOME".to_string(), "/cache-warm/cargo".to_string()),
+        (
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER".to_string(),
+            "/cache-warm/shims/cc".to_string(),
+        ),
+        ("CARGO_PKG_NAME".to_string(), "fixture".to_string()),
+    ];
+
+    let fingerprint = |env: &[(String, String)]| {
+        request_fingerprint(
+            Path::new("/usr/bin/rustc"),
+            &args,
+            Path::new("/workspace"),
+            Some(Path::new("/workspace")),
+            Some(env),
+        )
+    };
+
+    assert_eq!(fingerprint(&env_a), fingerprint(&env_b));
+}
+
 #[test]
 fn msvc_cl_environment_salts_request_fingerprint_case_insensitively() {
     let args = vec!["/c".to_string(), "main.c".to_string()];

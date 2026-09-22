@@ -228,6 +228,23 @@ async fn discover_system_include_paths(
                     }
                 }
             }
+            // Minimal GCC installations can provide a working C frontend
+            // (`cc1`) without the C++ frontend (`cc1plus`).  The canonical
+            // C++ probe then produces no search list and used to force every
+            // C compile down the uncached bypass.  Preserve the richer C++
+            // roots when available, but recover the valid C roots otherwise.
+            if paths.is_empty() {
+                let c_args = crate::depgraph::discovery_args_c();
+                match run_discovery_command(compiler, &c_args, lineage, compiler_priority).await {
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        paths = crate::depgraph::parse_system_include_output(&stderr);
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to run C compiler for include discovery: {e}");
+                    }
+                }
+            }
             Some(paths)
         }
         Err(e) => {

@@ -411,11 +411,32 @@ where
 ///   `--extern` directory prefixes that cargo derives from it are already
 ///   non-cache-key state (out_dir excluded; search_paths excluded; extern
 ///   paths reduced to file-name identity). See issue #396.
+/// - `CARGO` / `CARGO_HOME` — Cargo's executable and package/tool state
+///   directory. Soldr deliberately relocates both beneath each cache root, so
+///   restoring an otherwise identical cache into a new root must not re-key
+///   every rustc invocation. They affect orchestration and dependency lookup,
+///   not the bytes rustc emits for a resolved invocation. See issue #1625.
+/// - `CARGO_TARGET_<TRIPLE>_LINKER` — Cargo consumes this selector and turns
+///   it into rustc linker arguments. Soldr points it at a cache-root-local
+///   shim, so the raw environment path is orchestration state and must not
+///   independently re-key unrelated compile units.
 const VOLATILE_CARGO_ENV_VARS: &[&str] = &[
+    "CARGO",
+    "CARGO_HOME",
     "CARGO_MANIFEST_DIR",
     "CARGO_MANIFEST_PATH",
     "CARGO_TARGET_DIR",
 ];
+
+/// Whether a Cargo environment variable describes orchestration or relocated
+/// tool state rather than compiler output identity.
+#[must_use]
+pub fn is_volatile_cargo_env_var(key: &str) -> bool {
+    VOLATILE_CARGO_ENV_VARS.contains(&key)
+        || key
+            .strip_prefix("CARGO_TARGET_")
+            .is_some_and(|target_key| target_key.ends_with("_LINKER"))
+}
 
 /// All inputs defining a rustc compilation context.
 ///
@@ -501,7 +522,7 @@ impl RustcCompileContext {
                 k.starts_with("CARGO_")
                     && k != "CARGO_MAKEFLAGS"
                     && k != "CARGO_INCREMENTAL"
-                    && !VOLATILE_CARGO_ENV_VARS.contains(&k.as_str())
+                    && !is_volatile_cargo_env_var(k)
             })
             .cloned()
             .collect();
@@ -722,8 +743,7 @@ impl RustcCompileContext {
         // for the rationale (issue #139).
         hasher.update(b"env\0");
         for (key, val) in &self.env_vars {
-            if VOLATILE_CARGO_ENV_VARS.contains(&key.as_str()) || key == DYLINT_CACHE_INPUT_HASH_ENV
-            {
+            if is_volatile_cargo_env_var(key) || key == DYLINT_CACHE_INPUT_HASH_ENV {
                 continue;
             }
             hasher.update(key.as_bytes());
@@ -899,8 +919,7 @@ impl RustcCompileContext {
 
         hasher.update(b"env\0");
         for (key, val) in &self.env_vars {
-            if VOLATILE_CARGO_ENV_VARS.contains(&key.as_str()) || key == DYLINT_CACHE_INPUT_HASH_ENV
-            {
+            if is_volatile_cargo_env_var(key) || key == DYLINT_CACHE_INPUT_HASH_ENV {
                 continue;
             }
             hasher.update(key.as_bytes());

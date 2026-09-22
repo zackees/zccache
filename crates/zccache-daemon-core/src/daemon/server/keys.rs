@@ -456,11 +456,9 @@ pub(super) fn request_env_fingerprint_vars(
             // computation and worktrees with different target-dir leaf names
             // never reach the artifact lookup (issue #396).
             let include = (key.starts_with("CARGO_")
+                && !crate::depgraph::is_volatile_cargo_env_var(key)
                 && key != "CARGO_MAKEFLAGS"
-                && key != "CARGO_INCREMENTAL"
-                && key != "CARGO_MANIFEST_DIR"
-                && key != "CARGO_MANIFEST_PATH"
-                && key != "CARGO_TARGET_DIR")
+                && key != "CARGO_INCREMENTAL")
                 || matches!(
                     key,
                     "ZCCACHE_FAST"
