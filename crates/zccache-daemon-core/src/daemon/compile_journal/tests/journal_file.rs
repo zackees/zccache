@@ -4,7 +4,6 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::super::journal_thread::{gc_journal_files, rotate_journal, JOURNAL_MAX_FILES};
 use super::super::{miss_reason, CompileJournal, JournalContext, JournalEntry};
@@ -320,9 +319,14 @@ fn test_multiple_entries_valid_jsonl() {
         journal.log(&entry, None);
     }
 
-    std::thread::sleep(Duration::from_millis(500));
+    // `log` only enqueues; the background writer thread drains the channel
+    // asynchronously (see `journal_thread`). Poll until the expected count
+    // shows up instead of guessing at a sleep duration — a fixed sleep is
+    // a coin flip on a loaded runner.
+    let path = dir.path().join("compile_journal.jsonl");
+    wait_for_lines(&path, 50);
 
-    let content = fs::read_to_string(dir.path().join("compile_journal.jsonl")).unwrap();
+    let content = fs::read_to_string(path).unwrap();
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 50, "expected 50 lines, got {}", lines.len());
     for (i, line) in lines.iter().enumerate() {
@@ -358,9 +362,16 @@ fn test_concurrent_logging() {
         h.join().unwrap();
     }
 
-    std::thread::sleep(Duration::from_millis(500));
+    // Joining the producers only guarantees all 1000 messages were
+    // enqueued; the writer thread drains them asynchronously. Poll until
+    // they land — the Windows x86 CI runner once observed 11/1000 lines
+    // after a fixed 500 ms sleep under load. `wait_for_lines` returns on
+    // `>= 1000` or its deadline, so a genuine stall still fails the
+    // equality assertion below with the real count.
+    let path = dir.path().join("compile_journal.jsonl");
+    wait_for_lines(&path, 1000);
 
-    let content = fs::read_to_string(dir.path().join("compile_journal.jsonl")).unwrap();
+    let content = fs::read_to_string(path).unwrap();
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(
         lines.len(),
