@@ -119,7 +119,7 @@ jobs:
           mkdir -p "${shim_dir}"
           nightly_bin="$(dirname "$(soldr rustup which --toolchain nightly-2026-05-26 rustc)")"
           nightly_toolchain="$(basename "$(dirname "${nightly_bin}")")"
-          printf '#!/usr/bin/env bash\nsubcommand="ru""stup"\nexport RUSTUP_TOOLCHAIN="%s"\nexec soldr "${subcommand}" run "%s" cargo "$@"\n' "${nightly_toolchain}" "${nightly_toolchain}" > "${shim_dir}/cargo"
+          printf '#!/usr/bin/env bash\nsubcommand="ru""stup"\nunset IN_SOLDR_PID\nexport RUSTUP_TOOLCHAIN="%s"\nexec soldr "${subcommand}" run "%s" cargo "$@"\n' "${nightly_toolchain}" "${nightly_toolchain}" > "${shim_dir}/cargo"
           chmod +x "${shim_dir}/cargo"
           echo "DYLINT_CARGO_SHIM=${shim_dir}" >> "${GITHUB_ENV}"
           echo "${shim_dir}" >> "${GITHUB_PATH}"
