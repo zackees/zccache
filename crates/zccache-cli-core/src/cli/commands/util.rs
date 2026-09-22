@@ -22,12 +22,24 @@ pub(crate) fn absolute_path(path: &str) -> NormalizedPath {
 /// A bare `exit_code as u8` wraps: 256 → 0 (success), masking failures.
 /// This preserves success/failure semantics: non-zero stays non-zero.
 pub(crate) fn exit_code_from_i32(code: i32) -> ExitCode {
+    if let Some(signal) = daemon_signal_from_exit_code(code) {
+        return ExitCode::from(128 + signal);
+    }
     let truncated = (code & 0xFF) as u8;
     if code != 0 && truncated == 0 {
         ExitCode::from(1)
     } else {
         ExitCode::from(truncated)
     }
+}
+
+/// Decode the daemon's reserved Unix signal representation, `-(128 + sig)`.
+/// Legacy negative statuses such as `-1` are not signal encodings.
+pub(crate) fn daemon_signal_from_exit_code(code: i32) -> Option<u8> {
+    let encoded = code.checked_neg()?.checked_sub(128)?;
+    u8::try_from(encoded)
+        .ok()
+        .filter(|signal| (1..=127).contains(signal))
 }
 
 /// Matches setup-soldr's boolean env-var normalization: `1`, `true`, `yes`,
