@@ -125,6 +125,20 @@ pub fn discovery_args() -> Vec<&'static str> {
     }
 }
 
+/// Build fallback discovery arguments for a C-only compiler installation.
+///
+/// Some minimal Linux images install `cc`/GCC without the C++ frontend.  The
+/// normal C++ probe then fails before printing an include search list even
+/// though the compiler can cache C translation units perfectly well.
+#[must_use]
+pub fn discovery_args_c() -> Vec<&'static str> {
+    if kernal_api::platform::host::target_is_windows() {
+        vec!["-v", "-E", "-x", "c", "NUL"]
+    } else {
+        vec!["-v", "-E", "-x", "c", "/dev/null"]
+    }
+}
+
 /// Build the **fast** clang-family discovery command arguments.
 ///
 /// Issue #541 option (B): `clang -###` makes clang print the `-cc1`
@@ -816,6 +830,15 @@ End of search list.
     #[test]
     fn discovery_args_returns_nonempty() {
         assert!(!discovery_args().is_empty());
+    }
+
+    #[test]
+    fn c_discovery_args_select_the_c_frontend() {
+        let args = discovery_args_c();
+        assert_eq!(
+            args.windows(2).find(|pair| pair[0] == "-x"),
+            Some(&["-x", "c"][..])
+        );
     }
 
     #[test]

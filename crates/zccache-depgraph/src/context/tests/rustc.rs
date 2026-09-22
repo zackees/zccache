@@ -528,6 +528,41 @@ fn rustc_context_key_ignores_cargo_target_dir() {
     );
 }
 
+/// Issue #1625 — Soldr save/load restores an identical zccache tree beneath
+/// a different cache root. Its managed `CARGO_HOME` moves with that root, but
+/// the resolved rustc invocation and its output identity do not change.
+#[test]
+fn rustc_context_key_ignores_cargo_home() {
+    let ctx_a = make_rustc_context_with_env(vec![
+        ("CARGO".into(), "/cache-cold/v0.9.21/bin/cargo".into()),
+        ("CARGO_HOME".into(), "/cache-cold/v0.9.21/cargo".into()),
+        ("CARGO_PKG_NAME".into(), "foo".into()),
+    ]);
+    let ctx_b = make_rustc_context_with_env(vec![
+        ("CARGO".into(), "/cache-warm/v0.9.21/bin/cargo".into()),
+        ("CARGO_HOME".into(), "/cache-warm/v0.9.21/cargo".into()),
+        ("CARGO_PKG_NAME".into(), "foo".into()),
+    ]);
+    assert_eq!(
+        ctx_a.context_key(),
+        ctx_b.context_key(),
+        "CARGO_HOME is package/tool state, not rustc output identity"
+    );
+}
+
+#[test]
+fn rustc_context_key_ignores_cargo_target_linker_location() {
+    let ctx_a = make_rustc_context_with_env(vec![(
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER".into(),
+        "/cache-cold/shims/cc".into(),
+    )]);
+    let ctx_b = make_rustc_context_with_env(vec![(
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER".into(),
+        "/cache-warm/shims/cc".into(),
+    )]);
+    assert_eq!(ctx_a.context_key(), ctx_b.context_key());
+}
+
 /// T2c (issue #396) — `from_parsed_args` is the second filter point. A
 /// `RustcCompileContext` built through the public `from_parsed_args` entry
 /// also must not carry `CARGO_TARGET_DIR` into `env_vars` (defense-in-depth
@@ -566,6 +601,12 @@ fn rustc_from_parsed_args_drops_cargo_target_dir() {
     };
     let client_env = vec![
         ("CARGO_TARGET_DIR".to_string(), "/repo/target-a".to_string()),
+        ("CARGO".to_string(), "/cache-cold/bin/cargo".to_string()),
+        ("CARGO_HOME".to_string(), "/cache-cold/cargo".to_string()),
+        (
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER".to_string(),
+            "/cache-cold/shims/cc".to_string(),
+        ),
         ("CARGO_PKG_NAME".to_string(), "foo".to_string()),
         ("CARGO_PKG_VERSION".to_string(), "1.2.3".to_string()),
         (
@@ -577,6 +618,21 @@ fn rustc_from_parsed_args_drops_cargo_target_dir() {
     assert!(
         !ctx.env_vars.iter().any(|(k, _)| k == "CARGO_TARGET_DIR"),
         "from_parsed_args must drop CARGO_TARGET_DIR from env_vars; got {:?}",
+        ctx.env_vars
+    );
+    assert!(
+        !ctx.env_vars.iter().any(|(k, _)| k == "CARGO"),
+        "from_parsed_args must drop CARGO from env_vars; got {:?}",
+        ctx.env_vars
+    );
+    assert!(
+        !ctx.env_vars.iter().any(|(k, _)| k == "CARGO_HOME"),
+        "from_parsed_args must drop CARGO_HOME from env_vars; got {:?}",
+        ctx.env_vars
+    );
+    assert!(
+        !ctx.env_vars.iter().any(|(k, _)| k.ends_with("_LINKER")),
+        "from_parsed_args must drop Cargo target linker selectors; got {:?}",
         ctx.env_vars
     );
     assert!(

@@ -25,8 +25,8 @@ pub use args::{ParsedArgs, UserDepFlags};
 pub use compile_commands::{parse_compile_commands_json, CompileCommand};
 pub use context::{
     compute_artifact_key, compute_rustc_artifact_key, compute_rustc_verdict_key,
-    fold_rustc_env_deps_into_artifact_key, ArtifactKey, CompileContext, ContextKey,
-    RustcCompileContext,
+    fold_rustc_env_deps_into_artifact_key, is_volatile_cargo_env_var, ArtifactKey, CompileContext,
+    ContextKey, RustcCompileContext,
 };
 pub use depfile::{prepare_depfile, prepare_depfile_with_mmd, DepfileError, DepfileStrategy};
 pub use graph::{hash_env_dep_value, CacheVerdict, ContextState, DepGraph, DepGraphStats};
@@ -42,7 +42,7 @@ pub use snapshot::{
     DepGraphLoadOutcome, SnapshotError, DEPGRAPH_VERSION,
 };
 pub use system_includes::{
-    discovery_args, discovery_args_fast, msvc_system_includes_from_env,
+    discovery_args, discovery_args_c, discovery_args_fast, msvc_system_includes_from_env,
     parse_cc1_system_include_output, parse_msvc_include_env, parse_system_include_output,
     SystemIncludeCache, MSVC_INCLUDE_ENV,
 };
