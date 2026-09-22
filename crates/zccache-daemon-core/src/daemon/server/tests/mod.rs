@@ -20,6 +20,7 @@ mod exec_probe;
 mod fingerprint;
 mod fingerprint_encoding;
 mod fs_matrix;
+mod ignored_input_freshness;
 mod index_writer_gone;
 mod link_cache;
 mod metadata_deferred;

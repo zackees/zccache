@@ -675,10 +675,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 };
                 let is_fresh = |p: &Path| {
                     let path = NormalizedPath::new(p);
-                    !state
-                        .cache_system
-                        .journal()
-                        .changed_since(&path, snap_clock)
+                    journal_proves_fresh(state.cache_system.journal(), &path, snap_clock)
                 };
                 let (compat_verdict, compat_reason, actual_context_key) = state
                     .dep_graph

@@ -699,7 +699,9 @@ pub(super) fn request_cache_inputs_fresh_since(
     paths: &[NormalizedPath],
     since: Clock,
 ) -> bool {
-    paths.iter().all(|path| !journal.changed_since(path, since))
+    paths
+        .iter()
+        .all(|path| journal_proves_fresh(journal, path, since))
 }
 
 pub(super) fn request_cache_artifact_matches(

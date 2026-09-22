@@ -184,10 +184,7 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
             let result = {
                 let is_fresh = |p: &Path| {
                     let path = NormalizedPath::new(p);
-                    !state
-                        .cache_system
-                        .journal()
-                        .changed_since(&path, snap_clock)
+                    journal_proves_fresh(state.cache_system.journal(), &path, snap_clock)
                 };
                 let get_hash = |p: &Path| {
                     let path = NormalizedPath::new(p);
