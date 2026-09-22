@@ -197,9 +197,10 @@ class FileWatcher:
                     root=self.root,
                 )
             )
-        except KeyboardInterrupt as ke:
+        except KeyboardInterrupt:
+            # The dispatch loop owns main-thread notification. Re-raise so it
+            # can request exactly one interruption for this watcher.
             self._log_keyboard_interrupt_stop_once()
-            handle_keyboard_interrupt(ke)
             raise
         except Exception:
             return True
