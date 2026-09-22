@@ -273,6 +273,32 @@ async fn pool_recovers_from_full_depletion() {
     server.await.unwrap();
 }
 
+/// A Windows server-pipe accept must remain pending past the old five-second
+/// rotation deadline and still carry bidirectional traffic on that same wait.
+/// Cancelling `pipe.connect()` at the deadline destroyed the instance and could
+/// close a client that had already opened it during sustained build churn.
+#[cfg(windows)]
+#[tokio::test]
+async fn pending_accept_survives_the_former_timeout_boundary() {
+    let endpoint = unique_test_endpoint();
+    let mut listener = IpcListener::bind(&endpoint).unwrap();
+
+    let server = tokio::spawn(async move {
+        let mut conn = listener.accept().await.expect("accept after long wait");
+        let msg: Option<Request> = conn.recv().await.unwrap();
+        assert_eq!(msg, Some(Request::Ping));
+        conn.send(&Response::Pong).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(5_100)).await;
+    let mut client = connect(&endpoint).await.unwrap();
+    client.send(&Request::Ping).await.unwrap();
+    let resp: Option<Response> = client.recv().await.unwrap();
+    assert_eq!(resp, Some(Response::Pong));
+
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn test_parallel_connections() {
     let endpoint = unique_test_endpoint();
