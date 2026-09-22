@@ -58,6 +58,7 @@ pub(crate) enum StagedTiming {
     MissMaterialization,
     HitMaterialization,
     HitStoreLockWait,
+    HitStoreLockPreMaterialization,
     HitStoreLockHold,
 }
 
@@ -70,6 +71,10 @@ const TIMINGS: &[(StagedTiming, &str)] = &[
     (StagedTiming::MissMaterialization, "miss_materialization"),
     (StagedTiming::HitMaterialization, "hit_materialization"),
     (StagedTiming::HitStoreLockWait, "hit_store_lock_wait"),
+    (
+        StagedTiming::HitStoreLockPreMaterialization,
+        "hit_store_lock_pre_materialization",
+    ),
     (StagedTiming::HitStoreLockHold, "hit_store_lock_hold"),
 ];
 
@@ -238,6 +243,21 @@ kernal_api::task_local! {
     static REQUEST_STAGED_PROFILE: Arc<StagedProfiler> = REQUEST_STAGED_PROFILE_TLS;
 }
 
+thread_local! {
+    static BLOCKING_REQUEST_STAGED_PROFILE: std::cell::RefCell<Option<Arc<StagedProfiler>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+struct BlockingRequestProfileGuard(Option<Arc<StagedProfiler>>);
+
+impl Drop for BlockingRequestProfileGuard {
+    fn drop(&mut self) {
+        BLOCKING_REQUEST_STAGED_PROFILE.with(|slot| {
+            slot.replace(self.0.take());
+        });
+    }
+}
+
 /// Mirror staged observations made while `future` runs into one request's
 /// owning session without changing the daemon-wide aggregate call sites.
 pub(crate) async fn scope_request_profile<T>(
@@ -245,6 +265,31 @@ pub(crate) async fn scope_request_profile<T>(
     future: impl Future<Output = T>,
 ) -> T {
     REQUEST_STAGED_PROFILE.scope(profile, future).await
+}
+
+pub(crate) async fn scope_optional_request_profile<T>(
+    profile: Option<Arc<StagedProfiler>>,
+    future: impl Future<Output = T>,
+) -> T {
+    match profile {
+        Some(profile) => scope_request_profile(profile, future).await,
+        None => future.await,
+    }
+}
+
+pub(crate) fn current_request_profile() -> Option<Arc<StagedProfiler>> {
+    REQUEST_STAGED_PROFILE.try_with(Arc::clone).ok()
+}
+
+pub(crate) fn scope_blocking_request_profile<T>(
+    profile: Option<Arc<StagedProfiler>>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    BLOCKING_REQUEST_STAGED_PROFILE.with(|slot| {
+        let previous = slot.replace(profile);
+        let _guard = BlockingRequestProfileGuard(previous);
+        operation()
+    })
 }
 
 fn saturating_atomic_add(value: &AtomicU64, amount: u64) {
@@ -287,10 +332,22 @@ impl StagedProfiler {
         self.mirror(|profile| profile.failure_direct(failure));
     }
 
-    fn mirror(&self, record: impl FnOnce(&StagedProfiler)) {
-        let _ = REQUEST_STAGED_PROFILE.try_with(|profile| {
-            if !std::ptr::eq(self, profile.as_ref()) {
-                record(profile);
+    fn mirror(&self, record: impl Fn(&StagedProfiler)) {
+        if REQUEST_STAGED_PROFILE
+            .try_with(|profile| {
+                if !std::ptr::eq(self, profile.as_ref()) {
+                    record(profile);
+                }
+            })
+            .is_ok()
+        {
+            return;
+        }
+        BLOCKING_REQUEST_STAGED_PROFILE.with(|slot| {
+            if let Some(profile) = slot.borrow().as_ref() {
+                if !std::ptr::eq(self, profile.as_ref()) {
+                    record(profile);
+                }
             }
         });
     }
@@ -503,5 +560,66 @@ mod tests {
         assert_eq!(second.failures["pointer_commit"], 0);
         assert_eq!(second.failures["manifest"], 23);
         assert_eq!(second.timings_ns["publication"], 115);
+    }
+
+    #[tokio::test]
+    async fn blocking_work_preserves_request_profile_attribution() {
+        let aggregate = Arc::new(StagedProfiler::new());
+        let request = Arc::new(StagedProfiler::new());
+        let aggregate_for_work = Arc::clone(&aggregate);
+
+        scope_request_profile(Arc::clone(&request), async move {
+            let profile = current_request_profile();
+            std::thread::spawn(move || {
+                scope_blocking_request_profile(profile, || {
+                    aggregate_for_work.timing(StagedTiming::HitStoreLockPreMaterialization, 37);
+                });
+            })
+            .join()
+            .unwrap();
+        })
+        .await;
+
+        assert_eq!(
+            aggregate.snapshot().timings_ns["hit_store_lock_pre_materialization"],
+            37
+        );
+        assert_eq!(
+            request.snapshot().timings_ns["hit_store_lock_pre_materialization"],
+            37
+        );
+    }
+
+    #[tokio::test]
+    async fn join_set_blocking_work_preserves_request_profile_attribution() {
+        let aggregate = Arc::new(StagedProfiler::new());
+        let request = Arc::new(StagedProfiler::new());
+        let aggregate_for_work = Arc::clone(&aggregate);
+
+        scope_request_profile(Arc::clone(&request), async move {
+            let profile = current_request_profile();
+            let mut tasks = tokio::task::JoinSet::new();
+            tasks.spawn(scope_optional_request_profile(profile, async move {
+                let profile = current_request_profile();
+                std::thread::spawn(move || {
+                    scope_blocking_request_profile(profile, || {
+                        aggregate_for_work.timing(StagedTiming::HitStoreLockPreMaterialization, 41);
+                    });
+                })
+                .join()
+                .unwrap();
+            }));
+            tasks.join_next().await.unwrap().unwrap();
+        })
+        .await;
+
+        assert_eq!(
+            aggregate.snapshot().timings_ns["hit_store_lock_pre_materialization"],
+            41
+        );
+        assert_eq!(
+            request.snapshot().timings_ns["hit_store_lock_pre_materialization"],
+            41
+        );
     }
 }

@@ -47,6 +47,23 @@ where
 
 impl EmbeddedDaemon {
     #[cfg(test)]
+    pub(crate) fn test_launch_blocking<F, R>(
+        &self,
+        operation: F,
+    ) -> kernal_api::async_engine::Task<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        self.state.launch_blocking(operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_active_cache_requests(&self) -> usize {
+        self.state.active_cache_requests()
+    }
+
+    #[cfg(test)]
     pub(crate) async fn start(
         endpoint: String,
         cache_dir: crate::core::NormalizedPath,
@@ -84,6 +101,7 @@ impl EmbeddedDaemon {
             staging_root,
             backend_identity,
             host_admission_classifier,
+            runtime_handle.clone(),
         )
         .map_err(|error| super::lifecycle::cache_root_error(&cache_dir, &error))?;
         // Arm the startup depgraph-load gate as early as possible — before

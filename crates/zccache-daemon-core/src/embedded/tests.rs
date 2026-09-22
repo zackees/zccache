@@ -461,6 +461,75 @@ mod runtime_hooks_tests {
         // Tear down the service cleanly so the index writer task exits.
         let _ = host_rt.block_on(service.shutdown(ShutdownMode::Graceful));
     }
+
+    #[test]
+    fn embedded_blocking_lane_keeps_single_worker_runtime_responsive() {
+        let host_rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .thread_name("single-host-worker")
+            .build()
+            .expect("host runtime");
+        let temp = TempDir::new().expect("temp cache root");
+        let cache_root: NormalizedPath = temp.path().join("zccache").into();
+        let handle = host_rt.handle().clone();
+        let service = host_rt
+            .block_on(async move {
+                let mut audit = AuditConfig::default();
+                audit.mode = crate::audit::AuditMode::Off;
+                ZccacheService::start(ZccacheConfig {
+                    host: HostIdentity {
+                        product: "zccache-test".into(),
+                        instance_id: "blocking-lane".into(),
+                        workspace_id: "blocking-lane".into(),
+                    },
+                    cache_root,
+                    audit,
+                    limits: ServiceLimits::default(),
+                    runtime: RuntimeHooks {
+                        service_name: Some("blocking-lane-test".into()),
+                        handle: Some(handle),
+                    },
+                    cancellation: None,
+                })
+                .await
+            })
+            .expect("service start");
+
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let blocked = service.daemon.test_launch_blocking(move || {
+            started_tx.send(()).expect("mark blocking lane started");
+            release_rx.recv().expect("release blocking lane")
+        });
+        started_rx.recv().expect("blocking lane started");
+        assert_eq!(service.daemon.test_active_cache_requests(), 1);
+        host_rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                tokio::spawn(async { tokio::task::yield_now().await })
+                    .await
+                    .expect("host async task")
+            })
+            .await
+            .expect("blocking cache-hit work must not occupy the sole async worker");
+        });
+        // Dropping an awaited blocking task aborts the join handle, not the
+        // already-running closure. Its owned activity guard must therefore
+        // keep shutdown/maintenance from observing an idle daemon.
+        drop(blocked);
+        assert_eq!(service.daemon.test_active_cache_requests(), 1);
+        release_tx.send(()).expect("release blocking lane");
+        host_rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while service.daemon.test_active_cache_requests() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("blocking activity guard released");
+        });
+        let _ = host_rt.block_on(service.shutdown(ShutdownMode::Graceful));
+    }
 }
 
 #[cfg(test)]

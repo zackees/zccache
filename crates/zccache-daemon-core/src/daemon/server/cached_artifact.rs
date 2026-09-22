@@ -60,6 +60,17 @@ impl MaterializationPayloads {
             profiler.timing(StagedTiming::HitStoreLockHold, hold_ns);
         }
     }
+
+    pub(crate) fn record_staged_pre_materialization(
+        &self,
+        profiler: &crate::daemon::staged_stats::StagedProfiler,
+    ) {
+        use crate::daemon::staged_stats::StagedTiming;
+
+        if let Some((_, hold_ns)) = self.staged_lock_timings() {
+            profiler.timing(StagedTiming::HitStoreLockPreMaterialization, hold_ns);
+        }
+    }
 }
 
 struct ArtifactAccess {

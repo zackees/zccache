@@ -60,6 +60,62 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) phases: CachedHitPhases,
 }
 
+pub(super) struct OwnedCachedHitMaterializeRequest {
+    pub(super) state: Arc<SharedState>,
+    pub(super) sid: SessionId,
+    pub(super) artifact_key_hex: String,
+    pub(super) verdict_key_hex: Option<String>,
+    pub(super) source_path: NormalizedPath,
+    pub(super) output_path: NormalizedPath,
+    pub(super) secondary_output_dir: NormalizedPath,
+    pub(super) current_depfile_dest: Option<NormalizedPath>,
+    pub(super) compile_start: Instant,
+    pub(super) hit_label: &'static str,
+    pub(super) cached_error_label: &'static str,
+    pub(super) record_compilation: bool,
+    pub(super) downgrade_output_metadata: bool,
+    pub(super) mtime_floor_paths: Vec<NormalizedPath>,
+    pub(super) rustc_metadata_compat_outputs: Option<Vec<NormalizedPath>>,
+    pub(super) rustc_archive_hardlink_eligible: Option<bool>,
+    pub(super) phases: CachedHitPhases,
+}
+
+pub(super) async fn materialize_cached_compile_hit_offloaded(
+    request: OwnedCachedHitMaterializeRequest,
+) -> Result<Response, CachedHitFailure> {
+    let launcher = Arc::clone(&request.state);
+    match launcher
+        .launch_blocking(move || {
+            materialize_cached_compile_hit(CachedHitMaterializeRequest {
+                state: &request.state,
+                sid: &request.sid,
+                artifact_key_hex: &request.artifact_key_hex,
+                verdict_key_hex: request.verdict_key_hex.as_deref(),
+                source_path: &request.source_path,
+                output_path: &request.output_path,
+                secondary_output_dir: request.secondary_output_dir,
+                current_depfile_dest: request.current_depfile_dest,
+                compile_start: request.compile_start,
+                hit_label: request.hit_label,
+                cached_error_label: request.cached_error_label,
+                record_compilation: request.record_compilation,
+                downgrade_output_metadata: request.downgrade_output_metadata,
+                mtime_floor_paths: request.mtime_floor_paths,
+                rustc_metadata_compat_outputs: request.rustc_metadata_compat_outputs,
+                rustc_archive_hardlink_eligible: request.rustc_archive_hardlink_eligible,
+                phases: request.phases,
+            })
+        })
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::error!(%error, "cache-hit materialization task failed");
+            Err(CachedHitFailure::CacheRead)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum CachedHitFailure {
     /// The shared rustc output exists, but this plain/Dylint identity has not
@@ -305,6 +361,7 @@ pub(super) fn materialize_cached_compile_hit(
         || payloads_to_write.iter().any(
             |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
         );
+    payloads.record_staged_pre_materialization(&state.profiler.staged);
     let observed_result = if provisional_staged {
         write_provisional_payloads_par_with_mtime_floor_observed(
             &targets,

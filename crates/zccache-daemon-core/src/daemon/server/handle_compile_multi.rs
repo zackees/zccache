@@ -148,6 +148,7 @@ fn check_unit_cache(
                                     out
                                 })
                                 .collect();
+                            payloads.record_staged_pre_materialization(&state.profiler.staged);
                             let materialization = materialize_multi_hit(&targets, &payloads);
                             payloads.record_staged_lock_timings(&state.profiler.staged);
                             drop(payloads);
@@ -325,6 +326,7 @@ fn check_unit_cache(
                             out
                         })
                         .collect();
+                    payloads.record_staged_pre_materialization(&state.profiler.staged);
                     let materialization = materialize_multi_hit(&targets, &payloads);
                     payloads.record_staged_lock_timings(&state.profiler.staged);
                     drop(payloads);
@@ -525,6 +527,7 @@ pub(super) async fn handle_compile_multi(
     let mut join_set = tokio::task::JoinSet::new();
     let scan_cache = Arc::new(crate::depgraph::scanner::RecursiveScanCache::default());
     for (idx, compilation) in compilations.iter().enumerate() {
+        let request_profile = crate::daemon::staged_stats::current_request_profile();
         let state = Arc::clone(&state);
         let cwd_path = cwd_path.clone();
         let key_root = key_root.clone();
@@ -534,31 +537,44 @@ pub(super) async fn handle_compile_multi(
         let shared_dep_flags = shared_dep_flags.clone();
         let scan_cache = Arc::clone(&scan_cache);
         let cache_now = compile_start;
-        join_set.spawn_blocking(move || {
-            (
-                idx,
-                check_unit_cache(
-                    &state,
-                    &compilation,
-                    UnitCacheCheck {
-                        cwd_path: &cwd_path,
-                        key_root: &key_root,
-                        system_includes: &system_includes,
-                        shared_base: Some(&shared_base),
-                        shared_dep_flags: Some(&shared_dep_flags),
-                        scan_cache: &scan_cache,
-                        cache_now,
-                        dependency_mode,
-                    },
-                ),
-            )
-        });
+        join_set.spawn(crate::daemon::staged_stats::scope_optional_request_profile(
+            request_profile,
+            async move {
+                let work_state = Arc::clone(&state);
+                state
+                    .launch_blocking(move || {
+                        (
+                            idx,
+                            check_unit_cache(
+                                &work_state,
+                                &compilation,
+                                UnitCacheCheck {
+                                    cwd_path: &cwd_path,
+                                    key_root: &key_root,
+                                    system_includes: &system_includes,
+                                    shared_base: Some(&shared_base),
+                                    shared_dep_flags: Some(&shared_dep_flags),
+                                    scan_cache: &scan_cache,
+                                    cache_now,
+                                    dependency_mode,
+                                },
+                            ),
+                        )
+                    })
+                    .await
+            },
+        ));
     }
 
     let mut indexed_results: Vec<(usize, UnitCacheResult)> = Vec::with_capacity(compilations.len());
     while let Some(result) = join_set.join_next().await {
         match result {
-            Ok(pair) => indexed_results.push(pair),
+            Ok(Ok(pair)) => indexed_results.push(pair),
+            Ok(Err(e)) => {
+                return Response::Error {
+                    message: format!("cache check task failed: {e}"),
+                };
+            }
             Err(e) => {
                 return Response::Error {
                     message: format!("cache check task panicked: {e}"),
