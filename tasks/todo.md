@@ -1,3 +1,19 @@
+# #1597 cache-hit executable restore race
+
+- [x] Read the artifact materialization and execution ownership contracts; map cache-hit restoration through compiler dispatch.
+- [x] Reproduce the build-script `ETXTBSY` failure with a deterministic regression that exercises a cache-hit restore racing execution.
+- [x] Make the minimal synchronization/ownership fix without adding a dependency; preserve hit-path concurrency where execution is not involved.
+- [x] Run focused regression tests, affected crate suites, formatting, warnings-denied checks/clippy, rustdoc where applicable, and local integration validation. Focused #1597 and #1562 regressions, formatting, docs, Clippy, helper-binary prebuild, all-target workspace check, and Windows cross-check pass. Full no-cache workspace units have one unrelated reproducible #1607 failure; the integration lane has unrelated #1608 Windows-DLL fixture and #1609 PCH failures.
+- [x] Review the final diff. Medium code review found no synchronization, portability, performance, or test-coverage finding.
+- [x] Commit, push, open the resolving PR, then verify no temporary files or worktree changes remain.
+
+## Review — #1597
+
+- **Root cause:** `persist/write_cached.rs` directly materialized legacy cache-file and inline payload hits without the existing spawn/materialization exclusion. A daemon child forked during that write can inherit the descriptor, and a Cargo hard-linked build-script alias then fails `execve` with `ETXTBSY`.
+- **Fix:** take the existing exclusive materialization guard around every file-backed cache-hit delivery and inline-byte destination write. No dependency, IPC, wire, or policy change.
+- **RED → GREEN:** `cache_hit_materialization_waits_for_child_spawn` fails before the guard and passes after it; the existing staged #1562 executable race regression remains green.
+- **Local validation:** formatter, rustdoc with warnings denied, affected all-target Clippy with warnings denied, prebuild of all test helper binaries, and workspace all-target check pass. Full no-cache workspace units identify only #1607; ignored integration identifies only #1608/#1609 platform/fixture follow-ups. Medium code review: no findings.
+
 # Pin kernal-api from crates.io (drop `_vender/kernal-api`) — done
 
 Goal: `feat/complete-kernal-integration` depends on a published, exact

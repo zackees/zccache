@@ -21,6 +21,56 @@ fn require_hardlink(out: &Path, cache: &Path, test_name: &str) -> bool {
     }
 }
 
+/// zccache#1597: ordinary cache-file hits can restore a Cargo build-script
+/// binary. Delivery must not open the output for writing while another daemon
+/// child is between fork and exec, because that child inherits the descriptor
+/// and Cargo can then receive `ETXTBSY` when it executes the hard-linked alias.
+#[cfg(unix)]
+#[test]
+fn cache_hit_materialization_waits_for_child_spawn() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("build_script_build-cache");
+    let destination = dir.path().join("build-script-build");
+    seed_persisted_blob(&cache, b"#!/bin/sh\nexit 0\n");
+
+    // A semantic daemon child holds this guard from fork until exec. Keep it
+    // held to make direct cache-hit materialization prove it uses the matching
+    // exclusive side before opening the requested output for writing.
+    let spawn_guard = crate::daemon::spawn_exclusion::spawn_shared();
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    // The writer owns its path while the parent retains this one for the
+    // post-join assertion.
+    let destination_for_writer = destination.clone();
+    let writer = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = write_cached_file(&destination_for_writer, &cache);
+        done_tx.send(result).unwrap();
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cache-hit writer did not begin materialization");
+
+    assert!(
+        matches!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "cache-hit materialization wrote while a child could inherit its descriptor"
+    );
+    drop(spawn_guard);
+
+    done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cache-hit materialization did not resume after child exec")
+        .unwrap();
+    writer.join().unwrap();
+    assert_eq!(std::fs::read(destination).unwrap(), b"#!/bin/sh\nexit 0\n");
+}
+
 // ── write_cached_output staleness tests ────────────────────────────
 
 /// Regression test: write_cached_output must overwrite an existing output
