@@ -47,6 +47,32 @@ def test_zccache_publish_manifest_keeps_gha_feature_dependencies(
     assert "zccache-daemon-core" not in manifest["dependencies"]
 
 
+def test_zccache_publish_manifest_keeps_all_amalgamated_kernal_api_features(
+    tmp_path: Path,
+) -> None:
+    source = Path(__file__).parents[2] / "crates" / "zccache" / "Cargo.toml"
+    manifest_path = tmp_path / "Cargo.toml"
+    shutil.copyfile(source, manifest_path)
+    rewrite_zccache_manifest(
+        manifest_path,
+        {module.crate: module.module for module in INTERNAL_MODULES},
+    )
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert set(manifest["dependencies"]["kernal-api"]["features"]) == {
+        "broker-client",
+        "crash",
+        "daemon-frame-v1",
+        "daemon-identity",
+        "daemon-registration",
+        "daemon-registration-v2",
+        "fs",
+        "fs-watch",
+        "ipc",
+        "ipc-async",
+    }
+
+
 def test_rewrite_rust_source_rebases_crate_root_and_internal_crate_paths() -> None:
     module_map = {
         "zccache-core": "core",
