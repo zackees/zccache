@@ -341,20 +341,36 @@ pub(crate) mod ipc {
                     Some(pipe) => pipe,
                     None => create_with_retry(&self.endpoint).await?,
                 };
-                match tokio::time::timeout(Duration::from_secs(5), pipe.connect()).await {
-                    Ok(Ok(())) => {
+                // Keep the connect future alive until Windows completes it.
+                // Cancelling a pending named-pipe connect destroys this server
+                // instance even when a client has already opened it.  That
+                // closes the client's otherwise healthy compile connection
+                // without a response under sustained connection churn.
+                match Self::await_pipe_connection(pipe.connect()).await {
+                    Ok(()) => {
                         if let Ok(replacement) = create_with_retry(&self.endpoint).await {
                             self.pool.push_back(replacement);
                         }
                         return Ok((Stream::Server(pipe), PeerIdentity::current_user_pipe()));
                     }
-                    Ok(Err(_)) | Err(_) => {
+                    Err(_) => {
                         if let Ok(replacement) = create_with_retry(&self.endpoint).await {
                             self.pool.push_back(replacement);
                         }
                     }
                 }
             }
+        }
+
+        /// Preserve the exact pending Windows connect operation until the OS
+        /// completes it. A deadline here would be destructive, not merely
+        /// observational: dropping the future closes its pipe instance.
+        #[cfg(windows)]
+        async fn await_pipe_connection<F>(connect: F) -> io::Result<()>
+        where
+            F: std::future::Future<Output = io::Result<()>>,
+        {
+            connect.await
         }
 
         pub(crate) fn tightened_parent(&self) -> bool {
@@ -498,6 +514,55 @@ pub(crate) mod ipc {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[cfg(windows)]
+        struct DropDetector {
+            cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+            armed: bool,
+        }
+
+        #[cfg(windows)]
+        impl DropDetector {
+            fn disarm(&mut self) {
+                self.armed = false;
+            }
+        }
+
+        #[cfg(windows)]
+        impl Drop for DropDetector {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.cancelled.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+
+        /// The production pipe-connect policy must retain the same pending
+        /// operation beyond the former five-second deadline. The detector is
+        /// disarmed only after normal completion, so a timeout/cancellation
+        /// reintroduced inside `await_pipe_connection` fails this test.
+        #[cfg(windows)]
+        #[tokio::test]
+        async fn pipe_connection_wait_does_not_cancel_the_pending_operation() {
+            let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut detector = DropDetector {
+                cancelled: std::sync::Arc::clone(&cancelled),
+                armed: true,
+            };
+
+            Listener::await_pipe_connection(async move {
+                tokio::time::sleep(Duration::from_millis(5_100)).await;
+                detector.disarm();
+                Ok(())
+            })
+            .await
+            .expect("connect operation should complete without cancellation");
+
+            assert!(
+                !cancelled.load(Ordering::SeqCst),
+                "pending connect operation was dropped before completion"
+            );
+        }
 
         #[test]
         fn unique_test_endpoints_are_distinct() {
