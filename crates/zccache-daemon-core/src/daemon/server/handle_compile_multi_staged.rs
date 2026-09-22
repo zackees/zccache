@@ -178,11 +178,9 @@ pub(super) async fn try_handle_staged_misses(
     for miss in &misses {
         let mut compiler_args = miss.plan.rewritten_args.clone();
         if miss.plan.msvc_syntax
-            && !compiler_args
-                .iter()
-                .any(|arg| arg.eq_ignore_ascii_case("/showIncludes"))
+            && crate::depgraph::msvc_args::msvc_show_includes_mode(&compiler_args).is_none()
         {
-            compiler_args.push("/showIncludes".to_string());
+            crate::depgraph::msvc_args::inject_show_includes(&mut compiler_args);
         }
         let rsp_guard = match crate::compiler::response_file::write_response_file_if_needed(
             &compiler_args,
