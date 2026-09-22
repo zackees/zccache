@@ -130,6 +130,18 @@ fn path_for_cache_lookup(path: &Path) -> NormalizedPath {
     NormalizedPath::new(crate::platform::fs::path::strip_verbatim_prefix(path))
 }
 
+/// Watcher silence is evidence only for paths whose events are not filtered.
+/// Ignored paths must fall through to the caller's stat/hash validation.
+pub(super) fn journal_proves_fresh(
+    journal: &crate::fscache::ChangeJournal,
+    path: &NormalizedPath,
+    since: Clock,
+) -> bool {
+    static IGNORE: std::sync::LazyLock<crate::watcher::IgnoreFilter> =
+        std::sync::LazyLock::new(crate::watcher::IgnoreFilter::default);
+    !IGNORE.should_ignore(path.as_path()) && !journal.changed_since(path, since)
+}
+
 /// Check if all files in a context's dependency list are unchanged since
 /// the given clock. Uses per-file journal tracking instead of global clock
 /// comparison, so output file changes (like .o writes) don't invalidate
@@ -141,19 +153,23 @@ pub(super) fn context_files_fresh(
     since: Clock,
 ) -> bool {
     let journal = state.cache_system.journal();
-    if journal.changed_since(&source_path.into(), since) {
+    // The watcher drops events for ignored path components even when the
+    // daemon itself is healthy. Silence for those paths is not freshness:
+    // decline the zero-hash tiers and let the depgraph stat/hash its inputs.
+    // This applies to generated includes and rustc externs as well as sources.
+    if !journal_proves_fresh(journal, &source_path.into(), since) {
         return false;
     }
     if let Some(includes) = state.dep_graph.load().get_includes(context_key) {
         for header in &includes {
-            if journal.changed_since(header, since) {
+            if !journal_proves_fresh(journal, header, since) {
                 return false;
             }
         }
     }
     if let Some(externs) = state.dep_graph.load().get_rustc_externs(context_key) {
         for (_, path) in &externs {
-            if journal.changed_since(path, since) {
+            if !journal_proves_fresh(journal, path, since) {
                 return false;
             }
         }
