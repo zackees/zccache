@@ -227,3 +227,52 @@ async fn a_disabled_interval_pushes_no_frames_but_still_completes() {
     );
     assert_eq!(terminal, Response::Pong);
 }
+
+/// A heartbeat write replaces repeated cancellation of a pending pipe read as
+/// the progress loop's client-death probe. Prove a vanished client still drops
+/// the in-flight handler promptly rather than leaking its compile permit.
+#[tokio::test]
+async fn a_failed_heartbeat_write_cancels_the_handler() {
+    struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(signal) = self.0.take() {
+                let _ = signal.send(());
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().expect("temp cache root");
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let mut server = super::super::tests::bind_isolated_server_at(&endpoint, temp.path());
+    let mut client = crate::ipc::connect(&endpoint)
+        .await
+        .expect("client connects");
+    client.send(&Request::Ping).await.expect("client sends");
+    let mut conn = server.listener.accept().await.expect("server accepts");
+    let _ = conn.recv::<Request>().await.expect("server reads request");
+    drop(client);
+
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        guarded_dispatch_with_progress_every(
+            Some(std::time::Duration::from_millis(20)),
+            &mut conn,
+            &ResponseWire::ProstV16 {
+                request_id: "disconnect-test".to_string(),
+            },
+            &server.state,
+            async move {
+                let _drop_signal = DropSignal(Some(dropped_tx));
+                std::future::pending().await
+            },
+        ),
+    )
+    .await
+    .expect("heartbeat detects the disconnected client");
+
+    assert!(outcome.is_none(), "disconnect cancels the handler");
+    dropped_rx.await.expect("handler future was dropped");
+}
