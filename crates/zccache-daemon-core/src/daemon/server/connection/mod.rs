@@ -180,13 +180,14 @@ fn compile_progress_interval_from(raw: Option<&str>) -> Option<std::time::Durati
 /// before reaching this function (both lanes were bumped in #1216), so it can
 /// never receive a frame it cannot decode.
 ///
-/// ## Borrow shape
+/// ## Disconnect detection
 ///
-/// The ticker arm deliberately does *nothing* but fall out of the `select!`:
-/// `conn.wait_for_disconnect()` mutably borrows `conn` for the whole
-/// `select!` expression, so the heartbeat write has to happen after that
-/// expression ends. `wait_for_disconnect` is cancellation-safe and preserves
-/// buffered bytes, so re-entering it each iteration is sound.
+/// The heartbeat write is also the disconnect probe. In particular, do not
+/// race a fresh `conn.wait_for_disconnect()` against every tick. Dropping that
+/// pending read cancels an overlapped named-pipe operation on Windows; a later
+/// read can observe the cancelled operation as a disconnect and drop a healthy
+/// compile connection. A failed heartbeat write returns `None`, which drops the
+/// handler and retains the same bounded client-death detection cadence.
 async fn guarded_dispatch_with_progress<F>(
     conn: &mut IpcConnection,
     response_wire: &ResponseWire,
@@ -234,18 +235,12 @@ where
     // heartbeat lands one full interval into the compile rather than at t=0.
     ticker.tick().await;
     loop {
-        let winner = {
-            let disconnect = conn.wait_for_disconnect();
-            let tick = ticker.tick();
-            let mut disconnect = std::pin::pin!(disconnect);
-            let mut tick = std::pin::pin!(tick);
-            kernal_api::biased_race!((handler.as_mut()), (disconnect.as_mut()), (tick.as_mut()),)
-                .await
-        };
+        let tick = ticker.tick();
+        let mut tick = std::pin::pin!(tick);
+        let winner = kernal_api::biased_race!((handler.as_mut()), (tick.as_mut()),).await;
         match winner {
-            kernal_api::async_engine::BiasedRace3::First(out) => return Some(out),
-            kernal_api::async_engine::BiasedRace3::Second(()) => return None,
-            kernal_api::async_engine::BiasedRace3::Third(()) => {}
+            kernal_api::async_engine::BiasedRace2::First(out) => return Some(out),
+            kernal_api::async_engine::BiasedRace2::Second(()) => {}
         }
         // Borrow of `conn` from the `select!` above has ended here.
         let progress = super::compile_progress::progress_response(&slot, &state.compile_queue);
@@ -267,16 +262,16 @@ where
             );
         }
         if let Err(error) = send_response_for_wire(conn, response_wire, &progress).await {
-            // The client is gone or the pipe broke. Don't fail the compile
-            // over a lost diagnostic — let the handler finish and let the
-            // terminal write report the real transport error.
+            // This write is the cancellation probe while the handler owns the
+            // request. A broken connection means there is no client left to
+            // receive the terminal response, so dropping `handler` here also
+            // reaps its kill-on-drop compiler child and releases its permit.
             tracing::warn!(
                 event = "compile_progress_send_failed",
                 error = %error,
-                "failed to push a compile progress heartbeat; \
-                 continuing without further heartbeats"
+                "failed to push a compile progress heartbeat; cancelling request"
             );
-            return guarded_dispatch(conn, handler).await;
+            return None;
         }
     }
 }
