@@ -145,6 +145,9 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         use crate::depgraph::msvc_args::ShowIncludesMode;
         match crate::depgraph::msvc_args::msvc_show_includes_mode(effective_args) {
             None => {
+                // The flag is merged into the compiler argv below. Keep it in
+                // `extra_args` for now; the merge must place it before a
+                // clang-cl positional `--` delimiter.
                 extra_args.push("/showIncludes".to_string());
                 injected_show_includes = true;
                 depfile_strategy = DepfileStrategy::ShowIncludes;
@@ -220,11 +223,16 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
 
     // Combine expanded_args + extra_args for response-file length check.
     // Only allocates when extra_args is non-empty.
-    let combined_args;
+    let mut combined_args;
     let rsp_args: &[String] = if extra_args.is_empty() {
         &compiler_args
     } else {
-        combined_args = [compiler_args.as_slice(), extra_args.as_slice()].concat();
+        combined_args = compiler_args.clone();
+        let insertion = combined_args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(combined_args.len());
+        combined_args.splice(insertion..insertion, extra_args.iter().cloned());
         &combined_args
     };
 
@@ -261,10 +269,7 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     if let Some(ref rsp) = _rsp_guard {
         builder = builder.arg(rsp.at_arg()).current_dir(cwd);
     } else {
-        builder = builder.args(&compiler_args).current_dir(cwd);
-        if !extra_args.is_empty() {
-            builder = builder.args(&extra_args);
-        }
+        builder = builder.args(rsp_args).current_dir(cwd);
     }
     builder = apply_client_env_builder(
         builder,

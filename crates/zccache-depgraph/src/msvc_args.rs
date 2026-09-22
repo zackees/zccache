@@ -59,6 +59,20 @@ pub fn msvc_show_includes_mode(args: &[String]) -> Option<ShowIncludesMode> {
     args.iter().find_map(|arg| parse_show_includes_arg(arg))
 }
 
+/// Add the daemon's dependency-trace flag before clang-cl's positional `--`.
+///
+/// LLVM-generated clang-cl commands use `-- <source>` to terminate options.
+/// Appending `/showIncludes` after that delimiter makes clang-cl interpret the
+/// flag as an input path. MSVC commands without a delimiter keep the ordinary
+/// append behavior.
+pub fn inject_show_includes(args: &mut Vec<String>) {
+    let insertion = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    args.insert(insertion, "/showIncludes".to_string());
+}
+
 /// Parse MSVC-style compile arguments into structured form.
 ///
 /// MSVC uses `/` prefix for flags (e.g., `/I`, `/D`, `/O2`).
@@ -374,6 +388,20 @@ mod tests {
             msvc_show_includes_mode(&args(&["/nologo", "/c", "a.c"])),
             None
         );
+    }
+
+    #[test]
+    fn injected_show_includes_precedes_positional_delimiter() {
+        let mut clang_cl = args(&["/nologo", "-c", "--", r"C:\src\file.cpp"]);
+        inject_show_includes(&mut clang_cl);
+        assert_eq!(
+            clang_cl,
+            args(&["/nologo", "-c", "/showIncludes", "--", r"C:\src\file.cpp"])
+        );
+
+        let mut cl = args(&["/nologo", "/c", "file.cpp"]);
+        inject_show_includes(&mut cl);
+        assert_eq!(cl.last().map(String::as_str), Some("/showIncludes"));
     }
 
     #[test]
