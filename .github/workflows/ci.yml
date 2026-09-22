@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
-      - uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
+      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
         with:
           # This action ref's default soldr (0.8.13) predates zackees/soldr#1820
           # and GCs live target/ artifacts after every build — which is what
@@ -61,7 +61,7 @@ jobs:
           # .so despite successful build": the compiled cdylib was collected
           # between the build and dylint's post-build lookup (and between the
           # workflow's two passes). Pin a post-#1820 soldr.
-          version: 0.9.10
+          version: 0.9.21
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -93,12 +93,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
       - id: setup-soldr
-        uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
+        uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
         with:
           # Post-#1820 soldr (see the identical pin above): 0.8.13's live
           # target-artifact GC is what collected the freshly built dylint
           # cdylibs out from under cargo-dylint's post-build lookup.
-          version: 0.9.2
+          version: 0.9.21
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -246,7 +246,7 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
+      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
         with:
           # This action ref's default soldr (0.8.13) predates zackees/soldr#1820
           # and GCs live target/ artifacts after every build — which is what
@@ -254,7 +254,7 @@ jobs:
           # .so despite successful build": the compiled cdylib was collected
           # between the build and dylint's post-build lookup (and between the
           # workflow's two passes). Pin a post-#1820 soldr.
-          version: 0.9.2
+          version: 0.9.21
           zccache-seed-strict: true
           cache: true
           toolchain: 1.95.0
@@ -284,7 +284,7 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
+      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
         with:
           # This action ref's default soldr (0.8.13) predates zackees/soldr#1820
           # and GCs live target/ artifacts after every build — which is what
@@ -292,7 +292,7 @@ jobs:
           # .so despite successful build": the compiled cdylib was collected
           # between the build and dylint's post-build lookup (and between the
           # workflow's two passes). Pin a post-#1820 soldr.
-          version: 0.9.2
+          version: 0.9.21
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
