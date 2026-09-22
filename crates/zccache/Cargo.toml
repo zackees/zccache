@@ -201,7 +201,22 @@ tracing-subscriber = { workspace = true, optional = true }
 # only be made by whoever declares the dependency -- which is now kernal-api,
 # and it pins `=0.9.4`. If that pin ever regresses below 0.9.3 the aarch64
 # Windows release lane breaks here, so it is a facade-side constraint now.
-kernal-api = { workspace = true, features = ["fs", "ipc", "daemon-identity"] }
+# The crates.io package amalgamates the internal facade crates below into this
+# crate, so this dependency must carry the union of their kernal-api surfaces.
+# Workspace feature unification masks missing entries during ordinary builds;
+# `cargo package` verifies the self-contained graph and catches drift here.
+kernal-api = { workspace = true, features = [
+    "broker-client",
+    "crash",
+    "daemon-frame-v1",
+    "daemon-identity",
+    "daemon-registration",
+    "daemon-registration-v2",
+    "fs",
+    "fs-watch",
+    "ipc",
+    "ipc-async",
+] }
 # Only for the `mimalloc-allocator` re-export (soldr#3053); pinned to the same
 # exact version kernal-api declares so the graph holds one mimalloc.
 mimalloc-pprof = { version = "=0.9.4", optional = true }
