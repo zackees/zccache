@@ -1,3 +1,19 @@
+# #1613 source-tree PCH fixture compile phase
+
+- [x] Reproduce both original #1609 PCH fixtures independently and capture their compiler/daemon evidence.
+- [x] Determine whether source-tree PCH generation and build-directory sub-header invalidation share a parser/output-plan cause. They do not: retain the real stale-hit bug as #1609.
+- [x] Correct the stale source-tree fixture assumption by adding the explicit `-c` compile phase to its initial PCH generation and rebuild, retaining real PCH cache coverage.
+- [x] Run focused RED→GREEN tests, affected PCH/integration coverage, format, warnings-denied checks, and review. Source-tree regression passes; remaining PCH suite is 3 passed / 0 failed with #1609 excluded; formatter, warnings-denied cache-native Clippy, and Windows target test compile pass.
+- [x] Record results, commit/push/open the focused PR, and leave the branch clean.
+
+## Review — #1613
+
+- **Root cause:** the source-tree PCH fixture omitted `-c` on both initial PCH generation and rebuild, so clang rejected its explicit `-o` before exercising cache behavior.
+- **Fix:** add the explicit compile phase to both generation commands, matching the other PCH fixtures.
+- **Scope split:** #1609 remains open for the independent consuming-PCH transitive-header stale-hit defect.
+- **Validation:** focused RED→GREEN test, non-stale PCH integration tests (3 passed), formatter, warnings-denied cache-native Clippy, and Windows target test compile pass.
+- **Review:** medium local code review found no correctness findings and confirmed the explicit `-c` PCH generation shape is parser-supported.
+
 # #1615 watcher predicate KeyboardInterrupt notification
 
 - [x] Reproduce the native watcher interruption with the workflow-equivalent PyO3 extension setup and trace predicate/dispatch ownership. Baseline: 11 tests passed, then pytest aborted from a leaked `KeyboardInterrupt`.
