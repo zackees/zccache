@@ -21,6 +21,46 @@ const WATCHER_REARM_INITIAL_DELAY: Duration = Duration::from_secs(60);
 /// Backoff ceiling for watcher re-arm retries.
 const WATCHER_REARM_MAX_DELAY: Duration = Duration::from_secs(600);
 
+enum AcceptWait<T> {
+    Accepted(T),
+    Shutdown,
+}
+
+/// Wait for accept or shutdown while reporting stalls without cancelling
+/// either operation. Windows accept futures own their pending pipe instance,
+/// and `Notify::notified` is not buffered, so both futures must survive every
+/// observational watchdog tick.
+async fn wait_for_accept_or_shutdown<A, S, T>(
+    accept: A,
+    shutdown: S,
+    watchdog_interval: Duration,
+) -> AcceptWait<T>
+where
+    A: std::future::Future<Output = T>,
+    S: std::future::Future<Output = ()>,
+{
+    let mut accept = std::pin::pin!(accept);
+    let mut shutdown = std::pin::pin!(shutdown);
+    loop {
+        let watchdog = kernal_api::async_engine::sleep(watchdog_interval);
+        let mut watchdog = std::pin::pin!(watchdog);
+        match kernal_api::fair_race!((accept.as_mut()), (watchdog.as_mut()), (shutdown.as_mut()),)
+            .await
+        {
+            kernal_api::async_engine::FairRace3::First(result) => {
+                return AcceptWait::Accepted(result);
+            }
+            kernal_api::async_engine::FairRace3::Second(()) => {
+                tracing::warn!(
+                    stall_secs = watchdog_interval.as_secs(),
+                    "daemon accept loop has not accepted a connection within watchdog interval"
+                );
+            }
+            kernal_api::async_engine::FairRace3::Third(()) => return AcceptWait::Shutdown,
+        }
+    }
+}
+
 impl DaemonServer {
     /// Run the server, accepting connections until shutdown is signaled.
     ///
@@ -157,18 +197,21 @@ impl DaemonServer {
         let mut maintenance_handle = started.disk_maintenance;
 
         loop {
-            let winner = {
-                let accept = self.listener.accept();
-                let watchdog = kernal_api::async_engine::sleep(ACCEPT_STALL_WATCHDOG_INTERVAL);
-                let shutdown = self.shutdown.notified();
-                let mut accept = std::pin::pin!(accept);
-                let mut watchdog = std::pin::pin!(watchdog);
-                let mut shutdown = std::pin::pin!(shutdown);
-                kernal_api::fair_race!((accept.as_mut()), (watchdog.as_mut()), (shutdown.as_mut()),)
-                    .await
-            };
+            // Keep one accept future alive across watchdog ticks. On Windows,
+            // `Listener::accept` owns a pre-created named-pipe instance while
+            // it waits. Dropping that future at every watchdog interval closes
+            // the pipe underneath a client that won the connect race, yielding
+            // ERROR_NO_DATA / ERROR_BROKEN_PIPE even though the daemon itself
+            // remains healthy. The watchdog is observational only: it must not
+            // cancel and recreate the accept operation.
+            let winner = wait_for_accept_or_shutdown(
+                self.listener.accept(),
+                self.shutdown.notified(),
+                ACCEPT_STALL_WATCHDOG_INTERVAL,
+            )
+            .await;
             match winner {
-                kernal_api::async_engine::FairRace3::First(result) => {
+                AcceptWait::Accepted(result) => {
                     let conn = match result {
                         Ok(c) => c,
                         Err(e) => {
@@ -184,13 +227,7 @@ impl DaemonServer {
                     })
                     .detach();
                 }
-                kernal_api::async_engine::FairRace3::Second(()) => {
-                    tracing::warn!(
-                        stall_secs = ACCEPT_STALL_WATCHDOG_INTERVAL.as_secs(),
-                        "daemon accept loop has not accepted a connection within watchdog interval"
-                    );
-                }
-                kernal_api::async_engine::FairRace3::Third(()) => {
+                AcceptWait::Shutdown => {
                     self.state.shutdown_requested.store(true, Ordering::Release);
                     // `shutdown_handle()` exposes the raw Notify for legacy
                     // tests and Ctrl+C handlers, many of which still call
@@ -952,5 +989,46 @@ mod memory_eviction_controller_tests {
         assert!(!forced_completion_stalled(1, false, 0));
         assert!(!forced_completion_stalled(0, true, 0));
         assert!(!forced_completion_stalled(0, false, 1));
+    }
+}
+
+#[cfg(test)]
+mod accept_watchdog_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use super::{wait_for_accept_or_shutdown, AcceptWait};
+    use tokio::sync::{oneshot, Notify};
+
+    #[tokio::test]
+    async fn watchdog_ticks_do_not_cancel_the_pending_accept() {
+        let (accepted_tx, accepted_rx) = oneshot::channel();
+        let waiter = tokio::spawn(wait_for_accept_or_shutdown(
+            async { accepted_rx.await.expect("accept sender remains live") },
+            std::future::pending(),
+            Duration::from_millis(5),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        accepted_tx
+            .send(7_u8)
+            .expect("watchdog must not drop the accept future");
+
+        assert!(matches!(waiter.await.unwrap(), AcceptWait::Accepted(7)));
+    }
+
+    #[tokio::test]
+    async fn watchdog_ticks_do_not_lose_the_shutdown_waiter() {
+        let shutdown = Arc::new(Notify::new());
+        let shutdown_wait = Arc::clone(&shutdown);
+        let waiter = tokio::spawn(wait_for_accept_or_shutdown(
+            std::future::pending::<()>(),
+            async move { shutdown_wait.notified().await },
+            Duration::from_millis(5),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        shutdown.notify_waiters();
+
+        assert!(matches!(waiter.await.unwrap(), AcceptWait::Shutdown));
     }
 }
