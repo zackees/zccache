@@ -45,7 +45,7 @@ jobs:
       # The newer action revision regresses native ARM-musl compiler selection
       # (GNU std paired with a musl linker). Keep this unrelated cross-only
       # lane on its last known-good action while ci-test consumers use v0.
-      - uses: zackees/setup-soldr@bb28e96d2dc32c058242f56722297caf1efcbd90
+      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
         with:
           zccache-seed-strict: true
           toolchain: 1.95.0
