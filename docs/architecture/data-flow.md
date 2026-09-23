@@ -269,14 +269,17 @@ diagnostics, so a hit replays the same stdout and stderr rather than suppressing
 lint output.
 
 Dylint's earlier lint-library bootstrap is a separate, narrowly modeled Rust
-`cdylib` lane on Linux and macOS. General `cdylib` and every Windows `cdylib`
-remain non-cacheable. The narrow lane requires `dylint-link` as the linker,
-host compilation, `cdylib` as the sole crate type, and no extra filename. Its
-key includes the linker binary and link arguments. The artifact set contains
-both rustc's declared dynamic library and the toolchain-qualified sidecar that
-`dylint-link` byte-copies for Dylint to load. Missing package/toolchain
-identity fails back to the direct compiler path, so a hit cannot silently omit
-the sidecar.
+`cdylib` lane on Linux, macOS, *and* Windows (soldr#2349 extended the lane off
+Linux/macOS-only). General `cdylib` remains non-cacheable everywhere else. The
+narrow lane requires `dylint-link` as the linker (matched by file stem, so
+`dylint-link.exe` on Windows matches too), host compilation, `cdylib` as the
+sole crate type, and no extra filename. Its key includes the linker binary and
+link arguments. The artifact set contains both rustc's declared dynamic
+library and the toolchain-qualified sidecar that `dylint-link` byte-copies for
+Dylint to load — `lib<crate>@<toolchain>.so` / `.dylib` on Linux/macOS,
+`<crate>@<toolchain>.dll` (no `lib` prefix) on Windows. Missing
+package/toolchain identity fails back to the direct compiler path, so a hit
+cannot silently omit the sidecar.
 
 The output tree is deliberately not part of that decision (zackees/soldr#3044).
 Dylint installs `dylint-link` only for its own lint libraries, but it writes
@@ -286,6 +289,20 @@ lint's own test crate. Requiring a `dylint`/`libraries` component pair
 therefore recorded every tests-tree lint `cdylib` as `uncacheable_input` while
 adding nothing the linker name had not already established. The linker is the
 identifying signal; the remaining conjuncts keep the lane narrow.
+
+On an MSVC target/host, a miss also *opportunistically* collects the linker's
+import-library byproduct (`<dll>.lib` + `.exp`) into the artifact set when
+present on disk — nothing consumes it (Dylint loads the DLL dynamically, not
+via static link), so it is round-trip fidelity, never a cacheability
+requirement. Unlike the existing `.pdb` handling, the import-lib pair is
+deliberately **not** part of the staged plan's required-output declaration:
+the exact `<dll>.lib` naming was not verified against a live Windows build,
+and a staged output that is declared but never materializes hard-fails the
+whole compile (soldr#2347's failure class) rather than degrading gracefully.
+So the import lib is collected only on the tolerant, filesystem-probing path —
+present, it round-trips; absent (wrong guess, or a windows-gnu host), it is
+silently skipped rather than risking a build failure on an unverified
+assumption.
 
 This cache is separate from Cargo incremental compilation:
 

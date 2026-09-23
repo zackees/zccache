@@ -195,9 +195,23 @@ fn explicit_host_dylint_policy_and_test_opt_in_preserve_native_decisions() {
     ]);
     for host in [RustcHost::Linux, RustcHost::Macos, RustcHost::Windows] {
         let parsed = parse_rustc_invocation_with_host("rustc", &dylint, host, false);
-        assert_eq!(
-            matches!(parsed, ParsedInvocation::Cacheable(_)),
-            host != RustcHost::Windows
+        // soldr#2349: the Windows host gate is gone — the lane is cacheable
+        // on every host, and the host only selects the primary output's name
+        // convention.
+        let ParsedInvocation::Cacheable(compilation) = &parsed else {
+            panic!("dylint cdylib must be cacheable on {host:?}");
+        };
+        let expected = if host == RustcHost::Windows {
+            "fixture.dll"
+        } else if host == RustcHost::Macos {
+            "libfixture.dylib"
+        } else {
+            "libfixture.so"
+        };
+        assert!(
+            compilation.output_file.ends_with(expected),
+            "host {host:?}: expected output ending in {expected}, got {}",
+            compilation.output_file.to_string_lossy()
         );
         let nested = args(&["rustc", "--crate-name", "fixture", "fixture.rs", "--test"]);
         assert!(matches!(

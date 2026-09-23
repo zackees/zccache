@@ -221,7 +221,12 @@ fn rustc_cdylib_is_non_cacheable() {
     assert!(matches!(result, ParsedInvocation::NonCacheable { .. }));
 }
 
-#[cfg(not(target_os = "windows"))]
+/// soldr#2349: this used to be `#[cfg(not(target_os = "windows"))]` because
+/// `is_dylint_cdylib` refused every cdylib on a Windows host outright. The
+/// gate is now host-independent (see `parse_rustc::is_dylint_cdylib`), so
+/// this runs — and must pass — on every host in the CI matrix, including a
+/// real Windows runner where the primary output has no `lib` prefix and
+/// ends in `.dll` rather than `.so`/`.dylib`.
 #[test]
 fn rustc_dylint_library_cdylib_is_cacheable() {
     let result = parse_invocation(
@@ -242,14 +247,102 @@ fn rustc_dylint_library_cdylib_is_cacheable() {
     let ParsedInvocation::Cacheable(compilation) = result else {
         panic!("expected Dylint cdylib to be cacheable");
     };
-    let extension = if cfg!(target_os = "macos") {
-        "dylib"
+    let expected = if cfg!(target_os = "windows") {
+        "lint.dll".to_string()
+    } else if cfg!(target_os = "macos") {
+        "liblint.dylib".to_string()
     } else {
-        "so"
+        "liblint.so".to_string()
     };
-    assert!(compilation
-        .output_file
-        .ends_with(format!("liblint.{extension}")));
+    assert!(
+        compilation.output_file.ends_with(&expected),
+        "expected output ending in {expected}, got {}",
+        compilation.output_file.to_string_lossy()
+    );
+}
+
+/// Pure-function coverage for the Windows/macOS/other filename split,
+/// exercised directly with an explicit `RustcHost` so all three branches
+/// run from a single CI host instead of only the one branch matching
+/// whatever host happens to run the test (soldr#2349). Production callers
+/// resolve the real host via `RustcHost::current()`.
+#[test]
+fn rustc_dylint_cdylib_filename_matches_host_convention() {
+    use super::super::parse_rustc::{rustc_dylint_cdylib_filename, RustcHost};
+
+    assert_eq!(
+        rustc_dylint_cdylib_filename("lint", RustcHost::Windows),
+        "lint.dll",
+        "Windows cdylibs carry no `lib` prefix"
+    );
+    assert_eq!(
+        rustc_dylint_cdylib_filename("lint", RustcHost::Macos),
+        "liblint.dylib"
+    );
+    assert_eq!(
+        rustc_dylint_cdylib_filename("lint", RustcHost::Linux),
+        "liblint.so"
+    );
+}
+
+/// dylint-link on Windows is `dylint-link.exe`; the linker-basename match
+/// uses `Path::file_stem()`, which already strips the extension, so this
+/// must keep matching (soldr#2349 item 4: preserve linker-key-material
+/// behavior on Windows).
+///
+/// Uses a forward-slash path rather than a `C:\...` backslash path
+/// deliberately: `std::path::Path`'s component-splitting is a compile-time
+/// choice baked into the `zccache` binary by its own target OS, not the
+/// string content, so a backslash path only splits into components when
+/// this test happens to run on an actual Windows-built binary. Forward
+/// slashes are valid separators on both Windows and Unix `Path`, so they
+/// exercise the same `.exe`-stripping behavior from any CI host without
+/// depending on which OS is actually running the test.
+#[test]
+fn rustc_dylint_cdylib_linker_matches_windows_exe_suffix() {
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-name",
+            "lint",
+            "--crate-type",
+            "cdylib",
+            "--emit=link",
+            "--out-dir",
+            "/tmp/target/dylint/libraries/nightly/release/deps",
+            "-C",
+            "linker=/tools/dylint-link.exe",
+            "src/lib.rs",
+        ]),
+    );
+    assert!(
+        matches!(result, ParsedInvocation::Cacheable(_)),
+        "dylint-link.exe must still match the dylint-link basename gate"
+    );
+}
+
+/// The dylint exception is keyed on the linker basename, not the out-dir
+/// shape alone — a Windows cdylib built with the real MSVC linker (the
+/// PyO3/maturin shape) sharing the same `dylint/libraries` out-dir tree by
+/// coincidence must stay refused.
+#[test]
+fn rustc_windows_cdylib_with_non_dylint_linker_is_non_cacheable() {
+    let result = parse_invocation(
+        "rustc",
+        &args(&[
+            "--crate-name",
+            "extmod",
+            "--crate-type",
+            "cdylib",
+            "--emit=link",
+            "--out-dir",
+            "/tmp/target/dylint/libraries/nightly/release/deps",
+            "-C",
+            "linker=/tools/link.exe",
+            "src/lib.rs",
+        ]),
+    );
+    assert!(matches!(result, ParsedInvocation::NonCacheable { .. }));
 }
 
 /// zackees/soldr#3044: dylint also builds lint cdylibs under
@@ -261,8 +354,10 @@ fn rustc_dylint_library_cdylib_is_cacheable() {
 /// `uncacheable_input`.
 ///
 /// Sibling of `rustc_dylint_library_cdylib_is_cacheable`; only the out-dir
-/// differs.
-#[cfg(not(target_os = "windows"))]
+/// differs. Like that sibling this runs on every host (soldr#2349 removed
+/// the `#[cfg(not(target_os = "windows"))]` gate together with the Windows
+/// host gate in `is_dylint_cdylib`), so the expected filename below
+/// follows the host convention rather than assuming unix.
 #[test]
 fn rustc_dylint_tests_tree_cdylib_is_cacheable() {
     let result = parse_invocation(
@@ -283,14 +378,14 @@ fn rustc_dylint_tests_tree_cdylib_is_cacheable() {
     let ParsedInvocation::Cacheable(compilation) = result else {
         panic!("expected Dylint cdylib under dylint/tests to be cacheable");
     };
-    let extension = if cfg!(target_os = "macos") {
-        "dylib"
+    let expected = if cfg!(target_os = "windows") {
+        "lint.dll".to_string()
+    } else if cfg!(target_os = "macos") {
+        "liblint.dylib".to_string()
     } else {
-        "so"
+        "liblint.so".to_string()
     };
-    assert!(compilation
-        .output_file
-        .ends_with(format!("liblint.{extension}")));
+    assert!(compilation.output_file.ends_with(&expected));
 }
 
 /// zackees/soldr#3044 over-widening guard: dropping the output-tree

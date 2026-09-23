@@ -50,9 +50,14 @@ impl RustcHost {
 ///   libraries embed platform linker state (soname/install-name, import
 ///   libs) that the artifact store does not model, so PyO3/maturin
 ///   `cdylib` final artifacts recompile every time while their rlib deps
-///   still hit. A Dylint lint-library `cdylib` is the narrow exception:
-///   its declared library and toolchain-qualified byte-copy sidecar are
-///   modeled as one complete artifact set by the daemon.
+///   still hit. A Dylint lint-library `cdylib` is the narrow exception,
+///   on Linux, macOS, and Windows: its declared library and
+///   toolchain-qualified byte-copy sidecar are modeled as one complete
+///   artifact set by the daemon (see
+///   `dylint_cdylib_has_complete_output_identity` in
+///   `zccache-daemon-core`), and on Windows the MSVC linker's import
+///   library (`<dll>.lib` + `.exp`) is modeled too, as a best-effort
+///   secondary output alongside the existing `.pdb` handling.
 const RUSTC_CACHEABLE_CRATE_TYPES: &[&str] = &["lib", "rlib", "staticlib", "proc-macro", "bin"];
 
 /// Why a `--test` harness link is refused regardless of crate type
@@ -115,11 +120,16 @@ fn rustc_proc_macro_filename(crate_name: &str, extra: &str, host: RustcHost) -> 
 }
 
 /// Host dynamic-library file-name pattern for a Dylint lint cdylib.
-fn rustc_dylint_cdylib_filename(crate_name: &str, host: RustcHost) -> String {
-    if host == RustcHost::Macos {
-        format!("lib{crate_name}.dylib")
-    } else {
-        format!("lib{crate_name}.so")
+///
+/// Windows carries no `lib` prefix (matching [`rustc_proc_macro_filename`]'s
+/// Windows arm and real cdylib output observed from cargo-xwin/maturin
+/// builds): `dylint-link` on Windows ultimately drives `link.exe`/`lld-link`,
+/// which name the DLL after the crate alone.
+pub(crate) fn rustc_dylint_cdylib_filename(crate_name: &str, host: RustcHost) -> String {
+    match host {
+        RustcHost::Windows => format!("{crate_name}.dll"),
+        RustcHost::Macos => format!("lib{crate_name}.dylib"),
+        RustcHost::Linux => format!("lib{crate_name}.so"),
     }
 }
 
@@ -638,8 +648,10 @@ pub fn parse_rustc_plan_with_syntax(
     }
 
     // The Dylint bootstrap is the only cdylib form whose full output set is
-    // modeled. Keep it host-only and reject extra-filename because
-    // dylint-link's package-name guard would not create the sidecar.
+    // modeled — on Linux, macOS, *and* Windows (soldr#2349 extended this
+    // off Linux/macOS-only). Reject extra-filename because dylint-link's
+    // package-name guard would not create the sidecar; reject an explicit
+    // `--target` because Dylint lint libraries are always host-native.
     //
     // zackees/soldr#3044: the gate is deliberately NOT keyed on the output
     // tree. `-C linker=dylint-link` is what identifies a Dylint cdylib —
@@ -649,11 +661,18 @@ pub fn parse_rustc_plan_with_syntax(
     // when dylint builds a lint's own test crate. Requiring a
     // `dylint`/`libraries` component pair therefore recorded every
     // tests-tree lint cdylib as `uncacheable_input` even though its full
-    // output set is modeled identically. The remaining conjuncts (host,
-    // sole `cdylib` crate type, no `--target`, empty `-C extra-filename`)
-    // still hold the shape narrow.
-    let is_dylint_cdylib = host != RustcHost::Windows
-        && crate_types == ["cdylib"]
+    // output set is modeled identically. The remaining conjuncts (sole
+    // `cdylib` crate type, no `--target`, empty `-C extra-filename`) still
+    // hold the shape narrow.
+    //
+    // This mirrors `is_dylint_cdylib_args` in
+    // `zccache-daemon-core/src/daemon/server/rustc.rs` — the daemon
+    // re-derives the same predicate from its own parsed-args type because
+    // that crate cannot depend back on this one's raw-argv parse loop.
+    // Keep the two gates in lockstep; a platform/shape carve-out here that
+    // is not mirrored there re-opens the general `cdylib` exclusion's
+    // safety argument on one side only.
+    let is_dylint_cdylib = crate_types == ["cdylib"]
         && target.is_none()
         && extra_filename.as_deref().is_none_or(str::is_empty)
         && syntax.is_dylint_linker(linker.as_deref());
