@@ -95,8 +95,10 @@ fn concurrent_real_cache_hits_leave_embedded_control_plane_responsive() {
         let lock =
             kernal_api::platform::fs::lock_exclusive_owned(file).expect("hold staged-store lock");
         locked_tx.send(()).expect("announce held lock");
-        // A disconnected sender also releases the lock if an assertion unwinds.
-        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        // Keep the lock until the test explicitly releases it. A disconnected
+        // sender also releases it if an assertion unwinds; a wall-clock
+        // timeout can instead let delayed CI work turn real hits into misses.
+        let _ = release_rx.recv();
         drop(lock);
     });
     locked_rx
