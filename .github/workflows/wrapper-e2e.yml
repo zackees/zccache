@@ -50,16 +50,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macos-15 (arm64) is the active macOS leg. It already validates
-          # the 1.7.2 regression fix end-to-end and runs on the modern
-          # Apple Silicon image where the Intel-only `macos-13` runner
-          # pool is consistently scarce — keeping macos-13 in the matrix
-          # added 15+ minutes of queue wait per run for redundant coverage.
-          # Re-add if a future regression turns out to be Intel-specific.
-          - os: macos-15       # Apple Silicon — primary macOS coverage
-          - os: ubuntu-latest  # parity reference
-          - os: windows-latest # parity reference
+        # ci-test keeps its Linux/Windows smoke. Only ci-full adds Apple hosts.
+        os: ${{ fromJSON(needs.select.outputs.mode == 'full' && '["macos-15-intel","macos-15","ubuntu-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -331,7 +323,7 @@ jobs:
 
   observe-macos-queue:
     needs: [select, wrapper-e2e]
-    if: always() && needs.select.outputs.selected == 'true'
+    if: always() && needs.select.outputs.selected == 'true' && needs.select.outputs.mode == 'full'
     name: Observe macOS runner queue
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -344,4 +336,4 @@ jobs:
         run: >-
           uv run --no-project --python 3.13 python ci/observe_runner_queue.py
           --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
-          --runner macos-15 --job "wrapper-e2e (macos-15)" --token "$GITHUB_TOKEN"
+          --runner macos-15-intel --job "wrapper-e2e (macos-15-intel)" --token "$GITHUB_TOKEN"

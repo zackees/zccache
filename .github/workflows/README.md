@@ -11,6 +11,9 @@ label adds Linux integration and wrapper end-to-end checks. `ci-full` selects
 all registered workflows, including macOS, Windows, filesystem, broker,
 performance, action, coverage, and Clippy checks. Label changes rerun the
 selector for the current PR head. Unknown `ci-*` labels fail selection.
+The wrapper smoke stays on Linux and Windows in `ci-test`; native Intel and
+Apple Silicon hosts run in `ci-full` and release validation only. The weekly
+filesystem run keeps Linux and Windows coverage without allocating Apple hosts.
 
 The selector's `FULL` set in `ci/ci_mode.py` is the coverage inventory; keep
 it synchronized with workflow jobs. Before creating a release tag, dispatch
@@ -32,7 +35,7 @@ this rule applies to all new tests now.
 - **python-tests.yml** - Runs the fast `ci/tests/` pytest suite, including Markdown guards, on every PR and `main` update. Its Linux-native PyO3 source suite runs in full mode.
 - **ci-check.yml** - Reusable check/test workflow used by the OS-specific CI workflows.
 - **integration.yml** - Runs Linux workspace integration in extended/full mode; full mode also executes ignored integration/stress tests.
-- **fs-matrix.yml** - Requires real ReFS/FAT, btrfs/ext4/vfat, and macOS fixtures on PRs; scheduled/manual runs also execute >4 GiB ReFS and btrfs COW acceptance.
+- **fs-matrix.yml** - Checks real ReFS/FAT, btrfs/ext4/vfat, and macOS fixtures in full PR/manual mode; the weekly run covers Linux and Windows without hosted macOS and also executes >4 GiB ReFS and btrfs COW acceptance.
 - **clippy.yml** - Runs Clippy on pushes to main for the README status badge.
 - **benchmark-stats.yml** - Manual/scheduled zccache vs bare compiler vs sccache benchmark publisher for the README images and rendered stats page.
 - **perf-guard.yml** - Main-only Rust, C, and C++ perf-regression guard that runs language jobs in parallel, fails below the zccache vs bare compiler or pinned-sccache speed floors, and uploads Markdown/JSON run artifacts.

@@ -59,7 +59,7 @@ jobs:
             os: macos-15
             target: aarch64-apple-darwin
           - name: macOS x86_64
-            os: macos-15
+            os: macos-15-intel
             target: x86_64-apple-darwin
           - name: Windows x86_64
             os: windows-2025
@@ -195,7 +195,7 @@ jobs:
         run: >-
           uv run --no-project --python 3.13 python ci/observe_runner_queue.py
           --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
-          --runner macos-15 --job "macOS ARM" --job "macOS x86_64"
+          --runner macos-15-intel --job "macOS x86_64"
           --token "$GITHUB_TOKEN"
 
   test-no-save:

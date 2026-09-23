@@ -43,7 +43,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-15]
+        # Scheduled filesystem coverage stays on Linux/Windows. Hosted Apple
+        # runners are reserved for ci-full PRs and explicit full dispatches.
+        os: ${{ fromJSON(github.event_name == 'schedule' && '["windows-latest","ubuntu-latest"]' || '["windows-latest","ubuntu-latest","macos-15-intel","macos-15"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -97,7 +99,7 @@ jobs:
 
   observe-macos-queue:
     needs: [select, matrix]
-    if: always() && needs.select.outputs.selected == 'true'
+    if: always() && needs.select.outputs.selected == 'true' && github.event_name != 'schedule'
     name: Observe macOS runner queue
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -110,7 +112,7 @@ jobs:
         run: >-
           uv run --no-project --python 3.13 python ci/observe_runner_queue.py
           --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
-          --runner macos-15 --job "matrix (macos-15)" --token "$GITHUB_TOKEN"
+          --runner macos-15-intel --job "matrix (macos-15-intel)" --token "$GITHUB_TOKEN"
 
   large-cow:
     needs: select

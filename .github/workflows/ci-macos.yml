@@ -39,17 +39,17 @@ jobs:
     with:
       workflow: ci-macos.yml
 
-  # macos-15 is Apple Silicon. This was previously two jobs, `x86` and `arm`,
-  # both pinned to the same arm64 image, byte-identical duplicates that also derived the
-  # same cache-key-suffix and so raced each other on cache save. Real Intel
-  # coverage would mean macos-13, which is deliberately avoided: see
-  # wrapper-e2e.yml, where that pool cost 15+ minutes of queue wait per run.
+  # Full CI executes both architectures on native GitHub-hosted machines.
   macos:
     needs: select
     if: needs.select.outputs.selected == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15]
     uses: ./.github/workflows/ci-check.yml
     with:
-      os: macos-15
+      os: ${{ matrix.os }}
       run_check: false
 
   observe-macos-queue:
@@ -67,4 +67,6 @@ jobs:
         run: >-
           uv run --no-project --python 3.13 python ci/observe_runner_queue.py
           --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
-          --runner macos-15 --job "macos / Test" --token "$GITHUB_TOKEN"
+          --runner macos-15-intel
+          --job "macos (macos-15-intel) / Test"
+          --token "$GITHUB_TOKEN"

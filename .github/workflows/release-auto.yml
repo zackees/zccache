@@ -591,7 +591,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          - os: macos-15-intel
             wheel_plat: macosx_10_12_x86_64
     steps:
       - uses: actions/checkout@v6
@@ -603,10 +603,6 @@ jobs:
           python-version: "3.13"
           architecture: x64
 
-      - name: Require Rosetta for Intel wheel smoke
-        shell: bash
-        run: arch -x86_64 /usr/bin/true
-
       - uses: actions/download-artifact@v8
         with:
           name: pypi-wheels
@@ -614,8 +610,8 @@ jobs:
 
       - name: Install and test the platform wheel
         run: |
-          arch -x86_64 python -m pip install --disable-pip-version-check --no-index --find-links dist/wheels "zccache==${{ needs.preflight.outputs.version }}"
-          arch -x86_64 python ci/test_exec_cached_wheel.py
+          python -m pip install --disable-pip-version-check --no-index --find-links dist/wheels "zccache==${{ needs.preflight.outputs.version }}"
+          python ci/test_exec_cached_wheel.py
 
   observe-macos-queue:
     name: Observe macOS runner queue
@@ -632,7 +628,7 @@ jobs:
         run: >-
           uv run --no-project --python 3.13 python ci/observe_runner_queue.py
           --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
-          --runner macos-15 --job "Test PyPI Wheel (macosx_11_0_arm64)"
+          --runner macos-15-intel
           --job "Test PyPI Wheel (macosx_10_12_x86_64)" --token "$GITHUB_TOKEN"
 
   publish-pypi:

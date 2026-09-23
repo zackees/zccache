@@ -100,3 +100,44 @@ def test_full_only_jobs_cannot_run_without_full_selection():
                     name,
                     job_name,
                 )
+
+
+def test_apple_hosts_are_native_and_full_only():
+    root = Path(__file__).resolve().parents[2] / ".github/workflows"
+    macos = yaml.safe_load((root / "ci-macos.yml").read_text())["jobs"]["macos"]
+    assert macos["if"] == "needs.select.outputs.selected == 'true'"
+    assert set(macos["strategy"]["matrix"]["os"]) == {
+        "macos-15-intel",
+        "macos-15",
+    }
+
+    fs = yaml.safe_load((root / "fs-matrix.yml").read_text())["jobs"]["matrix"]
+    os_expression = fs["strategy"]["matrix"]["os"]
+    assert "github.event_name == 'schedule'" in os_expression
+    assert "macos-15-intel" in os_expression
+    assert "macos-15" in os_expression
+    assert "windows-latest" in os_expression
+    assert "ubuntu-latest" in os_expression
+
+    action = yaml.safe_load((root / "test-action.yml").read_text())["jobs"]
+    action_hosts = {
+        item["target"]: item["os"]
+        for item in action["test-action"]["strategy"]["matrix"]["include"]
+    }
+    assert action_hosts["x86_64-apple-darwin"] == "macos-15-intel"
+    assert action_hosts["aarch64-apple-darwin"] == "macos-15"
+
+    wrapper_hosts = yaml.safe_load((root / "wrapper-e2e.yml").read_text())["jobs"][
+        "wrapper-e2e"
+    ]["strategy"]["matrix"]["os"]
+    assert "needs.select.outputs.mode == 'full'" in wrapper_hosts
+    assert '"macos-15-intel","macos-15"' in wrapper_hosts
+    assert "'[\"ubuntu-latest\",\"windows-latest\"]'" in wrapper_hosts
+
+    release = yaml.safe_load((root / "release-auto.yml").read_text())["jobs"]
+    intel_wheel = release["test-wheels-ungated"]["strategy"]["matrix"]["include"]
+    assert any(
+        item["wheel_plat"] == "macosx_10_12_x86_64"
+        and item["os"] == "macos-15-intel"
+        for item in intel_wheel
+    )
