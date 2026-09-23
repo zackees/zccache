@@ -247,9 +247,17 @@ async fn deleted_non_cacheable_response_file_keeps_parse_time_reason() {
         let server_task = tokio::spawn(async move { server.run(0).await.unwrap() });
 
         let compiler = temp.path().join("rustc");
-        std::fs::write(&compiler, "#!/bin/sh\nrm -- \"${1#@}\"\nexit 0\n").unwrap();
+        // Direct dispatch hands the original `@rsp` through to this
+        // non-cacheable compiler. Identity probes have no response-file arg;
+        // the real invocation moves its caller-owned response file aside.
+        std::fs::write(
+            &compiler,
+            "#!/bin/sh\ncase \"$1\" in\n  -vV|--version) exit 0 ;;\nesac\n/bin/mv -- \"${1#@}\" \"${1#@}.moved\"\nexit 0\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755)).unwrap();
         let rsp = temp.path().join("preprocess.rsp");
+        let moved_rsp = temp.path().join("preprocess.rsp.moved");
         let source = temp.path().join("fixture.rs");
         std::fs::write(&source, "fn main() {}\n").unwrap();
         std::fs::write(&rsp, format!("--test\n{}\n", source.display())).unwrap();
@@ -283,17 +291,24 @@ async fn deleted_non_cacheable_response_file_keeps_parse_time_reason() {
             })
             .await
             .unwrap();
-        assert!(matches!(
-            client.recv().await.unwrap(),
-            Some(Response::CompileResult {
-                exit_code: 0,
-                cached: false,
-                ..
-            })
-        ));
+        let response = client.recv().await.unwrap();
+        let Some(Response::CompileResult {
+            exit_code,
+            cached,
+            ..
+        }) = response
+        else {
+            panic!("expected uncached successful compiler response, got {response:?}");
+        };
+        assert_eq!(exit_code, 0);
+        assert!(!cached);
         assert!(
             !rsp.exists(),
-            "the direct compiler must remove the response file"
+            "the direct compiler must make the caller response path unavailable"
+        );
+        assert!(
+            moved_rsp.exists(),
+            "the fixture compiler must move the caller response file"
         );
 
         let journal = temp

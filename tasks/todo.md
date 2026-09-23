@@ -14,6 +14,20 @@
 - **Validation:** focused RED→GREEN test, non-stale PCH integration tests (3 passed), formatter, warnings-denied cache-native Clippy, and Windows target test compile pass.
 - **Review:** medium local code review found no correctness findings and confirmed the explicit `-c` PCH generation shape is parser-supported.
 
+# #1607 response-file journal fixture
+
+- [x] Verify the #1532 response-file parser/journal contract and identify whether the current failure is dispatch behavior or a stale test assumption. Direct dispatch correctly receives the caller-owned `@rsp`; the local harness intercepted the fixture's `/bin/rm`, not product behavior.
+- [x] Preserve the original-file deletion timing without requiring the compiler to receive the caller-owned `@rsp` token. The fixture skips identity probes and atomically moves the original response file aside during the real direct compiler invocation.
+- [x] Run the focused RED→GREEN regression, daemon-core validation, formatter, warnings-denied checks, and a local review. Focused test, daemon-core suite (877 passed), formatter, warnings-denied rustdoc/Clippy, and full workspace units pass.
+- [x] Record results, commit/push/open a focused PR, and leave the branch clean.
+
+## Review — #1607
+
+- **Root cause:** the local command guard replaces the fixture's actual `rm` child process with a denied command response. The response-file path and direct compiler dispatch are correct.
+- **Fix:** move the caller response file to a sibling during the non-probe fixture invocation; assert the original path is unavailable and the moved file exists before the asynchronous journal row is read.
+- **Validation:** focused RED→GREEN test, all 905 daemon-core unit tests (877 active / 28 ignored), full no-cache workspace unit suite, formatter, warnings-denied rustdoc, and affected all-target Clippy pass.
+- **Review:** medium local code review found no correctness findings.
+
 # #1615 watcher predicate KeyboardInterrupt notification
 
 - [x] Reproduce the native watcher interruption with the workflow-equivalent PyO3 extension setup and trace predicate/dispatch ownership. Baseline: 11 tests passed, then pytest aborted from a leaked `KeyboardInterrupt`.
