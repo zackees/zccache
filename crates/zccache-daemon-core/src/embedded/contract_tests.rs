@@ -13,6 +13,143 @@ use tokio::sync::{oneshot, Notify, Semaphore};
 
 use super::*;
 
+/// zccache#1578: real staged cache hits waiting on a store lock must not park
+/// the only Tokio worker supplied by an embedding host.
+#[cfg(target_os = "linux")]
+#[test]
+fn concurrent_real_cache_hits_leave_embedded_control_plane_responsive() {
+    let Some(compiler) = crate::test_support::find_rustc() else {
+        return;
+    };
+    let host_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("single-worker host runtime");
+    let temp = TempDir::new().expect("fixture directory");
+    let mut settings = config(&temp, "real-hit-control-plane", None);
+    settings.runtime.handle = Some(host_rt.handle().clone());
+    let artifact_dir = crate::core::config::artifacts_dir_from_cache_dir(&settings.cache_root);
+    let service = host_rt
+        .block_on(ZccacheService::start(settings))
+        .expect("embedded service starts");
+
+    let mut requests = Vec::new();
+    let mut outputs = Vec::new();
+    for index in 0..4 {
+        let crate_name = format!("source_{index}");
+        let source = temp.path().join(format!("{crate_name}.rs"));
+        let out_dir = temp.path().join(format!("target-{index}"));
+        std::fs::create_dir_all(&out_dir).expect("create output directory");
+        let rlib = out_dir.join(format!("lib{crate_name}.rlib"));
+        let rmeta = out_dir.join(format!("lib{crate_name}.rmeta"));
+        std::fs::write(&source, format!("pub fn value() -> u32 {{ {index} }}\n"))
+            .expect("write source");
+        let request = CompileRequest {
+            audit: AuditContext::new(
+                crate::audit::AuditId::new("real-hit-run").expect("run id"),
+                crate::audit::AuditId::new(format!("real-hit-{index}")).expect("trace id"),
+            ),
+            compiler: compiler.clone(),
+            args: vec![
+                "--crate-name".into(),
+                crate_name,
+                "--crate-type=rlib".into(),
+                "--emit=metadata,link".into(),
+                "--out-dir".into(),
+                out_dir.to_string_lossy().into_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+            cwd: temp.path().into(),
+            env: Vec::new(),
+            stdin: Vec::new(),
+        };
+        let cold = host_rt
+            .block_on(service.compile(request.clone()))
+            .expect("cold compile");
+        assert_eq!(cold.exit_code, 0, "cold compiler: {cold:?}");
+        assert!(!cold.cached, "distinct source starts cold");
+        assert!(rlib.exists() && rmeta.exists(), "cold rustc outputs");
+        requests.push(request);
+        outputs.extend([rlib, rmeta]);
+    }
+
+    host_rt
+        .block_on(service.shutdown(ShutdownMode::Graceful))
+        .expect("persist cold artifacts before replay");
+    for output in &outputs {
+        std::fs::remove_file(output).expect("remove cold output");
+    }
+    let mut replay_settings = config(&temp, "real-hit-control-plane", None);
+    replay_settings.runtime.handle = Some(host_rt.handle().clone());
+    let service = host_rt
+        .block_on(ZccacheService::start(replay_settings))
+        .expect("restart embedded service for staged replay");
+
+    let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let lock_holder = std::thread::spawn(move || {
+        let root = zccache_artifact::staged_lock::staged_root(&artifact_dir);
+        let file =
+            zccache_artifact::staged_lock::open_store_lock(&root).expect("open staged-store lock");
+        let lock =
+            kernal_api::platform::fs::lock_exclusive_owned(file).expect("hold staged-store lock");
+        locked_tx.send(()).expect("announce held lock");
+        // A disconnected sender also releases the lock if an assertion unwinds.
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        drop(lock);
+    });
+    locked_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("exclusive store lock acquired");
+
+    let service = Arc::new(service);
+    let handles = host_rt.block_on(async {
+        requests
+            .into_iter()
+            .map(|request| {
+                let service = Arc::clone(&service);
+                tokio::spawn(async move { service.compile(request).await })
+            })
+            .collect::<Vec<_>>()
+    });
+    let started = std::time::Instant::now();
+    let responsive = host_rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while service.daemon.test_active_cache_requests() < 2 {
+                tokio::task::yield_now().await;
+            }
+            tokio::spawn(async { tokio::task::yield_now().await })
+                .await
+                .expect("independent host task");
+        })
+        .await
+    });
+    assert!(
+        responsive.is_ok() && started.elapsed() < Duration::from_secs(1),
+        "concurrent real cache hits must leave the host worker responsive"
+    );
+    assert!(
+        handles.iter().any(|handle| !handle.is_finished()),
+        "exclusive lock must still hold a real warm hit"
+    );
+    release_tx.send(()).expect("release staged-store lock");
+    lock_holder.join().expect("release store lock");
+    for handle in handles {
+        let response = host_rt
+            .block_on(handle)
+            .expect("warm task")
+            .expect("warm compile");
+        assert_eq!(response.exit_code, 0, "warm compiler: {response:?}");
+        assert!(response.cached, "warm compile must be a real cache hit");
+    }
+    assert!(outputs.iter().all(|output| output.exists()));
+    let service = Arc::try_unwrap(service).unwrap_or_else(|_| panic!("service still shared"));
+    host_rt
+        .block_on(service.shutdown(ShutdownMode::Graceful))
+        .expect("embedded shutdown");
+}
+
 fn config(temp: &TempDir, instance: &str, max_parallel_compiles: Option<usize>) -> ZccacheConfig {
     let mut audit = AuditConfig::default();
     audit.mode = crate::audit::AuditMode::Off;
