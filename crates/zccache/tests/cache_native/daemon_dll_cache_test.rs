@@ -50,6 +50,7 @@ fn compile_object(gcc: &std::path::Path, dir: &std::path::Path, name: &str, body
     assert!(status.success(), "gcc -c should succeed for {name}.c");
 }
 
+#[cfg(windows)]
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_cache_miss_then_hit() {
@@ -169,6 +170,7 @@ async fn test_dll_cache_miss_then_hit() {
     server_handle.await.unwrap();
 }
 
+#[cfg(windows)]
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_cache_invalidated_on_input_change() {
@@ -278,6 +280,7 @@ async fn test_dll_cache_invalidated_on_input_change() {
     server_handle.await.unwrap();
 }
 
+#[cfg(windows)]
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_non_deterministic_warning() {
