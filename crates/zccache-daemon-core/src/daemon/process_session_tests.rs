@@ -103,6 +103,59 @@ async fn semantic_termination_returns_a_reaped_child_status() {
     );
 }
 
+/// zccache#1603: Linux's PR_SET_PDEATHSIG watches the thread that spawned a
+/// child, not the daemon process. Exercise the actor-owned session boundary
+/// used by compiler spawning: caller-thread exit must not kill its live child.
+#[cfg(target_os = "linux")]
+#[test]
+fn actor_owned_session_survives_caller_thread_exit() {
+    let fixture = tempfile::tempdir().expect("fixture directory");
+    let marker = fixture.path().join("compiler-finished");
+    let child_marker = marker.clone();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let spawner = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("caller runtime");
+        let session = runtime
+            .block_on(
+                kernal_api::SpawnSpec::new("/bin/sh")
+                    .args(["-c", "sleep 1; printf survived > \"$1\"", "compiler"])
+                    .arg(child_marker)
+                    .kill_when_owner_dies(super::session::kernel_session_kill_when_owner_dies())
+                    .spawn_session(kernal_api::ProcessSessionOptions {
+                        kill_on_drop: true,
+                        ..Default::default()
+                    }),
+            )
+            .expect("compiler session starts");
+        sender
+            .send(session)
+            .expect("receiver retains compiler session");
+    });
+    let session = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("compiler session delivered");
+    spawner.join().expect("caller thread exits");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("wait runtime");
+    let exit = runtime
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), session.wait()).await
+        })
+        .expect("compiler exit deadline")
+        .expect("compiler exit status");
+    assert!(
+        exit.exit_status().success(),
+        "caller thread death must not terminate an actor-owned child: {exit:?}"
+    );
+    assert_eq!(std::fs::read(marker).expect("compiler output"), b"survived");
+}
+
 #[cfg(unix)]
 #[test]
 fn canonical_spawn_waits_for_materialization_to_release() {
