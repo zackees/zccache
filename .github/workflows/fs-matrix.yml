@@ -19,17 +19,7 @@ on:
       - "tasks/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE*"
-      - "NOTICE*"
-      - "AUTHORS*"
-      - "CODEOWNERS"
-      - "CONTRIBUTING*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - "tasks/**"
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   actions: read
@@ -42,7 +32,14 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: fs-matrix.yml
+
   matrix:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +96,8 @@ jobs:
           refs_non_cluster_multiple_round_trips -- --nocapture --test-threads=1
 
   observe-macos-queue:
+    needs: [select, matrix]
+    if: always() && needs.select.outputs.selected == 'true'
     name: Observe macOS runner queue
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -114,7 +113,8 @@ jobs:
           --runner macos-15 --job "matrix (macos-15)" --token "$GITHUB_TOKEN"
 
   large-cow:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     timeout-minutes: 15
     strategy:
       fail-fast: false

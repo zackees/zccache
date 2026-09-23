@@ -1,0 +1,47 @@
+name: CI mode selector
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        required: true
+        type: string
+      mode:
+        required: false
+        type: string
+      candidate_sha:
+        required: false
+        type: string
+    outputs:
+      mode:
+        value: ${{ jobs.select.outputs.mode }}
+      selected:
+        value: ${{ jobs.select.outputs.selected }}
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      selected: ${{ steps.mode.outputs.selected }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - id: mode
+        env:
+          WORKFLOW: ${{ inputs.workflow }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+          EVENT_SHA: ${{ github.sha }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: >-
+          uv run --no-project --python 3.13 ci/ci_mode.py
+          --workflow "$WORKFLOW" --event "$EVENT_NAME"
+          --event-path "$EVENT_PATH" --sha "$EVENT_SHA"
+          --mode "$REQUESTED_MODE" --candidate-sha "$CANDIDATE_SHA"

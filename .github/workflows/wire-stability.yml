@@ -12,14 +12,10 @@ name: Wire stability
 # so it runs in seconds and never falls behind on cache state.
 
 on:
+  workflow_dispatch:
   pull_request:
-    paths:
-      - "crates/zccache-protocol/proto/**"
-      - "crates/zccache-artifact/src/rust_plan_manifest.proto"
-      - "ci/check_wire_stability.py"
-      - "ci/wire_stability_snapshot.txt"
-      - "docs/WIRE_STABILITY.md"
-      - ".github/workflows/wire-stability.yml"
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -35,8 +31,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: wire-stability.yml
+
   check:
     name: Verify wire stability snapshot
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

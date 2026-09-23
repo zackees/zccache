@@ -1,6 +1,7 @@
 name: Coverage
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -14,6 +15,9 @@ on:
       - ".gitattributes"
       - ".editorconfig"
       - "tasks/**"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # One live run per workflow per ref: a new push to a branch or PR cancels the
 # superseded run instead of queuing behind it in the shared account-wide runner
@@ -29,8 +33,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: coverage.yml
+
   coverage:
     name: Code Coverage
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

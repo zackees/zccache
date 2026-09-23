@@ -1,6 +1,7 @@
 name: Linux
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -16,17 +17,7 @@ on:
       - "tasks/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE*"
-      - "NOTICE*"
-      - "AUTHORS*"
-      - "CODEOWNERS"
-      - "CONTRIBUTING*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - "tasks/**"
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -38,17 +29,28 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: ci-linux.yml
+
   x86:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     uses: ./.github/workflows/ci-check.yml
     with:
       os: ubuntu-latest
 
   arm:
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     uses: ./.github/workflows/ci-check.yml
     with:
       os: ubuntu-24.04-arm
 
   x86-musl:
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     uses: ./.github/workflows/ci-check-cross.yml
     with:
       os: ubuntu-latest
@@ -56,6 +58,8 @@ jobs:
       label: linux-x86-musl
 
   arm-musl:
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     uses: ./.github/workflows/ci-check-cross.yml
     with:
       # setup-soldr's aarch64-musl cross compiler is an x86_64 host tool.
