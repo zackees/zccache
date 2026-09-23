@@ -71,6 +71,69 @@ fn cache_hit_materialization_waits_for_child_spawn() {
     assert_eq!(std::fs::read(destination).unwrap(), b"#!/bin/sh\nexit 0\n");
 }
 
+/// A cache hit must still deliver the output when native identity inspection
+/// cannot prepare a shared hardlink; the independent copy tier remains safe.
+#[test]
+fn cache_hit_copies_when_hardlink_registration_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cached.rmeta");
+    let destination = dir.path().join("requested.rmeta");
+    seed_persisted_blob(&cache, b"immutable rust metadata");
+    if !fs_caps(&cache, &destination).hardlink {
+        eprintln!("SKIP: test filesystem does not support hardlinks");
+        return;
+    }
+    let fault = StagedFaultGuard::arm(
+        &destination,
+        [
+            StagedFaultPoint::MaterializeReflink,
+            StagedFaultPoint::MaterializeHardlinkRegistration,
+        ],
+    );
+    let observed = write_cached_file_observed(&destination, &cache).unwrap();
+    fault.assert_all_consumed();
+    assert_eq!(observed.copy_count, 1);
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"immutable rust metadata"
+    );
+    assert!(!crate::platform::fs::identity::same_file(&destination, &cache).unwrap());
+}
+
+/// The native Windows file-identity probe can reject a valid long cache path
+/// even when Rust's filesystem calls can read and copy the blob. Such a hit
+/// must still deliver the current request's metadata output.
+#[cfg(windows)]
+#[test]
+fn long_cache_blob_path_delivers_requested_metadata_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir
+        .path()
+        .join("a".repeat(110))
+        .join("b".repeat(110))
+        .join("cached.rmeta");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    seed_persisted_blob(&cache, b"immutable rust metadata");
+    assert!(cache.as_os_str().len() > 260);
+    let destination = dir.path().join("requested.rmeta");
+    assert!(
+        fs_caps(&cache, &destination).hardlink,
+        "the fixture must exercise the hardlink-registration path"
+    );
+    let identity_available = crate::platform::fs::identity::file_identity(&cache).is_ok();
+    let fault = StagedFaultGuard::arm(&destination, [StagedFaultPoint::MaterializeReflink]);
+    let observed = write_cached_file_observed(&destination, &cache).unwrap();
+    fault.assert_all_consumed();
+    if !identity_available {
+        assert_eq!(observed.copy_count, 1);
+    }
+    assert_eq!(observed.copy_count + observed.hardlink_count, 1);
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"immutable rust metadata"
+    );
+}
+
 // ── write_cached_output staleness tests ────────────────────────────
 
 /// Regression test: write_cached_output must overwrite an existing output

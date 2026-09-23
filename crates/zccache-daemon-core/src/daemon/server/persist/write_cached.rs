@@ -229,55 +229,72 @@ fn materialize_verified_cached_file_observed(
         // it beforehand serves no purpose on the attempt path and, if
         // `hard_link` fails, left the blob stuck read-only forever (no
         // revert existed on the failure path below).
-        let registration = prepare_hardlink_registration(cache_file, out_path)?;
-        match std::fs::hard_link(cache_file, out_path) {
-            Ok(()) => {
-                if let Err(error) =
-                    crate::platform::fs::permissions::set_readonly(cache_file, readonly_enabled())
-                {
-                    tracing::warn!(
-                        event = "cow_hardlink_readonly_failed",
-                        cache_file = %cache_file.display(),
-                        out_path = %out_path.display(),
-                        error = %error,
-                        "hardlink protection failed after creation; falling back to copy"
-                    );
-                    let _ = cleanup_failed_hardlink(registration, cache_file, out_path);
-                } else {
-                    match commit_hardlink_registration(registration, out_path) {
-                        Ok(()) => {
-                            touch_mtime(out_path);
-                            return Ok(observed(0, 1, 0, 0));
-                        }
-                        Err(error) => {
-                            // A failure here (including a transient stat/handle
-                            // error resolving the just-created link's identity)
-                            // must not become a hard failure of the whole
-                            // materialization — fall back to a copy the same
-                            // way a failed std::fs::hard_link already does
-                            // (issue #1042).
-                            tracing::warn!(
-                                event = "cow_hardlink_registration_commit_failed",
-                                cache_file = %cache_file.display(),
-                                out_path = %out_path.display(),
-                                error = %error,
-                                "hardlink registration commit failed after a successful hardlink; falling back to copy"
-                            );
-                            let _ = cleanup_failed_hardlink(registration, cache_file, out_path);
+        #[cfg(test)]
+        let registration =
+            inject_staged_fault(out_path, StagedFaultPoint::MaterializeHardlinkRegistration)
+                .and_then(|()| prepare_hardlink_registration(cache_file, out_path));
+        #[cfg(not(test))]
+        let registration = prepare_hardlink_registration(cache_file, out_path);
+        if let Err(error) = &registration {
+            tracing::warn!(
+                event = "cow_hardlink_registration_prepare_failed",
+                cache_file = %cache_file.display(),
+                out_path = %out_path.display(),
+                error = %error,
+                "cannot register a shared hardlink; falling back to independent copy"
+            );
+        }
+        if let Ok(registration) = registration {
+            match std::fs::hard_link(cache_file, out_path) {
+                Ok(()) => {
+                    if let Err(error) = crate::platform::fs::permissions::set_readonly(
+                        cache_file,
+                        readonly_enabled(),
+                    ) {
+                        tracing::warn!(
+                            event = "cow_hardlink_readonly_failed",
+                            cache_file = %cache_file.display(),
+                            out_path = %out_path.display(),
+                            error = %error,
+                            "hardlink protection failed after creation; falling back to copy"
+                        );
+                        let _ = cleanup_failed_hardlink(registration, cache_file, out_path);
+                    } else {
+                        match commit_hardlink_registration(registration, out_path) {
+                            Ok(()) => {
+                                touch_mtime(out_path);
+                                return Ok(observed(0, 1, 0, 0));
+                            }
+                            Err(error) => {
+                                // A failure here (including a transient stat/handle
+                                // error resolving the just-created link's identity)
+                                // must not become a hard failure of the whole
+                                // materialization — fall back to a copy the same
+                                // way a failed std::fs::hard_link already does
+                                // (issue #1042).
+                                tracing::warn!(
+                                    event = "cow_hardlink_registration_commit_failed",
+                                    cache_file = %cache_file.display(),
+                                    out_path = %out_path.display(),
+                                    error = %error,
+                                    "hardlink registration commit failed after a successful hardlink; falling back to copy"
+                                );
+                                let _ = cleanup_failed_hardlink(registration, cache_file, out_path);
+                            }
                         }
                     }
                 }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    event = "cow_hardlink_fallback_to_copy",
-                    cache_file = %cache_file.display(),
-                    out_path = %out_path.display(),
-                    error = %error,
-                    "hardlink materialization failed despite capability probe; falling back to copy"
-                );
-                cancel_hardlink_registration(registration, out_path);
-                commit_registered_detach(registration, out_path);
+                Err(error) => {
+                    tracing::warn!(
+                        event = "cow_hardlink_fallback_to_copy",
+                        cache_file = %cache_file.display(),
+                        out_path = %out_path.display(),
+                        error = %error,
+                        "hardlink materialization failed despite capability probe; falling back to copy"
+                    );
+                    cancel_hardlink_registration(registration, out_path);
+                    commit_registered_detach(registration, out_path);
+                }
             }
         }
     }
