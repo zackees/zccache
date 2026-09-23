@@ -1234,3 +1234,9 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Attribute staged-lock time before materialization begins.
 - [x] Prove a blocked lane does not stall a one-worker host runtime.
 - [x] Run focused tests, Bosn full tests, Bosn lint, and review.
+# Windows long-path cache-hit materialization (Soldr #3330)
+
+- [x] Preserve the real Windows RED evidence: Soldr's fresh-worktree `.rmeta` hit fails after successful staged publication; lifecycle reports destination-write failure with no OS errno.
+- [x] Add a deterministic cache-hit regression for hardlink-registration failure and keep the safe copy tier observable.
+- [x] Make a failed hardlink registration fall back to an independent copy with an explicit warning; retain digest verification and all hit-output assertions.
+- [ ] Run focused tests, formatting, warnings-denied checks, review, then push a focused PR and verify Windows plus downstream Soldr replay before release/pin/closure.

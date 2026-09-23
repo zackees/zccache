@@ -23,6 +23,7 @@ pub(in crate::daemon::server) enum StagedFaultPoint {
     MaterializeOutput(usize),
     MaterializeReflink,
     MaterializeHardlink,
+    MaterializeHardlinkRegistration,
     MaterializeCopy,
 }
 
