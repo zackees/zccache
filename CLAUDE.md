@@ -34,6 +34,7 @@ zccache is a local-first compiler cache (23 crates) for C/C++/Rust/Emscripten, i
 - **Always use `uv` for Python.** Bare `python`/`pip` are blocked by hook. Use `uv run ...` or `uv pip ...`.
 - MSRV: 1.95.0 | Edition: 2021 | Toolchain: 1.95.0 (clippy + rustfmt)
 - CI: Linux, macOS, Windows. All warnings denied (`RUSTFLAGS="-D warnings"`)
+- **Put every new pull-request test in `.github/workflows/ci.yml`**, either as a CI job or in a reusable workflow called by CI. Do not create a new PR-triggered GitHub Actions workflow/category for a test. Preserve docs-only checks when changing CI path filters; existing standalone PR workflows are being consolidated in #1639.
 - Every directory with files must have a README.md (enforced by hook)
 
 ## Commands
