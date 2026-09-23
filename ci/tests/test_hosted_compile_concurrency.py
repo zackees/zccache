@@ -31,7 +31,7 @@ def test_hosted_daemon_core_and_workspace_test_compiles_are_serialized() -> None
             ),
         ),
         "ci-check.yml": (("Test", "Stop isolated test cache", "soldr cargo test --workspace --lib --bins"),),
-        "coverage.yml": (("Generate coverage", "Stop isolated coverage cache", "soldr cargo llvm-cov --workspace --lib --bins"),),
+        "coverage.yml": (("Generate coverage", "Stop isolated coverage cache", "soldr --no-cache cargo llvm-cov --workspace --lib --bins"),),
         "fs-matrix.yml": (
             (
                 "Run capability and behavior matrix",

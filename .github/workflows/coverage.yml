@@ -74,8 +74,10 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/coverage
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
-          # llvm-cov builds the workspace lib/bin test profile in its own
-          # target directory, including the daemon-core library test.
+          # llvm-cov substitutes its own RUSTC_WRAPPER. Soldr's managed
+          # wrapper-identity pair would drift and fail; this one instrumented
+          # step runs uncached, without the daemon admission gate. Keep the
+          # existing cap at step scope until memory evidence permits lifting it.
           CARGO_BUILD_JOBS: "1"
           SOLDR_JOBS: "1"
         run: |
@@ -89,7 +91,7 @@ jobs:
           # (issue #1025: cli_cache_root broke Coverage on every push since
           # 2026-07-07). Spawned children wouldn't contribute coverage
           # anyway — scope to in-process unit tests.
-          soldr cargo llvm-cov --workspace --lib --bins --lcov --output-path lcov.info
+          soldr --no-cache cargo llvm-cov --workspace --lib --bins --lcov --output-path lcov.info
       - name: Stop isolated coverage cache
         if: always()
         shell: bash
