@@ -139,6 +139,50 @@ pub(crate) mod process {
         pub(crate) fn tree_rss_bytes(pid: u32) -> Option<u64> {
             kernal_api::platform::process::tree_rss_bytes_for_pid(pid)
         }
+
+        /// CPU ticks burned by the live descendants of `pid`, not by `pid`
+        /// itself. A compiler driver such as gcc waits while its `cc1plus`
+        /// child does the work, so only the tree shows that progress.
+        /// `None` where descendants cannot be enumerated.
+        #[cfg(target_os = "linux")]
+        pub(crate) fn descendant_cpu_ticks(pid: u32) -> Option<u64> {
+            let mut total = 0u64;
+            let mut seen = std::collections::HashSet::from([pid]);
+            let mut stack = vec![pid];
+            while let Some(parent) = stack.pop() {
+                let Ok(tasks) = std::fs::read_dir(format!("/proc/{parent}/task")) else {
+                    continue;
+                };
+                for task in tasks.flatten() {
+                    let Ok(children) = std::fs::read_to_string(task.path().join("children")) else {
+                        continue;
+                    };
+                    for child in children
+                        .split_whitespace()
+                        .filter_map(|value| value.parse::<u32>().ok())
+                    {
+                        if seen.len() >= kernal_api::platform::process::MAX_TREE_RSS_PROCESSES
+                            || !seen.insert(child)
+                        {
+                            continue;
+                        }
+                        if let Some(ticks) = kernal_api::platform::process::cpu_ticks_for_pid(child)
+                        {
+                            total = total.wrapping_add(ticks);
+                        }
+                        stack.push(child);
+                    }
+                }
+            }
+            std::path::Path::new(&format!("/proc/{pid}"))
+                .exists()
+                .then_some(total)
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        pub(crate) fn descendant_cpu_ticks(_pid: u32) -> Option<u64> {
+            None
+        }
     }
 
     pub(crate) mod jobserver {
