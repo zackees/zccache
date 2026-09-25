@@ -11,13 +11,8 @@ on:
       - ".github/workflows/broker-stress.yml"
       - "crates/**"
   pull_request:
-    paths:
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - ".cargo/**"
-      - ".rustup/**"
-      - ".github/workflows/broker-stress.yml"
-      - "crates/**"
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   schedule:
     - cron: "23 4 * * 1"
   workflow_dispatch:
@@ -34,8 +29,15 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: broker-stress.yml
+
   broker-stress:
     name: Broker stress (Linux)
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

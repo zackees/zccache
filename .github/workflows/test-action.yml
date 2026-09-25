@@ -10,12 +10,8 @@ on:
       - "crates/zccache/**"
       - ".github/workflows/test-action.yml"
   pull_request:
-    paths:
-      - "action.yml"
-      - "action/**"
-      - "crates/zccache-cli/**"
-      - "crates/zccache/**"
-      - ".github/workflows/test-action.yml"
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
@@ -27,8 +23,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: test-action.yml
+
   target-snapshot-gc:
     name: "Target snapshot GC unit tests"
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -39,6 +42,8 @@ jobs:
 
   test-action:
     name: "${{ matrix.name }}"
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -176,6 +181,8 @@ jobs:
 
   # Test that save-cache: false works (for PR builds)
   observe-macos-queue:
+    needs: [select, test-action]
+    if: always() && needs.select.outputs.selected == 'true'
     name: Observe macOS runner queue
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -192,6 +199,8 @@ jobs:
           --token "$GITHUB_TOKEN"
 
   test-no-save:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     name: "No-save mode (Linux)"
     runs-on: ubuntu-24.04
     steps:
@@ -216,6 +225,8 @@ jobs:
 
   # Test cargo-registry subcommand (issue #10)
   test-cargo-registry:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     name: "cargo-registry (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     strategy:
@@ -318,6 +329,8 @@ jobs:
 
   # Test gha-cache subcommand (issue #11)
   test-gha-cache:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     name: "gha-cache (Linux)"
     runs-on: ubuntu-24.04
     steps:

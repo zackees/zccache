@@ -8,6 +8,9 @@ on:
       - "action.yml"
       - "action/**"
       - ".github/workflows/bench-action.yml"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -34,9 +37,16 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: bench-action.yml
+
   # ── Bare cargo (no cache) ────────────────────────────────────
   bare:
     name: "Bare (no cache)"
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-24.04
     outputs:
       cold: ${{ steps.cold.outputs.ms }}
@@ -98,6 +108,8 @@ jobs:
 
   # ── sccache ──────────────────────────────────────────────────
   sccache:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     name: "sccache"
     runs-on: ubuntu-24.04
     outputs:
@@ -165,6 +177,8 @@ jobs:
 
   # ── zccache ──────────────────────────────────────────────────
   zccache:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     name: "zccache"
     runs-on: ubuntu-24.04
     outputs:

@@ -245,6 +245,15 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "github_release_exists=$GITHUB_RELEASE_EXISTS" >> "$GITHUB_OUTPUT"
 
+      - name: Require full CI on release commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CHECKOUT_REF: ${{ steps.meta.outputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          RELEASE_SHA="$(git rev-parse "${CHECKOUT_REF}^{commit}")"
+          python -m ci.full_ci_gate --sha "$RELEASE_SHA"
+
       - name: Check registry publish status
         id: registries
         run: |

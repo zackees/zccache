@@ -14,12 +14,7 @@ on:
       - ".github/workflows/perf-guard.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "ci/**"
-      - "crates/**"
-      - ".github/workflows/perf-guard.yml"
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
@@ -29,8 +24,15 @@ permissions:
   contents: read
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: perf-guard.yml
+
   cow-materialization-budget:
     name: COW materialization hit budget
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
@@ -58,7 +60,8 @@ jobs:
 
   build-perf-benchmark:
     name: Build perf benchmark binary
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -104,7 +107,7 @@ jobs:
 
   perf-guard:
     name: ${{ matrix.label }} speed floor
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: needs.build-perf-benchmark.result == 'success'
     needs: build-perf-benchmark
     runs-on: ubuntu-24.04
     # The watchdog terminates one command at 75 minutes. Leave room for job

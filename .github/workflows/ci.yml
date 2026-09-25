@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -16,17 +17,7 @@ on:
       - "tasks/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE*"
-      - "NOTICE*"
-      - "AUTHORS*"
-      - "CODEOWNERS"
-      - "CONTRIBUTING*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - "tasks/**"
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Auto-cancel superseded PR runs: pushing again to a feature branch
 # supersedes the in-flight run instead of queueing behind it. Non-PR events
@@ -47,8 +38,15 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: ci.yml
+
   fmt:
     name: Formatting
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -83,6 +81,8 @@ jobs:
 
   dylint:
     name: Dylint
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     runs-on: ubuntu-latest
     env:
       # Dylint removes RUSTUP_TOOLCHAIN before its nested driver build. The
@@ -233,6 +233,8 @@ jobs:
           uv run python -m ci.lint --dylint-only
 
   msrv:
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     name: MSRV (1.95.0)
     runs-on: ubuntu-latest
     # setup-soldr#347: opt this job into post-step cache eviction.
@@ -278,6 +280,8 @@ jobs:
         run: "soldr cargo test -p zccache --test cache_rust daemon_dylint_cache_test:: -- --ignored"
 
   docs:
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     name: Documentation
     runs-on: ubuntu-latest
     env:
