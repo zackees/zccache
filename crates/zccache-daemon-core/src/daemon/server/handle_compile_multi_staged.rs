@@ -414,9 +414,10 @@ pub(super) async fn try_handle_staged_misses(
                         %error,
                         "staged multi-source depfile parse failed; using recursive scan"
                     );
-                    crate::depgraph::scanner::scan_recursive(
+                    crate::depgraph::scanner::scan_recursive_cached(
                         &miss.source_path,
                         &miss.ctx.include_search,
+                        &state.include_scan_cache,
                     )
                 }
             }
@@ -427,9 +428,10 @@ pub(super) async fn try_handle_staged_misses(
         {
             scan_result = crate::depgraph::depfile::merge_scan_results_conservative(
                 scan_result,
-                crate::depgraph::scanner::scan_recursive(
+                crate::depgraph::scanner::scan_recursive_cached(
                     &miss.source_path,
                     &miss.ctx.include_search,
+                    &state.include_scan_cache,
                 ),
             );
         }

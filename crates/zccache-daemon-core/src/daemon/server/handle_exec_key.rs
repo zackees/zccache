@@ -150,7 +150,7 @@ pub(super) fn run_include_scan(
     let mut resolved: Vec<NormalizedPath> = Vec::new();
     for seed in seeds {
         let abs = absolutize_norm(seed, cwd);
-        let scan = scan_recursive(abs.as_path(), &search);
+        let scan = scan_recursive_cached(abs.as_path(), &search, &state.include_scan_cache);
         resolved.extend(scan.resolved);
         if scan.has_computed {
             tracing::warn!(

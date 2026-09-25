@@ -440,6 +440,10 @@ pub(super) struct SharedState {
     pub(super) request_validation_cache: DashMap<RequestValidationKey, RequestValidationEntry>,
     /// Compiler executable hash cache keyed by compiler path.
     pub(super) compiler_hash_cache: CompilerHashCache,
+    /// Daemon-wide, stat-validated include-directive memo shared by every
+    /// static include scan so headers are parsed once across TUs and
+    /// requests (zccache#1669).
+    pub(super) include_scan_cache: Arc<crate::depgraph::scanner::RecursiveScanCache>,
     /// Pre-filter for watch_directories: raw (non-canonicalized) paths we've
     /// already processed. Avoids expensive canonicalize() syscalls (~1-5ms each
     /// on Windows) for directories that are already being watched.

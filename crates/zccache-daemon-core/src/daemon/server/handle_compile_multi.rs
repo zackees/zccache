@@ -522,7 +522,7 @@ pub(super) async fn handle_compile_multi(
 
     // ── Phase 1: Check cache for each unit (parallel, as-completed) ──
     let mut join_set = tokio::task::JoinSet::new();
-    let scan_cache = Arc::new(crate::depgraph::scanner::RecursiveScanCache::default());
+    let scan_cache = Arc::clone(&state.include_scan_cache);
     for (idx, compilation) in compilations.iter().enumerate() {
         let request_profile = crate::daemon::staged_stats::current_request_profile();
         let state = Arc::clone(&state);
@@ -914,11 +914,19 @@ pub(super) async fn handle_compile_multi(
                             "multi-file depfile parse failed for {}: {e}",
                             source_path.display()
                         );
-                        crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                        crate::depgraph::scanner::scan_recursive_cached(
+                            &source_path,
+                            &ctx.include_search,
+                            &state_task.include_scan_cache,
+                        )
                     }
                 }
             } else {
-                crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search)
+                crate::depgraph::scanner::scan_recursive_cached(
+                    &source_path,
+                    &ctx.include_search,
+                    &state_task.include_scan_cache,
+                )
             };
             if !used_static_fallback
                 && dependency_mode_task == DependencyDiscoveryMode::AllHeaders
@@ -926,7 +934,11 @@ pub(super) async fn handle_compile_multi(
             {
                 scan_result = crate::depgraph::depfile::merge_scan_results_conservative(
                     scan_result,
-                    crate::depgraph::scanner::scan_recursive(&source_path, &ctx.include_search),
+                    crate::depgraph::scanner::scan_recursive_cached(
+                        &source_path,
+                        &ctx.include_search,
+                        &state_task.include_scan_cache,
+                    ),
                 );
             }
             if used_static_fallback {
