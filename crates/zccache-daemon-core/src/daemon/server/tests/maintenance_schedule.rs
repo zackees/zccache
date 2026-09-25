@@ -185,7 +185,9 @@ async fn embedded_saves_the_depgraph_on_a_tick() {
     .start();
     assert!(started.started.contains(&TASK_DEPGRAPH_SAVE));
 
-    let saved = wait_until(|| depgraph_path.exists()).await;
+    let saved =
+        wait_until(|| depgraph_path.exists() && state.dep_graph_persisted.load(Ordering::Acquire))
+            .await;
     stop(&state);
     assert!(
         saved,
@@ -195,6 +197,74 @@ async fn embedded_saves_the_depgraph_on_a_tick() {
         state.dep_graph_persisted.load(Ordering::Acquire),
         "a periodic save must mark the graph persisted"
     );
+}
+
+#[tokio::test]
+async fn depgraph_saves_are_exclusive_without_blocking_async_progress() {
+    let root = tempfile::tempdir().expect("cache root");
+    let state = test_state(&crate::core::NormalizedPath::new(root.path()));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let first_done = Arc::new(AtomicBool::new(false));
+    let first_flag = Arc::clone(&first_done);
+    let first_state = Arc::clone(&state);
+    let first = tokio::spawn(async move {
+        run_depgraph_save_with(first_state, None, move || {
+            entered_tx.send(()).expect("test observes first save");
+            release_rx.recv().expect("test releases first save");
+            first_flag.store(true, Ordering::Release);
+        })
+        .await
+        .expect("first blocking save")
+    });
+    // On this single-threaded runtime, observing the held save at all proves
+    // the save blocks outside the async runtime.
+    entered_rx.await.expect("first save entered");
+    tokio::spawn(async {})
+        .await
+        .expect("the runtime schedules other tasks while a save blocks");
+    assert!(
+        state.depgraph_persistence.try_lock().is_err(),
+        "a running save holds the cache root's persistence guard"
+    );
+
+    let second_state = Arc::clone(&state);
+    let second = tokio::spawn(async move {
+        run_depgraph_save_with(second_state, None, move || {
+            first_done.load(Ordering::Acquire)
+        })
+        .await
+        .expect("second blocking save")
+    });
+
+    release_tx.send(()).expect("release first save");
+    first.await.expect("first task");
+    assert!(
+        second.await.expect("second task"),
+        "same-state depgraph saves must not overlap"
+    );
+}
+
+#[tokio::test]
+async fn periodic_depgraph_task_is_owned_and_joins_after_shutdown() {
+    let root = tempfile::tempdir().expect("cache root");
+    let state = test_state(&crate::core::NormalizedPath::new(root.path()));
+    let mut started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .start();
+
+    stop(&state);
+    let handle = started
+        .depgraph_save
+        .take()
+        .expect("periodic depgraph task must remain owned");
+    handle
+        .await
+        .expect("periodic depgraph task joins cleanly after shutdown");
 }
 
 /// #1160(c): the staged-temp sweep was startup-only and standalone-only, so an

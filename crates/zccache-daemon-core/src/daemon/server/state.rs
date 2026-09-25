@@ -465,6 +465,10 @@ pub(super) struct SharedState {
     /// Serializes background and host-requested disk-maintenance passes for
     /// this exact cache root.
     pub(super) disk_maintenance: Mutex<()>,
+    /// Serializes every depgraph snapshot for this exact cache root. The guard
+    /// is acquired only on blocking threads (or the synchronous drop backstop),
+    /// never by an async runtime worker.
+    pub(super) depgraph_persistence: StdMutex<()>,
     /// Shared by publishers and exclusively owned by maintenance/Clear from
     /// cache-file mutation through index/live-map mutation.
     pub(super) artifact_publication: Arc<kernal_api::async_engine::RwLock<()>>,
@@ -661,6 +665,14 @@ impl SharedState {
             Some(handle) => handle.launch_blocking(operation),
             None => kernal_api::async_engine::launch_blocking(operation),
         }
+    }
+
+    pub(super) fn with_depgraph_persistence<T>(&self, save: impl FnOnce() -> T) -> T {
+        let _guard = self
+            .depgraph_persistence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        save()
     }
 
     pub(super) fn begin_cache_request(&self) -> ActiveCacheRequest<'_> {
