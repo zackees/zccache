@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
 #[cfg(test)]
 use kernal_api::async_engine::CancellationSource;
 use kernal_api::async_engine::CancellationToken;
@@ -323,7 +322,7 @@ async fn download_single(
     progress: ProgressCallback,
     cancel_token: CancellationToken,
 ) -> Result<u64, DownloadError> {
-    let response = client
+    let mut response = client
         .get(url)
         .header(ACCEPT_ENCODING, "identity")
         .send()
@@ -337,13 +336,15 @@ async fn download_single(
     }
 
     let mut file = tokio::fs::File::create(temp_path).await?;
-    let mut stream = response.bytes_stream();
     let mut downloaded = 0u64;
-    while let Some(item) = stream.next().await {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| DownloadError::Http(e.to_string()))?
+    {
         if cancel_token.is_cancelled() {
             return Err(DownloadError::Cancelled);
         }
-        let chunk = item.map_err(|e| DownloadError::Http(e.to_string()))?;
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         progress(downloaded, total, DownloadPhase::Downloading);
@@ -467,7 +468,7 @@ async fn download_segment(request: SegmentDownload<'_>) -> Result<u64, DownloadE
         request = request.header(IF_RANGE, value);
     }
 
-    let response = request
+    let mut response = request
         .send()
         .await
         .map_err(|e| DownloadError::Http(e.to_string()))?;
@@ -476,13 +477,15 @@ async fn download_segment(request: SegmentDownload<'_>) -> Result<u64, DownloadE
     }
 
     let mut file = tokio::fs::File::create(segment_path).await?;
-    let mut stream = response.bytes_stream();
     let mut downloaded = 0u64;
-    while let Some(item) = stream.next().await {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| DownloadError::Http(e.to_string()))?
+    {
         if cancel_token.is_cancelled() {
             return Err(DownloadError::Cancelled);
         }
-        let chunk = item.map_err(|e| DownloadError::Http(e.to_string()))?;
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         progress(chunk.len() as u64);
