@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use zccache_core::NormalizedPath;
 use zccache_hash::ContentHash;
 
-use super::super::snapshot::now_unix_ms;
 use super::super::context::{CompileContext, ContextKey};
 use super::super::scanner::IncludeDirective;
+use super::super::snapshot::now_unix_ms;
 use super::{ContextEntry, ContextState, DepGraph, DepGraphStats, FileEntry};
 
 impl DepGraph {
@@ -102,7 +102,9 @@ impl DepGraph {
             .iter()
             .filter_map(|entry| {
                 // Saturating: a timestamp in the future (clock skew) is age 0.
-                if now_ms.saturating_sub(entry.last_accessed_unix_ms) > max_age_ms {
+                // A zero TTL expires everything, even entries stamped this ms.
+                let age = now_ms.saturating_sub(entry.last_accessed_unix_ms);
+                if max_age.is_zero() || age > max_age_ms {
                     Some(*entry.key())
                 } else {
                     None

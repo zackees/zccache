@@ -8,11 +8,11 @@ use std::sync::atomic::Ordering;
 use zccache_core::NormalizedPath;
 use zccache_hash::ContentHash;
 
-use super::super::snapshot::now_unix_ms;
 use super::super::context::{
     compute_artifact_key_with, compute_rustc_artifact_key_with_root_with,
     fold_rustc_env_deps_into_artifact_key, ArtifactKey, ContextKey,
 };
+use super::super::snapshot::now_unix_ms;
 use super::{
     collect_rustc_env_hashes, collect_rustc_extern_hashes, drifted_paths, format_drift_for_log,
     CacheVerdict, ContextState, DepGraph,

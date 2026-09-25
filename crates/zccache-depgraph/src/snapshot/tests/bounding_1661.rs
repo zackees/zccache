@@ -9,13 +9,13 @@ use tempfile::TempDir;
 
 use super::super::super::context::ContextKey;
 use super::super::super::graph::DepGraph;
+use super::super::super::snapshot::now_unix_ms;
 use super::super::super::snapshot::{
     classify_load, load_from_file, load_from_file_with, save_to_file, save_to_file_with,
     ContextEntrySnapshot, DepGraphLoadOutcome, DepGraphSnapshot, FileEntrySnapshot,
     IncludeDirectiveSnapshot, LoadOptions, RustcEnvDepSnapshot, RustcExternSnapshot, SaveOptions,
     SnapshotError, SnapshotStats, DEPGRAPH_MAGIC, DEPGRAPH_VERSION, GC_TTL, HEADER_SIZE,
 };
-use super::super::super::snapshot::now_unix_ms;
 use super::{make_ctx, test_path};
 
 const HOUR_MS: u64 = 3_600_000;
@@ -290,7 +290,13 @@ fn context_older_than_uptime_keeps_age_and_is_trimmed() {
             context_count: 2,
         },
     };
-    save_to_file_with(&DepGraph::from_snapshot(snap), &path, &save_opts(t)).unwrap();
+    // Save and load without the TTL filter so the age itself is observable.
+    let keep_all = SaveOptions {
+        now_unix_ms: t,
+        ttl: Duration::from_secs(365 * 86_400),
+        ..SaveOptions::default()
+    };
+    save_to_file_with(&DepGraph::from_snapshot(snap), &path, &keep_all).unwrap();
 
     // Load without the TTL filter so the age itself is observable.
     let opts = LoadOptions {

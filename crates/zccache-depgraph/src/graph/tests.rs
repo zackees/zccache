@@ -474,7 +474,13 @@ fn trim_removes_old_entries() {
 
     // Pin "now" a few seconds past the access stamp instead of sleeping, so
     // the entry is strictly older than max_age=0.
-    let now_ms = graph.contexts.get(&key).unwrap().last_accessed_unix_ms + 5_000;
+    let newest = graph
+        .contexts
+        .iter()
+        .map(|e| e.last_accessed_unix_ms)
+        .max()
+        .expect("registered context");
+    let now_ms = newest + 5_000;
     let removed = graph.trim_at(Duration::ZERO, now_ms);
     assert_eq!(removed, 1);
     assert_eq!(graph.stats().context_count, 0);

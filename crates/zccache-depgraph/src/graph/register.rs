@@ -6,8 +6,8 @@ use std::path::Path;
 
 use zccache_core::NormalizedPath;
 
-use super::super::snapshot::now_unix_ms;
 use super::super::context::{compute_context_key_with, CompileContext, ContextKey};
+use super::super::snapshot::now_unix_ms;
 use super::{rebase_project_path, ContextEntry, ContextRegistration, ContextState, DepGraph};
 
 impl DepGraph {
