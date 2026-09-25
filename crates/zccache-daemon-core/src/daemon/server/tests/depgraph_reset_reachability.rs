@@ -215,7 +215,7 @@ async fn an_oscillating_schema_version_stays_warm_through_the_quarantine_sidecar
     assert!(
         start_with_production_load(&server, fixture.depgraph_path.as_path()),
         "our own parked snapshot carries this build's exact schema version and \
-         passes the same magic/version/rkyv validation the primary gets"
+         passes the same magic/version/bincode validation the primary gets"
     );
     assert!(
         fixture.compile(&server).await,

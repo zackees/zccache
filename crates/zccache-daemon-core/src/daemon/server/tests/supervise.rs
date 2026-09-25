@@ -221,3 +221,46 @@ fn the_restart_backoff_doubles_and_saturates() {
     assert_eq!(backoff, RESTART_MAX_BACKOFF);
     assert!(RESTART_INITIAL_BACKOFF < RESTART_MAX_BACKOFF);
 }
+
+/// zccache#1661 (F): a panicking task's payload must reach the death log. The
+/// log line and lifecycle event both carry `panic_message`, so asserting on it
+/// directly covers what an operator sees.
+#[tokio::test]
+async fn a_panicking_task_reports_its_panic_payload() {
+    let err = kernal_api::async_engine::launch(async {
+        panic!("boom");
+    })
+    .await
+    .expect_err("the task panicked");
+    assert_eq!(panic_message(&err).as_deref(), Some("boom"));
+
+    let formatted = kernal_api::async_engine::launch(async {
+        panic!("save failed: {}", "disk full");
+    })
+    .await
+    .expect_err("the task panicked");
+    assert_eq!(
+        panic_message(&formatted).as_deref(),
+        Some("save failed: disk full"),
+        "a String payload must be reported too, not only a &'static str"
+    );
+
+    let opaque = kernal_api::async_engine::launch(async {
+        std::panic::panic_any(42u32);
+    })
+    .await
+    .expect_err("the task panicked");
+    assert_eq!(
+        panic_message(&opaque).as_deref(),
+        Some("<non-string panic>")
+    );
+}
+
+/// A cancelled task is not a panic and carries no payload.
+#[tokio::test]
+async fn a_cancelled_task_has_no_panic_message() {
+    let task = kernal_api::async_engine::launch(std::future::pending::<()>());
+    task.cancel();
+    let err = task.await.expect_err("cancelled");
+    assert_eq!(panic_message(&err), None);
+}

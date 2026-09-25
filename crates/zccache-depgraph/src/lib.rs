@@ -38,8 +38,9 @@ pub use session::{
     SessionStatsTracker,
 };
 pub use snapshot::{
-    classify_load, depgraph_file_path, load_from_file, quarantine, save_to_file,
-    DepGraphLoadOutcome, SnapshotError, DEPGRAPH_VERSION,
+    classify_load, depgraph_file_path, inject_save_failures_for_tests, load_from_file,
+    load_from_file_with, quarantine, save_to_file, save_to_file_with, DepGraphLoadOutcome,
+    LoadOptions, SaveOptions, SnapshotError, DEPGRAPH_VERSION, GC_TTL, SNAPSHOT_BUDGET_BYTES,
 };
 pub use system_includes::{
     discovery_args, discovery_args_c, discovery_args_fast, msvc_system_includes_from_env,

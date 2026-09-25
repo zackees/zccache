@@ -1,5 +1,11 @@
 # DepGraph Serialization — Design Spec
 
+> **Superseded by [#1661](https://github.com/zackees/zccache/issues/1661).**
+> The rkyv zero-copy format described below was replaced by a streamed
+> bincode 1 (serde) snapshot, and rkyv was removed from the workspace. See
+> `docs/architecture/runtime.md` "Dep Graph Recovery" for the current format
+> (v8), the 7-day TTL and the 256 MiB LRU budget.
+
 ## Summary
 
 Persist the in-memory `DepGraph` to disk so the daemon can restore warm

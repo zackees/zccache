@@ -59,6 +59,29 @@ fn exit_reason(outcome: &Result<(), kernal_api::async_engine::TaskError>) -> &'s
     }
 }
 
+/// The panic payload of a task that panicked, for the death log line.
+///
+/// `TaskError` does not expose the payload itself, but its `Display` renders
+/// a string payload as `task N panicked with message "..."` (a `{:?}`-quoted
+/// string). Without this the log said only "panicked", and a save loop dying
+/// on a serializer panic left no clue which assertion fired (zccache#1661).
+/// Returns `None` when the task did not panic.
+pub(super) fn panic_message(err: &kernal_api::async_engine::TaskError) -> Option<String> {
+    if !err.is_panic() {
+        return None;
+    }
+    let rendered = err.to_string();
+    const MARKER: &str = " panicked with message ";
+    Some(match rendered.split_once(MARKER) {
+        Some((_, quoted)) => quoted
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .map(|inner| inner.replace("\\\"", "\"").replace("\\\\", "\\"))
+            .unwrap_or_else(|| quoted.to_string()),
+        None => "<non-string panic>".to_string(),
+    })
+}
+
 /// Spawn a long-lived background loop under supervision.
 ///
 /// `factory` builds the task future; it is called again on each restart, so it
@@ -100,9 +123,11 @@ where
             }
 
             let reason = exit_reason(&outcome);
+            let panic = outcome.as_ref().err().and_then(panic_message);
             tracing::warn!(
                 task = name,
                 reason,
+                panic = panic.as_deref().unwrap_or(""),
                 restarts,
                 "supervised background task stopped unexpectedly"
             );
@@ -111,6 +136,7 @@ where
                 serde_json::json!({
                     "task": name,
                     "reason": reason,
+                    "panic": panic,
                     "restarts": restarts,
                     "restartable": restart == Restart::Idempotent,
                 }),

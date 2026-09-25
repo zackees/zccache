@@ -11,6 +11,7 @@ use super::super::context::CompileContext;
 use super::super::search_paths::IncludeSearchPaths;
 
 mod behavioral;
+mod bounding_1661;
 mod persistence;
 mod round_trip;
 mod worktree_variants;

@@ -105,9 +105,20 @@ impl DepGraph {
             })
             .collect();
 
+        self.evict_contexts(&expired)
+    }
+
+    /// Remove the given contexts and prune every index that referenced them
+    /// (equivalence classes, rustc externs, check-metadata compat, and file
+    /// entries no longer referenced by any context). Returns the number of
+    /// contexts actually removed.
+    ///
+    /// Shared by [`Self::trim`] (age-based) and the snapshot size budget's
+    /// LRU eviction (zccache#1661).
+    pub fn evict_contexts(&self, keys: &[ContextKey]) -> usize {
         let mut removed = 0;
-        for key in expired {
-            if self.contexts.remove(&key).is_some() {
+        for key in keys {
+            if self.contexts.remove(key).is_some() {
                 removed += 1;
             }
         }

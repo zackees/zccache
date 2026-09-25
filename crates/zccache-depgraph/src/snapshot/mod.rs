@@ -1,4 +1,7 @@
-//! Disk persistence for the dependency graph via rkyv zero-copy serialization.
+//! Disk persistence for the dependency graph via bincode 1 (serde) streaming
+//! serialization (zccache#1661 — rkyv was dropped: its 32-bit relative
+//! pointers capped a snapshot at 2 GiB and overflow panicked instead of
+//! returning an error).
 //!
 //! Saves/loads the graph to `~/.zccache/depgraph/depgraph.bin` so warm contexts
 //! survive daemon restarts and cache hits resume immediately.
@@ -14,11 +17,11 @@
 //!   behavioral.
 
 use std::path::Path;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use rayon::prelude::*;
-use rkyv::{Archive, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use zccache_core::NormalizedPath;
 use zccache_hash::ContentHash;
 
@@ -33,11 +36,18 @@ pub mod quarantine;
 mod tests;
 
 pub use persistence::{
-    classify_load, depgraph_file_path, load_from_file, save_to_file, DepGraphLoadOutcome,
+    classify_load, depgraph_file_path, inject_save_failures_for_tests, load_from_file,
+    load_from_file_with, save_to_file, save_to_file_with, DepGraphLoadOutcome, LoadOptions,
+    SaveOptions, GC_TTL, SNAPSHOT_BUDGET_BYTES,
 };
 
 /// On-disk format version. Bump when snapshot layout changes.
-pub const DEPGRAPH_VERSION: u32 = 7;
+///
+/// v8 (zccache#1661): payload switched from rkyv to bincode 1 and each
+/// context gained a persisted wall-clock `last_accessed_unix_ms`. A v7
+/// (rkyv) file is classified as a version mismatch, so the first start after
+/// upgrade is a one-time cold depgraph.
+pub const DEPGRAPH_VERSION: u32 = 8;
 
 /// Magic bytes identifying a depgraph snapshot file ("ZCDG").
 pub const DEPGRAPH_MAGIC: [u8; 4] = [0x5A, 0x43, 0x44, 0x47];
@@ -46,23 +56,23 @@ pub const DEPGRAPH_MAGIC: [u8; 4] = [0x5A, 0x43, 0x44, 0x47];
 pub(crate) const HEADER_SIZE: usize = 16;
 
 // ---------------------------------------------------------------------------
-// Snapshot types (rkyv-serializable mirrors of the in-memory types)
+// Snapshot types (serde/bincode-serializable mirrors of the in-memory types)
 // ---------------------------------------------------------------------------
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepGraphSnapshot {
     pub files: Vec<FileEntrySnapshot>,
     pub contexts: Vec<ContextEntrySnapshot>,
     pub stats: SnapshotStats,
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntrySnapshot {
     pub path: String,
     pub includes: Vec<IncludeDirectiveSnapshot>,
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncludeDirectiveSnapshot {
     /// 0=Quoted, 1=AngleBracket, 2=Computed, 3=QuotedNext, 4=AngleBracketNext
     pub kind: u8,
@@ -70,7 +80,7 @@ pub struct IncludeDirectiveSnapshot {
     pub line: u32,
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextEntrySnapshot {
     /// Checkout-specific map key for mutable graph state.
     pub context_key: [u8; 32],
@@ -98,21 +108,26 @@ pub struct ContextEntrySnapshot {
     pub rustc_env_deps: Vec<RustcEnvDepSnapshot>,
     /// 0=Cold, 1=Warm, 2=Stale
     pub state: u8,
+    /// Wall-clock (Unix epoch milliseconds) of the context's last access.
+    /// Persisted so `trim` ages survive daemon restarts (zccache#1661);
+    /// before v8 every load re-stamped `Instant::now()`, so a daemon
+    /// restarted more often than the TTL never trimmed anything.
+    pub last_accessed_unix_ms: u64,
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustcExternSnapshot {
     pub name: String,
     pub path: String,
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustcEnvDepSnapshot {
     pub name: String,
     pub value_hash: Option<[u8; 32]>,
 }
 
-#[derive(Archive, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotStats {
     pub saved_at_epoch_secs: u64,
     pub file_count: u64,
@@ -138,6 +153,29 @@ pub enum SnapshotError {
     Corrupt(String),
 }
 
+/// Current wall-clock time as Unix epoch milliseconds (0 if the clock is
+/// before the epoch).
+#[must_use]
+pub fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+/// Map a persisted wall-clock access time back onto the monotonic clock.
+///
+/// Clock skew (stored time in the future) clamps the age to zero. If the
+/// monotonic clock cannot represent an instant that far back (e.g. shortly
+/// after boot on some platforms) the context is treated as just accessed;
+/// persistence drops contexts older than the TTL before reaching here, so
+/// this fallback only ever applies to within-TTL contexts.
+pub(crate) fn instant_from_unix_ms(stored_unix_ms: u64, now_unix_ms: u64) -> Instant {
+    let age = Duration::from_millis(now_unix_ms.saturating_sub(stored_unix_ms));
+    let now = Instant::now();
+    now.checked_sub(age).unwrap_or(now)
+}
+
 // ---------------------------------------------------------------------------
 // Conversion: DepGraph <-> Snapshot
 // ---------------------------------------------------------------------------
@@ -145,6 +183,14 @@ pub enum SnapshotError {
 impl DepGraph {
     /// Create a serializable snapshot of the current graph state.
     pub fn to_snapshot(&self) -> DepGraphSnapshot {
+        self.to_snapshot_at(now_unix_ms())
+    }
+
+    /// Like [`Self::to_snapshot`], with an injected wall-clock `now` used to
+    /// convert each context's monotonic `last_accessed` into a persisted
+    /// Unix-millisecond timestamp.
+    pub fn to_snapshot_at(&self, now_unix_ms: u64) -> DepGraphSnapshot {
+        let now_instant = Instant::now();
         let files: Vec<FileEntrySnapshot> = self
             .files_iter()
             .map(|entry| {
@@ -224,16 +270,21 @@ impl DepGraph {
                         ContextState::Warm => 1,
                         ContextState::Stale => 2,
                     },
+                    last_accessed_unix_ms: now_unix_ms.saturating_sub(
+                        u64::try_from(
+                            now_instant
+                                .saturating_duration_since(ctx.last_accessed)
+                                .as_millis(),
+                        )
+                        .unwrap_or(u64::MAX),
+                    ),
                 }
             })
             .collect();
 
         DepGraphSnapshot {
             stats: SnapshotStats {
-                saved_at_epoch_secs: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
+                saved_at_epoch_secs: now_unix_ms / 1000,
                 file_count: files.len() as u64,
                 context_count: contexts.len() as u64,
             },
@@ -244,6 +295,13 @@ impl DepGraph {
 
     /// Reconstruct a `DepGraph` from a deserialized snapshot.
     pub fn from_snapshot(snap: DepGraphSnapshot) -> Self {
+        Self::from_snapshot_at(snap, now_unix_ms())
+    }
+
+    /// Like [`Self::from_snapshot`], with an injected wall-clock `now` used to
+    /// restore each context's `last_accessed` from its persisted
+    /// `last_accessed_unix_ms` (so ages survive restarts).
+    pub fn from_snapshot_at(snap: DepGraphSnapshot, now_unix_ms: u64) -> Self {
         let files: DashMap<NormalizedPath, FileEntry> = DashMap::new();
         snap.files.into_par_iter().for_each(|f| {
             let path = NormalizedPath::from(f.path.as_str());
@@ -339,7 +397,7 @@ impl DepGraph {
                     .map(|(p, h)| (NormalizedPath::from(p.as_str()), ContentHash::from_bytes(h)))
                     .collect(),
                 rustc_env_deps: env_deps,
-                last_accessed: Instant::now(),
+                last_accessed: instant_from_unix_ms(c.last_accessed_unix_ms, now_unix_ms),
                 state: match c.state {
                     0 => ContextState::Cold,
                     1 => ContextState::Warm,

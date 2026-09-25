@@ -303,6 +303,29 @@ mod tests {
         }
     }
 
+    /// zccache#1661 (E): a snapshot with a valid header but a garbage bincode
+    /// payload is a logged, degraded load that starts cold — never a panic.
+    #[test]
+    fn a_corrupt_payload_starts_cold_without_panicking() {
+        let fixture = Fixture::new();
+        fixture.write_snapshot(DEPGRAPH_VERSION);
+        let mut bytes = std::fs::read(&fixture.snapshot).unwrap();
+        let header = 16.min(bytes.len());
+        for byte in &mut bytes[header..] {
+            *byte = 0xFF;
+        }
+        bytes.extend_from_slice(&[0xFF; 64]);
+        std::fs::write(&fixture.snapshot, &bytes).unwrap();
+
+        let (load, _record) = fixture.load();
+
+        assert!(
+            load.graph.is_none(),
+            "a corrupt payload must start cold rather than install a torn graph"
+        );
+        assert!(load.warning.is_some(), "the operator must be told why");
+    }
+
     #[test]
     fn version_mismatch_drives_the_event_and_quarantines_instead_of_clobbering() {
         assert!(
@@ -372,7 +395,7 @@ mod tests {
         assert!(
             load.graph.is_some(),
             "a sidecar carrying this build's exact schema version must be \
-             adopted — it passes the same magic/version/rkyv validation the \
+             adopted — it passes the same magic/version/bincode validation the \
              primary snapshot does"
         );
         assert_eq!(record["consequence"], "recovered_from_quarantine");

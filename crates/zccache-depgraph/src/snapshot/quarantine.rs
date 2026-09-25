@@ -20,7 +20,7 @@
 //!
 //! Nothing here decodes, migrates, or partially salvages a snapshot whose
 //! version tag differs from this build's. A recovered sidecar goes through
-//! exactly the same magic + version + rkyv validation as `depgraph.bin`
+//! exactly the same magic + version + bincode decode validation as `depgraph.bin`
 //! itself, so the only new claim is "a snapshot written by *this* schema
 //! version against *this* cache root is as trustworthy as the primary
 //! snapshot" — which is true by construction, and is anyway re-verified
@@ -89,7 +89,7 @@ pub fn quarantine(primary: &Path, dest: &NormalizedPath) -> Option<NormalizedPat
 /// Load the sidecar written by this build's schema version, if one exists.
 ///
 /// Deliberately routed through [`super::classify_load`] so a sidecar gets the
-/// identical magic/version/rkyv validation the primary snapshot gets. Any
+/// identical magic/version/bincode decode validation the primary snapshot gets. Any
 /// outcome other than `Loaded` yields `None` — a damaged sidecar is dropped
 /// silently rather than escalated, because the caller is *already* in the
 /// degraded path and a second warning about a backup file would not change

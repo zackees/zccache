@@ -497,7 +497,7 @@ fn all_states_roundtrip() {
     );
 }
 
-/// A bit-flip in the rkyv payload should be caught by validation.
+/// A bit-flip in the bincode payload must never panic.
 #[test]
 fn bit_flip_in_payload_detected() {
     use super::super::super::snapshot::SnapshotError;
@@ -530,7 +530,7 @@ fn bit_flip_in_payload_detected() {
     match load_from_file(&path) {
         Err(SnapshotError::Corrupt(_)) => {} // Expected
         Ok(_) => {
-            // rkyv might not catch every bit-flip if it lands on
+            // bincode might not catch every bit-flip if it lands on
             // a valid-looking field. This is acceptable — we just
             // want to verify the validation path exists.
         }

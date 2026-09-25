@@ -139,7 +139,7 @@ fn zero_length_payload_rejected() {
     data.extend_from_slice(&0u64.to_le_bytes()); // zero-length payload
     std::fs::write(&path, &data).unwrap();
 
-    // rkyv should reject an empty payload.
+    // bincode must reject an empty payload.
     match load_from_file(&path) {
         Err(SnapshotError::Corrupt(_)) => {}
         other => panic!("expected Corrupt for empty payload, got {other:?}"),

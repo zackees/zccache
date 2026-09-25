@@ -78,7 +78,6 @@ lzma-rs = "0.3"
 # traversal. Keep the dependency key stable for the amalgamated crate while
 # sourcing the maintained successor recommended by RustSec.
 sevenz-rust = { package = "sevenz-rust2", version = "0.22.2" }
-rkyv = "0.8"
 # The shared systems facade (kernal-api#69). Capabilities are enabled one
 # migration slice at a time, so this stays `default-features = false` and each
 # slice adds only the feature it needs.
