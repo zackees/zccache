@@ -52,6 +52,7 @@
 //! | `ipc_peer_rejected` (#1171) | daemon | an accepted IPC connection was refused because the peer is not this user, or its credentials were unavailable | `reason`, `detail` |
 //! | `sessions_reaped` (#1165) | daemon | periodic maintenance reclaimed session state whose owning client is gone or whose tombstone aged out | `expired`, `dead_client`, `tombstones`, `remaining`, `tombstones_remaining` |
 //! | `stale_depfile_dirs_swept` (#1165) | daemon | periodic maintenance reclaimed depfile directories from dead daemon instances | `cleaned` |
+//! | `retired_stores_swept` (#1659) | daemon | periodic maintenance reclaimed a retired sibling `v<VERSION>` cache store | `stores_scanned`, `stores_removed`, `stores_live`, `files_removed`, `bytes_reclaimed`, `failed` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
 //! | `staged_publication_replaces_invalid_generation` | daemon | a corrupt/incomplete selected generation was replaced by a validated compile result | `cache_key`, `invalid_generation`, `replacement_generation` |
 //! | `staged_salvage_started` | daemon | publication/index failed after a successful compile; requested outputs are being recovered | `reason`, `output_count`, `copied_bytes`, `elapsed_ns` |
@@ -178,6 +179,10 @@ pub const EVENT_SESSIONS_REAPED: &str = "sessions_reaped";
 /// Periodic maintenance reclaimed depfile directories belonging to dead daemon
 /// instances (#1165). Emitted only when something was actually reclaimed.
 pub const EVENT_STALE_DEPFILE_DIRS_SWEPT: &str = "stale_depfile_dirs_swept";
+/// Periodic maintenance reclaimed a retired sibling `v<VERSION>` cache store
+/// (#1659). Emitted only when something was actually reclaimed or a store
+/// entry could not be classified/removed.
+pub const EVENT_RETIRED_STORES_SWEPT: &str = "retired_stores_swept";
 
 /// Issue #755 events — daemon death + handover + client disconnect.
 /// Additive: existing tooling that filters on `event` continues to
