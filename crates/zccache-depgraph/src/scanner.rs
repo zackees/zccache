@@ -59,11 +59,31 @@ pub struct ScanResult {
     pub has_computed: bool,
 }
 
+/// Process-wide count of `scan_includes_str` calls (test instrumentation).
+///
+/// Global rather than thread-local because `scan_recursive` fans file scans
+/// out to rayon worker threads. Callers must compare deltas, and only in
+/// tests that do not run other scans concurrently.
+static SCAN_INCLUDES_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Total `scan_includes_str` calls in this process (all threads).
+#[doc(hidden)]
+pub fn scan_includes_calls() -> u64 {
+    SCAN_INCLUDES_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the process-wide `scan_includes_str` call counter to zero.
+#[doc(hidden)]
+pub fn reset_scan_includes_calls() {
+    SCAN_INCLUDES_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Scan a source string for `#include` directives.
 ///
 /// Skips directives inside `//` line comments, `/* */` block comments,
 /// and string/character literals. Handles backslash line continuations.
 pub fn scan_includes_str(source: &str) -> Vec<IncludeDirective> {
+    SCAN_INCLUDES_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let joined = join_continuations(source);
     let mut results = Vec::new();
 
@@ -567,6 +587,15 @@ fn try_normalize(path: &Path) -> Option<NormalizedPath> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn scan_includes_str_increments_call_counter() {
+        // Other tests may scan concurrently, so assert a lower bound on the delta.
+        let before = scan_includes_calls();
+        scan_includes_str("#include <a.h>\n");
+        scan_includes_str("#include <a.h>\n");
+        assert!(scan_includes_calls() - before >= 2);
+    }
 
     // â”€â”€ scan_includes_str tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 

@@ -96,18 +96,8 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                 depfile_strategy,
                 DepfileStrategy::UserSpecified { .. } | DepfileStrategy::UserDefault { .. }
             );
-            let augment_system_headers = matches!(
-                depfile_strategy,
-                DepfileStrategy::UserSpecified {
-                    augment_system_headers: true,
-                    ..
-                } | DepfileStrategy::UserDefault {
-                    augment_system_headers: true,
-                    ..
-                }
-            );
             match crate::depgraph::depfile::parse_depfile_path(path, &source_path, &cwd_path) {
-                Ok(mut result) => {
+                Ok(result) => {
                     if want_capture {
                         if let Ok(bytes) = std::fs::read(path) {
                             user_depfile_capture = Some((path.clone(), bytes));
@@ -116,13 +106,15 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                     if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
                         let _ = std::fs::remove_file(path);
                     }
-                    if augment_system_headers {
-                        result = crate::depgraph::depfile::merge_scan_results_conservative(
-                            result,
-                            crate::depgraph::scanner::scan_recursive(&source_path, &include_search),
-                        );
+                    // A parsed compiler depfile is authoritative: never rescan
+                    // includes here (zccache#1668). System headers omitted by
+                    // user `-MMD` are covered by the toolchain identity in the
+                    // cache key.
+                    if let Some(compiler_scan) = compiler_dependency_scan {
+                        crate::depgraph::depfile::merge_scan_results(result, compiler_scan)
+                    } else {
+                        result
                     }
-                    result
                 }
                 Err(e) => {
                     used_static_fallback = true;
@@ -234,5 +226,59 @@ mod tests {
         assert!(collection.scan_result.resolved.contains(&header));
         assert!(collection.scan_result.has_computed);
         assert!(collection.depfile_parse_warning.is_some());
+    }
+
+    /// zccache#1668: a parsed user `-MMD` depfile is authoritative; the
+    /// daemon must not rerun the recursive include scan on a cache miss.
+    #[test]
+    fn user_mmd_depfile_skips_recursive_include_scan() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("main.c");
+        let a_header = temp.path().join("a.h");
+        // `unlisted.h` exists and is included, but is absent from the
+        // depfile. Only a recursive rescan could discover it, so its
+        // absence from the result proves the scan was skipped without
+        // relying on the process-wide scanner counter (other tests scan
+        // concurrently).
+        let unlisted = temp.path().join("unlisted.h");
+        let sys_header = temp.path().join("sys.h");
+        let depfile = temp.path().join("main.d");
+        std::fs::write(
+            &source,
+            "#include \"a.h\"\n#include \"unlisted.h\"\n#include <sys.h>\n",
+        )
+        .unwrap();
+        std::fs::write(&a_header, "#define A 1\n").unwrap();
+        std::fs::write(&unlisted, "#define U 1\n").unwrap();
+        std::fs::write(&sys_header, "#define SYS 1\n").unwrap();
+        std::fs::write(&depfile, "main.o: main.c a.h\n").unwrap();
+
+        let collection = collect_compile_scan(CompileScanRequest {
+            is_rustc: false,
+            rustc_args: None,
+            source_path: source.into(),
+            cwd_path: temp.path().into(),
+            depfile_strategy: DepfileStrategy::UserSpecified {
+                path: depfile.into(),
+                augment_system_headers: true,
+            },
+            compiler_dependency_scan: None,
+            include_search: Default::default(),
+            dependency_mode: DependencyDiscoveryMode::AllHeaders,
+        });
+
+        let names: Vec<String> = collection
+            .scan_result
+            .resolved
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert!(names.iter().any(|n| n == "a.h"), "resolved: {names:?}");
+        assert!(
+            !names.iter().any(|n| n == "unlisted.h"),
+            "recursive include scan ran; resolved: {names:?}"
+        );
+        assert!(collection.depfile_parse_warning.is_none());
+        assert!(collection.user_depfile_capture.is_some());
     }
 }
