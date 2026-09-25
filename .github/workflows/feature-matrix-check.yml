@@ -10,6 +10,7 @@ name: Feature Matrix Check
 #   uv run --with pyyaml python ci/render_feature_matrix.py
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -20,12 +21,7 @@ on:
       - ".github/workflows/feature-matrix-check.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "docs/feature-matrix.yaml"
-      - "docs/FEATURE-MATRIX.md"
-      - "ci/render_feature_matrix.py"
-      - "README.md"
-      - ".github/workflows/feature-matrix-check.yml"
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Auto-cancel superseded PR runs: pushing again to a feature branch
 # supersedes the in-flight run instead of queueing behind it. Non-PR events
@@ -39,8 +35,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: feature-matrix-check.yml
+
   check:
     name: Feature matrix is rendered
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

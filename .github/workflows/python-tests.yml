@@ -8,11 +8,8 @@ name: Python Tests
 # other native platform families; a matrix here would rebuild the same PyO3
 # contracts without adding a distinct source-level test surface.
 #
-# This is a dedicated workflow rather than a job in `ci.yml` because `ci.yml`
-# sets `paths-ignore: "**/*.md"`. Several of these tests exist specifically to
-# police Markdown -- test_doc_links, test_readme_coverage, test_crate_docs,
-# test_documented_commands -- so hanging them off `ci.yml` would skip them on
-# exactly the docs-only PRs they are meant to gate (#1487 was one).
+# This dedicated workflow keeps the lightweight Markdown and CI-hygiene
+# checks active even on docs-only PRs. The native PyO3 suite is full-only.
 #
 # No paths filter: the suite asserts against Markdown, workflow YAML,
 # Cargo.toml, and perf fixtures, so almost any change can move it.
@@ -34,10 +31,12 @@ name: Python Tests
 #     --with pyyaml python -m pytest ci/tests
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -51,8 +50,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: python-tests.yml
+
   pytest:
     name: ci/tests
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     runs-on: ubuntu-latest
     # Observed wall time is ~90s; this only has to catch a genuine hang.
     # test_perf_watchdog spawns real child processes and one test shells out
@@ -84,6 +90,8 @@ jobs:
             python -m pytest ci/tests -q -rs --durations=10
 
   native-pytest:
+    needs: select
+    if: needs.select.outputs.mode == 'full'
     name: native Python suites (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 30

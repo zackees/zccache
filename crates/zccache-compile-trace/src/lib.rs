@@ -122,7 +122,9 @@ fn escape(s: &str) -> String {
 
 /// RAII guard that records on drop. Use for scope-bounded sub-phases:
 ///
-/// ```ignore
+/// ```
+/// use zccache_compile_trace::Phase;
+/// let compile_id = String::from("example");
 /// {
 ///     let _p = Phase::start("cache_lookup", &compile_id);
 ///     // … work …

@@ -1,6 +1,7 @@
 name: macOS
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -16,23 +17,12 @@ on:
       - "tasks/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE*"
-      - "NOTICE*"
-      - "AUTHORS*"
-      - "CODEOWNERS"
-      - "CONTRIBUTING*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - "tasks/**"
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Superseded PR runs used to keep holding macOS slots while a fresh run
 # queued behind them. Against GitHub's 5-concurrent-job macOS cap that is
 # what produced the 16 -> 32 -> 49 -> 59 minute queue staircase. Pushes to
-# main are never cancelled: release-auto.yml triggers on push-to-main
-# version bumps, so every commit that lands must be fully tested.
+# main are never cancelled; the selector runs this macOS job only in full mode.
 permissions:
   actions: read
   contents: read
@@ -44,18 +34,27 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # macos-15 is Apple Silicon. This was previously two jobs, `x86` and `arm`,
-  # both pinned to the same arm64 image, byte-identical duplicates that also derived the
-  # same cache-key-suffix and so raced each other on cache save. Real Intel
-  # coverage would mean macos-13, which is deliberately avoided: see
-  # wrapper-e2e.yml, where that pool cost 15+ minutes of queue wait per run.
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: ci-macos.yml
+
+  # Full CI executes both architectures on native GitHub-hosted machines.
   macos:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15]
     uses: ./.github/workflows/ci-check.yml
     with:
-      os: macos-15
+      os: ${{ matrix.os }}
       run_check: false
 
   observe-macos-queue:
+    needs: [select, macos]
+    if: always() && needs.select.outputs.selected == 'true'
     name: Observe macOS runner queue
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -68,4 +67,6 @@ jobs:
         run: >-
           uv run --no-project --python 3.13 python ci/observe_runner_queue.py
           --repository "${{ github.repository }}" --run-id "${{ github.run_id }}"
-          --runner macos-15 --job "macos / Test" --token "$GITHUB_TOKEN"
+          --runner macos-15-intel
+          --job "macos (macos-15-intel) / Test"
+          --token "$GITHUB_TOKEN"

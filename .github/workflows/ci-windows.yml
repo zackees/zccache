@@ -1,6 +1,7 @@
 name: Windows
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -16,17 +17,7 @@ on:
       - "tasks/**"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "LICENSE*"
-      - "NOTICE*"
-      - "AUTHORS*"
-      - "CODEOWNERS"
-      - "CONTRIBUTING*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - "tasks/**"
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -38,13 +29,22 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  select:
+    uses: ./.github/workflows/ci-select.yml
+    with:
+      workflow: ci-windows.yml
+
   x86:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     uses: ./.github/workflows/ci-check.yml
     with:
       os: windows-latest
       run_check: false
 
   arm:
+    needs: select
+    if: needs.select.outputs.selected == 'true'
     uses: ./.github/workflows/ci-check.yml
     with:
       os: windows-11-arm
