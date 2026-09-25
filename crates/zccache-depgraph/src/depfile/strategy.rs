@@ -20,8 +20,10 @@ pub enum DepfileStrategy {
     /// User already had `-MF <path>` — read it (don't delete).
     UserSpecified {
         path: NormalizedPath,
-        /// Merge a full recursive scan because the user selected `-MMD`
-        /// while zccache remains in its correctness-first policy.
+        /// Informational: the user selected `-MMD`, so the depfile omits
+        /// system headers. This no longer triggers a recursive include
+        /// rescan on a cache miss (zccache#1668); system headers are covered
+        /// by the toolchain identity already in the cache key.
         augment_system_headers: bool,
     },
     /// User had `-MD` but no `-MF` — derive path from output stem.
@@ -88,6 +90,10 @@ pub fn prepare_depfile(
 ///
 /// The caller enables MMD only when a daemon-side static scan can prove all
 /// system include search inputs. User supplied dependency flags are unchanged.
+///
+/// For user `-MMD` the returned strategy carries `augment_system_headers:
+/// true`; that flag is informational only and no longer causes the daemon to
+/// rescan includes when the depfile parses (zccache#1668).
 pub fn prepare_depfile_with_mmd(
     use_mmd: bool,
     supports_depfile: bool,
