@@ -12,6 +12,24 @@ fn seed_persisted_blob(path: &Path, bytes: &[u8]) {
     write_authoritative_blob_digest(path).unwrap();
 }
 
+#[test]
+fn rust_metadata_hit_allows_unwrapped_rustc_overwrite_without_mutating_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("libsample.rmeta");
+    let blob = dir.path().join("cached.rmeta");
+    seed_persisted_blob(&blob, b"cached metadata");
+    let delivery = crate::compiler::rustc_output_delivery(false, &output);
+    write_cached_payload_with_policy_stats(
+        &output,
+        &CachedPayload::File(blob.clone().into()),
+        delivery,
+    )
+    .unwrap();
+    std::fs::write(&output, b"new compiler metadata").unwrap();
+    assert_eq!(std::fs::read(&blob).unwrap(), b"cached metadata");
+    assert_eq!(std::fs::read(&output).unwrap(), b"new compiler metadata");
+}
+
 fn require_hardlink(out: &Path, cache: &Path, test_name: &str) -> bool {
     if crate::platform::fs::identity::same_file(out, cache).unwrap() {
         true

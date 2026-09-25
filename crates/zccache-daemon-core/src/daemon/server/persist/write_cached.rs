@@ -102,7 +102,11 @@ pub(in crate::daemon::server) fn write_cached_output(
     materialize_cached_file(
         out_path,
         cache_file,
-        crate::compiler::DeliveryPolicy::IndependentOnly,
+        if is_staged_artifact_path(cache_file) {
+            crate::compiler::DeliveryPolicy::IndependentOnly
+        } else {
+            crate::compiler::DeliveryPolicy::HardlinkEligible
+        },
     )
     .map(|_| ())
 }
@@ -115,7 +119,11 @@ pub(in crate::daemon::server) fn write_cached_file(
     materialize_cached_file(
         out_path,
         cache_file,
-        crate::compiler::DeliveryPolicy::IndependentOnly,
+        if is_staged_artifact_path(cache_file) {
+            crate::compiler::DeliveryPolicy::IndependentOnly
+        } else {
+            crate::compiler::DeliveryPolicy::HardlinkEligible
+        },
     )
     .map(|_| ())
 }
@@ -165,8 +173,7 @@ fn materialize_verified_cached_file_observed(
             StagedMaterializationStats::default()
         }
     };
-    let hardlink_allowed =
-        !staged || matches!(delivery, crate::compiler::DeliveryPolicy::HardlinkEligible);
+    let hardlink_allowed = matches!(delivery, crate::compiler::DeliveryPolicy::HardlinkEligible);
     if crate::platform::fs::identity::same_file(out_path, cache_file).unwrap_or(false) {
         if !hardlink_allowed {
             let bytes = std::fs::metadata(cache_file)?.len();
@@ -315,7 +322,11 @@ pub(in crate::daemon::server) fn write_cached_file_observed(
     materialize_cached_file_observed(
         out_path,
         cache_file,
-        crate::compiler::DeliveryPolicy::IndependentOnly,
+        if is_staged_artifact_path(cache_file) {
+            crate::compiler::DeliveryPolicy::IndependentOnly
+        } else {
+            crate::compiler::DeliveryPolicy::HardlinkEligible
+        },
         true,
     )
 }

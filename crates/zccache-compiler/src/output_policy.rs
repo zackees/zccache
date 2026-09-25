@@ -70,8 +70,10 @@ impl OutputClassification {
         match family {
             CompilerFamily::Rustc if matches!(extension, "rmeta") => Self {
                 role: OutputRole::RustMetadata,
-                mutation: MutationContract::ImmutableConsumer,
-                delivery: DeliveryPolicy::HardlinkEligible,
+                // A subsequent unwrapped rustc invocation can truncate this
+                // same Cargo output. Preserve an independent writable inode.
+                mutation: MutationContract::MayEditInPlace,
+                delivery: DeliveryPolicy::ReflinkPreferred,
             },
             CompilerFamily::Rustc if matches!(extension, "rlib") => Self {
                 role: OutputRole::RustArchive,
@@ -124,8 +126,8 @@ impl OutputClassification {
 
 /// Return the semantic delivery policy for a rustc output. The `.rlib`
 /// allowlist is gated by parsed crate type, so `--crate-type bin -o fake.rlib`
-/// remains independent. Rust metadata is a read-only compiler interface for
-/// every cacheable crate type.
+/// remains independent. Rust metadata consumers read it, but a later producer
+/// can overwrite it in place, including when Cargo runs without the wrapper.
 #[must_use]
 pub fn rustc_output_delivery(
     archive_hardlink_eligible: bool,
@@ -133,7 +135,7 @@ pub fn rustc_output_delivery(
 ) -> DeliveryPolicy {
     let extension = output.extension().and_then(|ext| ext.to_str());
     if extension == Some("rmeta") {
-        return DeliveryPolicy::HardlinkEligible;
+        return DeliveryPolicy::ReflinkPreferred;
     }
     if extension != Some("rlib") {
         return DeliveryPolicy::IndependentOnly;
@@ -216,7 +218,7 @@ mod tests {
         );
         assert_eq!(
             rustc_output_delivery(false, std::path::Path::new("x.rmeta")),
-            DeliveryPolicy::HardlinkEligible
+            DeliveryPolicy::ReflinkPreferred
         );
         assert!(rustc_archive_hardlink_eligible(&[
             "--crate-type=rlib".into()
