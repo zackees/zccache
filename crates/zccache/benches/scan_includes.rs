@@ -10,8 +10,8 @@
 //!
 //! Throughput is reported as `Throughput::Bytes` over the concatenated corpus.
 //!
-//! Acceptance target (zackees/zccache#1670): the single-pass scanner must be
-//! >=5x faster than the pre-change scanner. Save a baseline on the pre-change
+//! Acceptance target (zackees/zccache#1670): the single-pass scanner must be at
+//! least 5x faster than the pre-change scanner. Save a baseline on the pre-change
 //! commit with `-- --save-baseline pre`, then re-run after the impl change
 //! with `-- --baseline pre`.
 //!
