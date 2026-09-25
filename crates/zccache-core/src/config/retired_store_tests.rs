@@ -42,13 +42,26 @@ fn removes_fresh_unlinked_artifacts_eagerly_only_under_pressure_and_spares_linke
         std::fs::hard_link(&cached, target.join(format!("linked-{i}.bin"))).unwrap();
     }
 
-    let routine = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
-    assert_eq!(routine.files_removed, 0, "fresh files survive a routine sweep");
+    let routine = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
+    assert_eq!(
+        routine.files_removed, 0,
+        "fresh files survive a routine sweep"
+    );
     for i in 0..1000 {
         assert!(store.join(format!("unlinked-{i}.bin")).exists());
     }
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Pressure);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Pressure,
+    );
 
     assert_eq!(report.stores_scanned, 1);
     assert_eq!(report.files_removed, 1000);
@@ -91,7 +104,12 @@ fn expires_aged_linked_artifacts_then_removes_the_empty_store() {
         linked_bytes += contents.len() as u64;
     }
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
 
     assert_eq!(report.files_removed, 50);
     assert_eq!(
@@ -130,14 +148,24 @@ fn a_held_writer_lock_protects_the_whole_store_until_released() {
         .unwrap();
     let held = kernal_api::platform::fs::try_lock_exclusive_owned(lock_file).unwrap();
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
     assert_eq!(report.stores_live, 1);
     assert_eq!(report.files_removed, 0);
     assert!(victim.exists());
 
     drop(held);
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Pressure);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Pressure,
+    );
     assert_eq!(report.stores_live, 0);
     assert_eq!(report.files_removed, 1);
     assert!(!victim.exists());
@@ -165,7 +193,12 @@ fn a_fresh_sibling_write_does_not_protect_an_unrelated_aged_file() {
     std::fs::hard_link(&cached, target.join("linked.bin")).unwrap();
     age_file(&cached, 10 * DAY);
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Pressure);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Pressure,
+    );
 
     assert!(!cached.exists(), "aged linked artifact must still expire");
     assert!(target.join("linked.bin").exists());
@@ -188,7 +221,13 @@ fn sweep_in_skips_keep_and_non_version_siblings() {
         write_file(&top.join(name).join("artifact.bin"), b"artifact");
     }
 
-    let report = sweep_retired_version_stores_in(top, "v1.1.0", MAX_AGE, SystemTime::now(), RetiredSweepMode::Pressure);
+    let report = sweep_retired_version_stores_in(
+        top,
+        "v1.1.0",
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Pressure,
+    );
 
     assert_eq!(
         report.stores_scanned, 1,
@@ -231,7 +270,12 @@ fn a_symlink_inside_the_store_is_unlinked_but_never_followed() {
     std::os::unix::fs::symlink(&outside_file, &file_link).unwrap();
     std::os::unix::fs::symlink(&outside_dir, &dir_link).unwrap();
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
 
     assert_eq!(report.failed, 0);
     assert_eq!(
@@ -271,7 +315,13 @@ fn sweep_in_accepts_a_bare_current_version() {
     write_file(&top.join("v2.0.0/artifact.bin"), b"current");
     write_file(&top.join("v1.0.0/artifact.bin"), b"retired");
 
-    let report = sweep_retired_version_stores_in(top, "2.0.0", MAX_AGE, SystemTime::now(), RetiredSweepMode::Pressure);
+    let report = sweep_retired_version_stores_in(
+        top,
+        "2.0.0",
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Pressure,
+    );
 
     assert_eq!(report.stores_scanned, 1);
     assert!(top.join("v2.0.0/artifact.bin").exists());
@@ -297,7 +347,12 @@ fn refuses_a_non_directory_store() {
     let tmp = tempfile::tempdir().unwrap();
     let not_a_dir = tmp.path().join("v1.0.0");
     write_file(&not_a_dir, b"not a directory");
-    let report = sweep_retired_version_store(&not_a_dir, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &not_a_dir,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
     assert_eq!(report.failed, 1);
     assert!(not_a_dir.exists());
 }
@@ -314,7 +369,12 @@ fn refuses_a_symlinked_store() {
     #[cfg(windows)]
     std::os::windows::fs::symlink_dir(&real, &store).unwrap();
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
     assert_eq!(report.failed, 1);
     assert!(real.join("artifact.bin").exists());
 }
@@ -367,11 +427,21 @@ fn eager_removal_ignores_freshness_only_under_pressure() {
     // filesystem's write-then-read mtime granularity.
     age_file(&fresh_unlinked, HOUR);
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
     assert_eq!(report.files_removed, 0);
     assert!(fresh_unlinked.exists());
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Pressure);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Pressure,
+    );
     assert_eq!(report.files_removed, 1);
     assert!(!fresh_unlinked.exists());
 }
@@ -388,7 +458,12 @@ fn a_to_b_to_a_within_grace_keeps_store_intact() {
     write_file(&aged, b"payload");
     age_file(&aged, 10 * DAY);
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
 
     assert_eq!(report.stores_recently_active, 1);
     assert_eq!(report.files_removed, 0);
@@ -423,7 +498,12 @@ fn recently_used_unlinked_entry_survives_routine_sweep() {
     let fresh = store.join("entry.bin");
     write_file(&fresh, b"payload");
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
 
     assert_eq!(report.files_removed, 0);
     assert_eq!(report.stores_removed, 0);
@@ -442,7 +522,12 @@ fn aged_store_without_marker_is_reclaimed() {
     touch_store_activity_marker(&store).unwrap();
     age_file(&store.join(LAST_ACTIVE_MARKER_FILE), 10 * DAY);
 
-    let report = sweep_retired_version_store(&store, MAX_AGE, SystemTime::now(), RetiredSweepMode::Routine);
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
 
     assert_eq!(report.stores_recently_active, 0);
     assert_eq!(report.files_removed, 1);

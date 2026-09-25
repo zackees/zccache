@@ -242,7 +242,11 @@ pub fn sweep_retired_version_store(
     sweep_directory_contents(store, store, now, max_age, mode, &mut report);
 
     let only_markers_remain = std::fs::read_dir(store)
-        .map(|entries| entries.flatten().all(|entry| is_root_marker(&entry.file_name())))
+        .map(|entries| {
+            entries
+                .flatten()
+                .all(|entry| is_root_marker(&entry.file_name()))
+        })
         .unwrap_or(false);
 
     // Release before removal: an open handle to `.writer.lock` can block
