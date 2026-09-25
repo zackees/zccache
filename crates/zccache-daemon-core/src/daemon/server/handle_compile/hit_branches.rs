@@ -214,6 +214,8 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
         output_path: output_path.clone(),
         secondary_output_dir: output_path.parent().unwrap_or(cwd).into(),
         current_depfile_dest,
+        depfile_key_root: (!is_rustc)
+            .then(|| request_cache_key_root.clone().unwrap_or_else(|| cwd.into())),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR_REQUEST",
@@ -344,6 +346,11 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         output_path: output_path.clone(),
         secondary_output_dir,
         current_depfile_dest: current_depfile_dest.clone(),
+        depfile_key_root: (!is_rustc).then(|| {
+            request_cache_key_root
+                .clone()
+                .unwrap_or_else(|| cwd_path.clone())
+        }),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR_FAST",
@@ -493,6 +500,11 @@ pub(super) async fn try_depgraph_cached_hit(
         output_path: output_path.clone(),
         secondary_output_dir,
         current_depfile_dest: current_depfile_dest.clone(),
+        depfile_key_root: (!is_rustc).then(|| {
+            request_cache_key_root
+                .clone()
+                .unwrap_or_else(|| cwd_path.clone())
+        }),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR",

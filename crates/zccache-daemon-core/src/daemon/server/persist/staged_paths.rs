@@ -191,6 +191,14 @@ pub(in crate::daemon::server) fn rehydrate_logical_depfile(
     Ok(())
 }
 
+/// Atomically replace a delivered depfile without touching a shared blob.
+pub(in crate::daemon::server) fn replace_depfile_bytes(
+    path: &Path,
+    bytes: &[u8],
+) -> io::Result<()> {
+    atomic_replace_bytes(path, bytes)
+}
+
 fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
