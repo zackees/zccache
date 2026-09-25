@@ -34,6 +34,11 @@ const HARD_PRESSURE_MIN_AGE: Duration = PRESSURE_INTERVAL;
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const FULL_MARKER: &str = ".disk-maintenance-last-full-v1";
+/// How long a hard-linked artifact inside a *retired* `v<VERSION>` store may
+/// sit before its per-file expiry reclaims it (issue #1659). An `nlink == 1`
+/// file in a retired store is removed on sight with no age gate regardless
+/// of this value -- nothing still alive can reference it.
+const RETIRED_STORE_MAX_AGE: Duration = Duration::from_secs(72 * 60 * 60);
 
 fn launch_maintenance_blocking<F, R>(
     runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
@@ -1023,6 +1028,81 @@ async fn sweep_stale_depfile_dirs(
     }
 }
 
+/// Reclaim retired sibling `v<VERSION>` cache stores (issue #1659).
+///
+/// Nothing previously reclaimed a store an upgrade left behind except an
+/// explicit `zccache clear`; a daemon that never had that run against it
+/// accumulates one full store per upgrade forever. This runs every pass this
+/// loop takes (`spawn_disk_maintenance`'s body executes immediately on the
+/// first iteration, so that pass doubles as the "once at daemon start"
+/// sweep), independent of the current store's own pressure/full gating below
+/// -- a retired store can hold tens of GB while the live store reports
+/// comfortably under budget.
+///
+/// Only fires when `cache_dir` is itself a real versioned store, i.e. its
+/// final path segment is exactly `v<crate::core::VERSION>`. A cache root
+/// bound straight to a bare directory (every non-versioned test harness in
+/// this crate) has no sibling-version layout to sweep and is left alone --
+/// there is no safe "top level" to infer from a path that was never
+/// `<top>/v<VERSION>` to begin with.
+async fn sweep_retired_version_stores(
+    cache_dir: &Path,
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+) {
+    let current = crate::core::config::versioned_subdir();
+    let is_versioned_root = cache_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == current.as_str());
+    if !is_versioned_root {
+        return;
+    }
+    let Some(top_level) = cache_dir.parent().map(Path::to_path_buf) else {
+        return;
+    };
+
+    let report = launch_maintenance_blocking(runtime_handle, move || {
+        crate::core::config::sweep_retired_version_stores_in(
+            &top_level,
+            &current,
+            RETIRED_STORE_MAX_AGE,
+            SystemTime::now(),
+        )
+    })
+    .await;
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!(%error, "retired-store sweep worker failed");
+            return;
+        }
+    };
+    if report.stores_removed == 0 && report.files_removed == 0 && report.failed == 0 {
+        return;
+    }
+    tracing::info!(
+        stores_scanned = report.stores_scanned,
+        stores_removed = report.stores_removed,
+        stores_live = report.stores_live,
+        files_removed = report.files_removed,
+        bytes_reclaimed = report.bytes_reclaimed,
+        failed = report.failed,
+        "reclaimed retired zccache version stores"
+    );
+    zccache_core::lifecycle::write_event_in_cache_root(
+        cache_dir,
+        zccache_core::lifecycle::EVENT_RETIRED_STORES_SWEPT,
+        serde_json::json!({
+            "stores_scanned": report.stores_scanned,
+            "stores_removed": report.stores_removed,
+            "stores_live": report.stores_live,
+            "files_removed": report.files_removed,
+            "bytes_reclaimed": report.bytes_reclaimed,
+            "failed": report.failed,
+        }),
+    );
+}
+
 /// Drop `ended_sessions` entries older than `ttl`. Returns how many went.
 ///
 /// Separate from the session reapers above because it ages on the daemon's own
@@ -1073,6 +1153,9 @@ pub(super) fn spawn_disk_maintenance(
             if state.shutdown_requested.load(Ordering::Acquire) {
                 break;
             }
+            // #1659: unconditional, every pass -- a retired store must not
+            // wait behind the current store's own pressure/full gating.
+            sweep_retired_version_stores(state.cache_dir.as_path(), runtime_handle.as_ref()).await;
             // #1165 Finding 1: reap before the pressure gate, not after the
             // disk pass. The `Ok(false)` branch below `continue`s when the
             // cache is under the preflight threshold, so a reap placed after

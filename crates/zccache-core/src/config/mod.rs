@@ -12,6 +12,7 @@ mod env_policy;
 pub mod namespace;
 pub mod paths;
 pub mod resolve;
+pub mod retired_store;
 
 use super::NormalizedPath;
 
@@ -95,6 +96,10 @@ pub use resolve::{
     resolve_cache_root_top_level, staging_dir_override, versioned_subdir,
     write_last_version_marker, write_last_version_marker_in, CacheRootSource, PruneReport,
     LAST_VERSION_MARKER,
+};
+pub use retired_store::{
+    file_link_count, sweep_retired_version_store, sweep_retired_version_stores_in,
+    RetiredStoreSweepReport,
 };
 
 /// Top-level configuration for zccache.

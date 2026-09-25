@@ -254,6 +254,91 @@ async fn host_owned_disk_maintenance_keeps_the_in_memory_members() {
     stop(&state);
 }
 
+// ─── #1659: retired version-store sweep ownership ────────────────────────
+
+/// Zccache-owned disk maintenance (`disk_maintenance_enabled == true`, i.e.
+/// `MaintenanceOwnership::Embedded`) reclaims a retired sibling `v<VERSION>`
+/// store on its very first pass -- the loop body runs immediately with no
+/// leading sleep, so no interval needs to elapse for this to happen.
+#[tokio::test]
+async fn zccache_owned_maintenance_reclaims_a_retired_version_store() {
+    let top = tempfile::tempdir().expect("top-level cache root");
+    let current = crate::core::config::versioned_subdir();
+    let cache_dir = crate::core::NormalizedPath::new(top.path().join(&current));
+    std::fs::create_dir_all(cache_dir.as_path()).expect("versioned cache dir");
+    let state = test_state(&cache_dir);
+
+    let retired = top.path().join("v0.0.1");
+    std::fs::create_dir_all(&retired).expect("retired store");
+    let victim = retired.join("blob.bin");
+    std::fs::write(&victim, b"stale retired-store artifact").expect("victim artifact");
+    // The disk loop waits for the startup artifact/depgraph loads, which the
+    // real daemon runs; this test has no loader, so mark them complete.
+    state.artifacts_loaded.store(true, Ordering::Release);
+    state.dep_graph_load_complete.store(true, Ordering::Release);
+
+    let started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .start();
+    assert!(started.started.contains(&TASK_DISK_MAINTENANCE));
+
+    let swept = wait_until(|| !victim.exists()).await;
+    stop(&state);
+    assert!(
+        swept,
+        "zccache-owned maintenance must reclaim a retired version store"
+    );
+    assert!(
+        !retired.exists(),
+        "the fully-reclaimed retired store directory must itself be removed"
+    );
+}
+
+/// Host-owned disk maintenance (`with_disk_maintenance(false)`, i.e.
+/// `MaintenanceOwnership::Host`) never spawns the disk loop at all, so it
+/// must not touch a retired version store either -- under host ownership the
+/// host is expected to call the public sweep API from its own scheduler.
+#[tokio::test]
+async fn host_owned_maintenance_does_not_touch_retired_version_stores() {
+    let top = tempfile::tempdir().expect("top-level cache root");
+    let current = crate::core::config::versioned_subdir();
+    let cache_dir = crate::core::NormalizedPath::new(top.path().join(&current));
+    std::fs::create_dir_all(cache_dir.as_path()).expect("versioned cache dir");
+    let state = test_state(&cache_dir);
+
+    let retired = top.path().join("v0.0.1");
+    std::fs::create_dir_all(&retired).expect("retired store");
+    let victim = retired.join("blob.bin");
+    std::fs::write(&victim, b"stale retired-store artifact").expect("victim artifact");
+    // The disk loop waits for the startup artifact/depgraph loads, which the
+    // real daemon runs; this test has no loader, so mark them complete.
+    state.artifacts_loaded.store(true, Ordering::Release);
+    state.dep_graph_load_complete.store(true, Ordering::Release);
+
+    let started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .with_disk_maintenance(false)
+    .start();
+    assert!(started.disk_maintenance.is_none());
+
+    // No disk loop exists to run the sweep at all; give the (absent) loop a
+    // beat it does not have before asserting nothing happened.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    stop(&state);
+    assert!(
+        victim.exists(),
+        "host-owned maintenance must not run the retired-store sweep itself"
+    );
+}
+
 // ─── zackees/soldr#2436 D5: batch-save decision core ─────────────────────
 
 #[test]
