@@ -71,8 +71,11 @@ pub struct ContextEntry {
     /// Keeping these beside the artifact key makes worktree rebasing,
     /// persistence, and concurrent publication observe one coherent unit.
     pub rustc_env_deps: Vec<(String, Option<ContentHash>)>,
-    /// When this entry was last accessed (for trimming).
-    pub last_accessed: Instant,
+    /// When this entry was last accessed (for trimming), as wall-clock Unix
+    /// milliseconds. Deliberately not an `Instant`: a monotonic clock cannot
+    /// represent times before boot, so persisted ages older than uptime would
+    /// collapse to zero on load (#1661).
+    pub last_accessed_unix_ms: u64,
     /// Current state.
     pub state: ContextState,
 }

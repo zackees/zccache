@@ -630,8 +630,14 @@ fn drop_time_checkpoint(state: &SharedState) {
         if let Some(parent) = depgraph_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        if crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path).is_ok() {
-            persisted.push("depgraph");
+        // zccache#1661: a failed save is logged and the drop carries on to the
+        // metadata snapshot; it must never abort the rest of the recovery.
+        match crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path) {
+            Ok(()) => persisted.push("depgraph"),
+            Err(error) => tracing::warn!(
+                path = %depgraph_path.display(),
+                "embedded drop: depgraph save failed, continuing: {error}"
+            ),
         }
     }
 

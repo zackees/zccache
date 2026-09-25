@@ -19,6 +19,7 @@ mod daemon_fingerprint_test;
 mod daemon_lineage_propagation;
 mod depgraph_depfile_integration_test;
 mod depgraph_drift_detection_test;
+mod depgraph_no_rkyv_guard;
 mod depgraph_stress_adversarial_test;
 mod depgraph_stress_concurrent_test;
 mod depgraph_stress_integration_test;

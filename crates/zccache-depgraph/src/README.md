@@ -17,6 +17,6 @@ Modules:
 - `scanner` / `search_paths` — include resolution.
 - `session` — per-session bookkeeping and stats.
 - `show_includes` — MSVC `/showIncludes` parsing.
-- `snapshot/` — disk persistence via rkyv.
+- `snapshot/` — disk persistence via bincode 1 (serde), bounded by a 7-day wall-clock TTL and a 256 MiB LRU size budget (zccache#1661).
 - `system_includes` — discovery of compiler-default include dirs.
 - `watcher_support` — `WatchSet` glue for the file watcher.

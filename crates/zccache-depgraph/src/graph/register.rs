@@ -3,11 +3,11 @@
 //! Carved out of `mod.rs` to keep each file under the 1k-LOC guard.
 
 use std::path::Path;
-use std::time::Instant;
 
 use zccache_core::NormalizedPath;
 
 use super::super::context::{compute_context_key_with, CompileContext, ContextKey};
+use super::super::snapshot::now_unix_ms;
 use super::{rebase_project_path, ContextEntry, ContextRegistration, ContextState, DepGraph};
 
 impl DepGraph {
@@ -164,7 +164,7 @@ impl DepGraph {
         let instance = super::ContextInstanceKey::new(key, &ctx.source_file, key_root.as_ref());
         let instance_key = instance.map_key();
         if let Some(mut existing) = self.contexts.get_mut(&instance_key) {
-            existing.last_accessed = Instant::now();
+            existing.last_accessed_unix_ms = now_unix_ms();
             let state = existing.state;
             return ContextRegistration {
                 key,
@@ -201,7 +201,7 @@ impl DepGraph {
                 artifact_key: None,
                 last_file_hashes: Vec::new(),
                 rustc_env_deps: Vec::new(),
-                last_accessed: Instant::now(),
+                last_accessed_unix_ms: now_unix_ms(),
                 state: ContextState::Cold,
             },
             |(_, mut candidate)| {
@@ -223,7 +223,7 @@ impl DepGraph {
                     .collect();
                 candidate.context = ctx.clone();
                 candidate.key_root = key_root.clone();
-                candidate.last_accessed = Instant::now();
+                candidate.last_accessed_unix_ms = now_unix_ms();
                 candidate
             },
         );

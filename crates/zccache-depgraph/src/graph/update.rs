@@ -9,6 +9,7 @@ use super::super::context::{
     ContextKey,
 };
 use super::super::scanner::ScanResult;
+use super::super::snapshot::now_unix_ms;
 use super::{
     collect_rustc_extern_hashes, depgraph_update_profile_enabled, hash_env_dep_value, ContextState,
     DepGraph,
@@ -78,7 +79,7 @@ impl DepGraph {
         entry.resolved_includes = scan_result.resolved;
         entry.unresolved_includes = scan_result.unresolved;
         entry.has_computed_includes = scan_result.has_computed;
-        entry.last_accessed = Instant::now();
+        entry.last_accessed_unix_ms = now_unix_ms();
         // DO NOT set state=Warm here — wait until all hashes succeed.
 
         // Compute artifact key — if any file is missing a hash, leave state

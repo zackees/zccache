@@ -10,6 +10,7 @@ use zccache_hash::ContentHash;
 
 use super::super::context::{CompileContext, ContextKey};
 use super::super::scanner::IncludeDirective;
+use super::super::snapshot::now_unix_ms;
 use super::{ContextEntry, ContextState, DepGraph, DepGraphStats, FileEntry};
 
 impl DepGraph {
@@ -46,7 +47,7 @@ impl DepGraph {
     /// keys from the disk eviction pass — do not have to round-trip
     /// through `ArtifactKey` construction.
     ///
-    /// `last_accessed` is intentionally NOT bumped — this is a passive
+    /// `last_accessed_unix_ms` is intentionally NOT bumped — this is a passive
     /// invalidation, and resetting access time would extend the
     /// context's `trim()` lifetime past its disk-evicted artifact.
     pub fn invalidate_artifact_keys(
@@ -86,7 +87,12 @@ impl DepGraph {
     /// Trim entries not accessed within the given duration.
     /// Returns the number of entries removed.
     pub fn trim(&self, max_age: Duration) -> usize {
-        let now = Instant::now();
+        self.trim_at(max_age, now_unix_ms())
+    }
+
+    /// Like [`Self::trim`], with an injected wall-clock `now` (Unix ms).
+    pub fn trim_at(&self, max_age: Duration, now_ms: u64) -> usize {
+        let max_age_ms = u64::try_from(max_age.as_millis()).unwrap_or(u64::MAX);
 
         // Two-pass eviction avoids holding DashMap shard locks while removing
         // entries. Under burst load `trim(Duration::ZERO)` can evict many
@@ -95,9 +101,10 @@ impl DepGraph {
             .contexts
             .iter()
             .filter_map(|entry| {
-                // Use saturating_duration_since to avoid panic if Instant is
-                // non-monotonic (documented edge case on some platforms/VMs).
-                if now.saturating_duration_since(entry.last_accessed) > max_age {
+                // Saturating: a timestamp in the future (clock skew) is age 0.
+                // A zero TTL expires everything, even entries stamped this ms.
+                let age = now_ms.saturating_sub(entry.last_accessed_unix_ms);
+                if max_age.is_zero() || age > max_age_ms {
                     Some(*entry.key())
                 } else {
                     None
@@ -105,9 +112,20 @@ impl DepGraph {
             })
             .collect();
 
+        self.evict_contexts(&expired)
+    }
+
+    /// Remove the given contexts and prune every index that referenced them
+    /// (equivalence classes, rustc externs, check-metadata compat, and file
+    /// entries no longer referenced by any context). Returns the number of
+    /// contexts actually removed.
+    ///
+    /// Shared by [`Self::trim`] (age-based) and the snapshot size budget's
+    /// LRU eviction (zccache#1661).
+    pub fn evict_contexts(&self, keys: &[ContextKey]) -> usize {
         let mut removed = 0;
-        for key in expired {
-            if self.contexts.remove(&key).is_some() {
+        for key in keys {
+            if self.contexts.remove(key).is_some() {
                 removed += 1;
             }
         }

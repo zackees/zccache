@@ -425,7 +425,16 @@ impl MaintenanceSchedule {
                                 last_saved_contexts = contexts;
                                 tracing::info!(contexts, reason, "depgraph save");
                             }
-                            Err(e) => tracing::warn!("periodic depgraph save failed: {e}"),
+                            // zccache#1661: a failed save is logged and the
+                            // loop keeps ticking. The next due tick retries;
+                            // propagating or panicking would end the task and
+                            // hand it to the supervisor for no benefit.
+                            Err(e) => tracing::warn!(
+                                path = %path.display(),
+                                contexts,
+                                reason,
+                                "periodic depgraph save failed; will retry next tick: {e}"
+                            ),
                         }
                     }
                 }

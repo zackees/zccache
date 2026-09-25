@@ -482,7 +482,14 @@ This is a deliberate design choice. Persisting the metadata cache would add comp
 
 ### Dep Graph Recovery
 
-The dep graph **is** persisted across daemon restarts (issue #262). At graceful shutdown, and again every 5 minutes while running, the daemon flushes the current `DepGraph` to `<cache_dir>/depgraph/depgraph.bin` using a rkyv zero-copy snapshot. The on-disk format carries a magic header (`ZCDG`) plus a `DEPGRAPH_VERSION` (currently 4) so old snapshots written by an incompatible build are rejected rather than misread.
+The dep graph **is** persisted across daemon restarts (issue #262). At graceful shutdown, and again every 5 minutes while running, the daemon flushes the current `DepGraph` to `<cache_dir>/depgraph/depgraph.bin`. Since #1661 the snapshot is **bincode 1 via serde** (rkyv was removed from the workspace): a `ZCDG` magic plus `DEPGRAPH_VERSION` (currently 8) header, followed by a body streamed with `bincode::serialize_into` / `deserialize_from`, so neither save nor load materializes the whole snapshot as one buffer. The write goes to a sibling tmp file that is atomically renamed over `depgraph.bin`, so a crash mid-save leaves the previous snapshot intact. Snapshots written by an incompatible build are rejected rather than misread.
+
+Snapshot growth is bounded two ways (#1660, #1661):
+
+- **TTL:** every context carries a persisted wall-clock `last_accessed` timestamp, so trimming survives daemon restarts. Contexts not accessed for **7 days** (default) are dropped.
+- **Size budget:** the snapshot is capped at **256 MiB** (default). Above it, least-recently-accessed contexts are evicted (LRU) until the graph fits.
+
+A failed save never panics the daemon: the error is logged and the previous snapshot stays in place. If a save task panics anyway, the save supervisor logs the panic payload.
 
 On startup, the daemon attempts to load the snapshot:
 
@@ -499,7 +506,7 @@ Reinterpreting a foreign-schema snapshot to "keep artifact-key resolution usable
 What the daemon does instead (`zccache_depgraph::quarantine`, driven by `daemon::depgraph_load::load_for_startup`):
 
 - A version-skewed `depgraph.bin` is **moved** to `depgraph.v<file_version>.bin`; bytes that failed validation go to the single-slot `depgraph.corrupt.bin` (forensics only, never read back).
-- A sidecar named for **this build's own** `DEPGRAPH_VERSION` is loaded back through the ordinary `classify_load` path — same magic/version/rkyv validation as the primary — so a cache root shared by two binaries with different schema versions keeps each side warm instead of destroying the other's snapshot on every switch.
+- A sidecar named for **this build's own** `DEPGRAPH_VERSION` is loaded back through the ordinary `classify_load` path — same magic/version/bincode validation as the primary — so a cache root shared by two binaries with different schema versions keeps each side warm instead of destroying the other's snapshot on every switch.
 - Sidecars are capped (`MAX_QUARANTINED_SNAPSHOTS`, oldest pruned first); the current build's sidecar is never a pruning candidate.
 
 The snapshot load runs in a background blocking task after the IPC endpoint and readiness lockfile are available, so daemon startup stays fast. Compile handlers gate their first depgraph registration/check on that background task completing; otherwise a warm daemon can race the empty default graph and classify the first lookup as `cold_skip` before the persisted graph is installed.
@@ -638,7 +645,7 @@ cache root via one of the helpers in `zccache::core::config`:
 | `.disk-maintenance-last-full-v1` | daemon — timestamp of the last successful full-age retention pass | exact effective cache root |
 | `tmp/` | daemon — recursively wiped on startup (orphaned in-progress writes) | `tmp_dir_from_cache_dir` |
 | `tmp/depfiles/<pid>-<instance>/` | daemon — compiler-injected depfiles and Windows response files (`*.rsp`) | `depfile_dir_from_cache_dir` |
-| `depgraph/depgraph.bin` | daemon — rkyv snapshot of the dep graph | `depgraph_file_path` |
+| `depgraph/depgraph.bin` | daemon — bincode 1 snapshot of the dep graph (#1661) | `depgraph_file_path` |
 | `logs/daemon.log[.<ts>]` | daemon — rolling event log | `log_dir_from_cache_dir` |
 | `logs/daemon-lifecycle[--namespace].log[.1]` | daemon + CLI — JSONL lifecycle events (spawn / shutdown / version mismatch) | `lifecycle::log_file_path` |
 | `logs/compile_journal.jsonl` + per-session `*.jsonl` | daemon — compile decisions | derives from `log_dir_from_cache_dir` |
