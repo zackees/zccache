@@ -65,7 +65,7 @@ impl EmbeddedDaemon {
 
     /// The artifact directory the running daemon actually serves, which is
     /// the version-scoped subdirectory of the configured cache root.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn test_artifact_dir(&self) -> crate::core::NormalizedPath {
         self.state.artifact_dir.clone()
     }
