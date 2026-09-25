@@ -371,8 +371,8 @@ pub fn load_from_file(path: &Path) -> Result<DepGraph, SnapshotError> {
 }
 
 /// [`load_from_file`] with an injectable clock and TTL. Contexts whose
-/// persisted wall-clock age exceeds `opts.ttl` are dropped; the rest have
-/// `last_accessed` restored from their persisted age.
+/// persisted wall-clock age exceeds `opts.ttl` are dropped; the rest keep
+/// their persisted wall-clock `last_accessed_unix_ms` verbatim.
 pub fn load_from_file_with(path: &Path, opts: &LoadOptions) -> Result<DepGraph, SnapshotError> {
     let file = std::fs::File::open(path)?;
     let file_len = file.metadata()?.len();
@@ -427,7 +427,7 @@ pub fn load_from_file_with(path: &Path, opts: &LoadOptions) -> Result<DepGraph, 
         .retain(|c| opts.now_unix_ms.saturating_sub(c.last_accessed_unix_ms) <= ttl_ms);
     let expired_any = snapshot.contexts.len() != before;
 
-    let graph = DepGraph::from_snapshot_at(snapshot, opts.now_unix_ms);
+    let graph = DepGraph::from_snapshot(snapshot);
     if expired_any {
         // Prune file entries and indexes only the expired contexts referenced.
         graph.evict_contexts(&[]);

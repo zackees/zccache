@@ -472,11 +472,10 @@ fn trim_removes_old_entries() {
     };
     graph.update(&key, scan, dummy_hash);
 
-    // Sleep briefly so the entry's last_accessed is older than Duration::ZERO.
-    std::thread::sleep(Duration::from_millis(5));
-
-    // Trim with max_age=0: everything not accessed this exact instant is removed.
-    let removed = graph.trim(Duration::ZERO);
+    // Pin "now" a few seconds past the access stamp instead of sleeping, so
+    // the entry is strictly older than max_age=0.
+    let now_ms = graph.contexts.get(&key).unwrap().last_accessed_unix_ms + 5_000;
+    let removed = graph.trim_at(Duration::ZERO, now_ms);
     assert_eq!(removed, 1);
     assert_eq!(graph.stats().context_count, 0);
 }
@@ -810,7 +809,7 @@ fn warm_context_with_no_artifact_returns_cold_on_check() {
             artifact_key: None,
             last_file_hashes: Vec::new(),
             rustc_env_deps: Vec::new(),
-            last_accessed: Instant::now(),
+            last_accessed_unix_ms: crate::snapshot::now_unix_ms(),
             state: ContextState::Warm,
         },
     );

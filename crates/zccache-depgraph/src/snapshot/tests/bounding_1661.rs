@@ -15,6 +15,7 @@ use super::super::super::snapshot::{
     IncludeDirectiveSnapshot, LoadOptions, RustcEnvDepSnapshot, RustcExternSnapshot, SaveOptions,
     SnapshotError, SnapshotStats, DEPGRAPH_MAGIC, DEPGRAPH_VERSION, GC_TTL, HEADER_SIZE,
 };
+use super::super::super::snapshot::now_unix_ms;
 use super::{make_ctx, test_path};
 
 const HOUR_MS: u64 = 3_600_000;
@@ -116,7 +117,7 @@ fn every_field_round_trips_through_streaming_bincode() {
 fn every_field_round_trips_through_the_file() {
     let dir = TempDir::new().unwrap();
     let path = test_path(&dir);
-    let graph = DepGraph::from_snapshot_at(full_snapshot(), T0);
+    let graph = DepGraph::from_snapshot(full_snapshot());
     save_to_file_with(&graph, &path, &save_opts(T0)).unwrap();
 
     let data = std::fs::read(&path).unwrap();
@@ -130,15 +131,9 @@ fn every_field_round_trips_through_the_file() {
     let mut contexts = back.contexts;
     contexts.sort_by_key(|c| c.context_key);
     let expected = full_snapshot().contexts;
-    // Persisted access times must match within the Instant round-trip slop.
+    // Access times are wall-clock and persisted verbatim: exact equality.
     for (got, want) in contexts.iter().zip(expected.iter()) {
-        assert!(
-            got.last_accessed_unix_ms
-                .abs_diff(want.last_accessed_unix_ms)
-                < 5_000
-        );
-        let mut got = got.clone();
-        got.last_accessed_unix_ms = want.last_accessed_unix_ms;
+        assert_eq!(got.last_accessed_unix_ms, want.last_accessed_unix_ms);
         // Paths are normalized to the host separator on load (backslashes
         // on Windows), so compare with separators folded to '/'.
         let got_dbg = format!("{got:?}").replace("\\\\", "/");
@@ -151,7 +146,7 @@ fn every_field_round_trips_through_the_file() {
 fn truncated_file_is_err_not_panic() {
     let dir = TempDir::new().unwrap();
     let path = test_path(&dir);
-    let graph = DepGraph::from_snapshot_at(full_snapshot(), T0);
+    let graph = DepGraph::from_snapshot(full_snapshot());
     save_to_file_with(&graph, &path, &save_opts(T0)).unwrap();
 
     let data = std::fs::read(&path).unwrap();
@@ -218,29 +213,30 @@ fn restart_survives_trim_idle_context_is_dropped() {
     let path = test_path(&dir);
     let graph = DepGraph::new();
     graph.register(make_ctx("/src/idle.cpp"));
-    save_to_file_with(&graph, &path, &save_opts(T0)).unwrap();
+    let t = now_unix_ms();
+    save_to_file_with(&graph, &path, &save_opts(t)).unwrap();
 
-    let loaded = load_from_file_with(&path, &load_opts(T0 + 8 * DAY_MS)).unwrap();
-    loaded.trim(GC_TTL);
+    let loaded = load_from_file_with(&path, &load_opts(t + 8 * DAY_MS)).unwrap();
+    loaded.trim_at(GC_TTL, t + 8 * DAY_MS);
     assert_eq!(loaded.stats().context_count, 0);
     assert_eq!(loaded.stats().file_count, 0);
 }
 
-/// The restored monotonic age is the persisted wall-clock age, so an
-/// ordinary `trim` after load sees it.
+/// The restored access time is the persisted wall-clock time, so a `trim`
+/// after load sees the full age.
 #[test]
 fn restored_age_is_visible_to_trim() {
     let dir = TempDir::new().unwrap();
     let path = test_path(&dir);
     let graph = DepGraph::new();
     graph.register(make_ctx("/src/a.cpp"));
-    save_to_file_with(&graph, &path, &save_opts(T0)).unwrap();
+    let t = now_unix_ms();
+    save_to_file_with(&graph, &path, &save_opts(t)).unwrap();
 
-    let loaded = load_from_file_with(&path, &load_opts(T0 + 120_000)).unwrap();
+    let later = t + 3 * DAY_MS;
+    let loaded = load_from_file_with(&path, &load_opts(later)).unwrap();
     assert_eq!(loaded.stats().context_count, 1);
-    // 2 minutes, not hours: `Instant::checked_sub` must reach back that far
-    // even on a freshly booted Windows runner.
-    assert_eq!(loaded.trim(Duration::from_secs(60)), 1);
+    assert_eq!(loaded.trim_at(Duration::from_secs(2 * 86_400), later), 1);
 }
 
 #[test]
@@ -249,10 +245,11 @@ fn recent_context_survives_load_and_trim() {
     let path = test_path(&dir);
     let graph = DepGraph::new();
     let key = graph.register(make_ctx("/src/recent.cpp"));
-    save_to_file_with(&graph, &path, &save_opts(T0)).unwrap();
+    let t = now_unix_ms();
+    save_to_file_with(&graph, &path, &save_opts(t)).unwrap();
 
-    let loaded = load_from_file_with(&path, &load_opts(T0 + HOUR_MS)).unwrap();
-    loaded.trim(GC_TTL);
+    let loaded = load_from_file_with(&path, &load_opts(t + HOUR_MS)).unwrap();
+    loaded.trim_at(GC_TTL, t + HOUR_MS);
     assert_eq!(loaded.stats().context_count, 1);
     assert!(loaded.get_state(&key).is_some());
 }
@@ -264,10 +261,55 @@ fn future_timestamp_is_clamped() {
     let path = test_path(&dir);
     let graph = DepGraph::new();
     graph.register(make_ctx("/src/skew.cpp"));
-    save_to_file_with(&graph, &path, &save_opts(T0 + DAY_MS)).unwrap();
+    let t = now_unix_ms();
+    save_to_file_with(&graph, &path, &save_opts(t)).unwrap();
 
-    let loaded = load_from_file_with(&path, &load_opts(T0)).unwrap();
-    assert_eq!(loaded.trim(Duration::from_secs(60)), 0);
+    // "now" a day before the stored access time.
+    let loaded = load_from_file_with(&path, &load_opts(t - DAY_MS)).unwrap();
+    assert_eq!(loaded.stats().context_count, 1);
+    assert_eq!(loaded.trim_at(Duration::from_secs(60), t - DAY_MS), 0);
+}
+
+/// RED before the wall-clock fix: load rebuilt each age as
+/// `Instant::now() - age`, and a monotonic clock cannot reach back before
+/// boot, so any context older than machine uptime came back with age zero
+/// and survived the TTL after every reboot.
+#[test]
+fn context_older_than_uptime_keeps_age_and_is_trimmed() {
+    let dir = TempDir::new().unwrap();
+    let path = test_path(&dir);
+    let t = now_unix_ms();
+    let old = t - 30 * DAY_MS;
+    let recent = t - HOUR_MS;
+    let snap = DepGraphSnapshot {
+        files: Vec::new(),
+        contexts: vec![ctx_snap(1, old), ctx_snap(2, recent)],
+        stats: SnapshotStats {
+            saved_at_epoch_secs: t / 1000,
+            file_count: 0,
+            context_count: 2,
+        },
+    };
+    save_to_file_with(&DepGraph::from_snapshot(snap), &path, &save_opts(t)).unwrap();
+
+    // Load without the TTL filter so the age itself is observable.
+    let opts = LoadOptions {
+        now_unix_ms: t,
+        ttl: Duration::from_secs(365 * 86_400),
+    };
+    let loaded = load_from_file_with(&path, &opts).unwrap();
+    let mut ages: Vec<(u8, u64)> = loaded
+        .to_snapshot_at(t)
+        .contexts
+        .iter()
+        .map(|c| (c.context_key[0], t - c.last_accessed_unix_ms))
+        .collect();
+    ages.sort_unstable();
+    assert_eq!(ages, vec![(1, 30 * DAY_MS), (2, HOUR_MS)]);
+
+    assert_eq!(loaded.trim(GC_TTL), 1);
+    assert!(loaded.get_state(&ContextKey::from_raw([1; 32])).is_none());
+    assert!(loaded.get_state(&ContextKey::from_raw([2; 32])).is_some());
 }
 
 /// Over budget: least-recently-used contexts go, newest stay, file fits.
@@ -279,11 +321,7 @@ fn size_budget_evicts_lru_and_keeps_newest() {
     let make_snapshot = || DepGraphSnapshot {
         files: Vec::new(),
         contexts: (0..n)
-            // One-second steps: ages are rebuilt as `Instant::now() - age`,
-            // and on Windows `Instant` counts from boot, so a freshly booted
-            // runner may not represent ages of tens of minutes (checked_sub
-            // fails, every age collapses to "now", and LRU order is lost).
-            .map(|i| ctx_snap(i, T0 - u64::from(n - i) * 1_000))
+            .map(|i| ctx_snap(i, T0 - u64::from(n - i) * HOUR_MS))
             .collect(),
         stats: SnapshotStats {
             saved_at_epoch_secs: T0 / 1000,
@@ -292,12 +330,12 @@ fn size_budget_evicts_lru_and_keeps_newest() {
         },
     };
 
-    let unbounded = DepGraph::from_snapshot_at(make_snapshot(), T0);
+    let unbounded = DepGraph::from_snapshot(make_snapshot());
     save_to_file_with(&unbounded, &path, &save_opts(T0)).unwrap();
     let full_len = std::fs::metadata(&path).unwrap().len();
 
     let budget = full_len / 2;
-    let graph = DepGraph::from_snapshot_at(make_snapshot(), T0);
+    let graph = DepGraph::from_snapshot(make_snapshot());
     let opts = SaveOptions {
         now_unix_ms: T0,
         budget_bytes: budget,

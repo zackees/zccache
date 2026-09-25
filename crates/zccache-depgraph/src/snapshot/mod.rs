@@ -17,7 +17,7 @@
 //!   behavioral.
 
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use rayon::prelude::*;
@@ -163,19 +163,6 @@ pub fn now_unix_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// Map a persisted wall-clock access time back onto the monotonic clock.
-///
-/// Clock skew (stored time in the future) clamps the age to zero. If the
-/// monotonic clock cannot represent an instant that far back (e.g. shortly
-/// after boot on some platforms) the context is treated as just accessed;
-/// persistence drops contexts older than the TTL before reaching here, so
-/// this fallback only ever applies to within-TTL contexts.
-pub(crate) fn instant_from_unix_ms(stored_unix_ms: u64, now_unix_ms: u64) -> Instant {
-    let age = Duration::from_millis(now_unix_ms.saturating_sub(stored_unix_ms));
-    let now = Instant::now();
-    now.checked_sub(age).unwrap_or(now)
-}
-
 // ---------------------------------------------------------------------------
 // Conversion: DepGraph <-> Snapshot
 // ---------------------------------------------------------------------------
@@ -186,11 +173,10 @@ impl DepGraph {
         self.to_snapshot_at(now_unix_ms())
     }
 
-    /// Like [`Self::to_snapshot`], with an injected wall-clock `now` used to
-    /// convert each context's monotonic `last_accessed` into a persisted
-    /// Unix-millisecond timestamp.
+    /// Like [`Self::to_snapshot`], with an injected wall-clock `now` stamped
+    /// as `saved_at_epoch_secs`. Context access times are already wall-clock
+    /// Unix milliseconds and are persisted verbatim.
     pub fn to_snapshot_at(&self, now_unix_ms: u64) -> DepGraphSnapshot {
-        let now_instant = Instant::now();
         let files: Vec<FileEntrySnapshot> = self
             .files_iter()
             .map(|entry| {
@@ -270,14 +256,7 @@ impl DepGraph {
                         ContextState::Warm => 1,
                         ContextState::Stale => 2,
                     },
-                    last_accessed_unix_ms: now_unix_ms.saturating_sub(
-                        u64::try_from(
-                            now_instant
-                                .saturating_duration_since(ctx.last_accessed)
-                                .as_millis(),
-                        )
-                        .unwrap_or(u64::MAX),
-                    ),
+                    last_accessed_unix_ms: ctx.last_accessed_unix_ms,
                 }
             })
             .collect();
@@ -293,15 +272,11 @@ impl DepGraph {
         }
     }
 
-    /// Reconstruct a `DepGraph` from a deserialized snapshot.
+    /// Reconstruct a `DepGraph` from a deserialized snapshot. Each context's
+    /// persisted wall-clock `last_accessed_unix_ms` is restored verbatim, so
+    /// ages survive restarts and reboots without passing through a monotonic
+    /// clock that cannot represent pre-boot times (#1661).
     pub fn from_snapshot(snap: DepGraphSnapshot) -> Self {
-        Self::from_snapshot_at(snap, now_unix_ms())
-    }
-
-    /// Like [`Self::from_snapshot`], with an injected wall-clock `now` used to
-    /// restore each context's `last_accessed` from its persisted
-    /// `last_accessed_unix_ms` (so ages survive restarts).
-    pub fn from_snapshot_at(snap: DepGraphSnapshot, now_unix_ms: u64) -> Self {
         let files: DashMap<NormalizedPath, FileEntry> = DashMap::new();
         snap.files.into_par_iter().for_each(|f| {
             let path = NormalizedPath::from(f.path.as_str());
@@ -397,7 +372,7 @@ impl DepGraph {
                     .map(|(p, h)| (NormalizedPath::from(p.as_str()), ContentHash::from_bytes(h)))
                     .collect(),
                 rustc_env_deps: env_deps,
-                last_accessed: instant_from_unix_ms(c.last_accessed_unix_ms, now_unix_ms),
+                last_accessed_unix_ms: c.last_accessed_unix_ms,
                 state: match c.state {
                     0 => ContextState::Cold,
                     1 => ContextState::Warm,

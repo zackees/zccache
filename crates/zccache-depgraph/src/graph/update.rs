@@ -4,6 +4,7 @@
 
 use std::time::Instant;
 
+use super::super::snapshot::now_unix_ms;
 use super::super::context::{
     compute_rustc_artifact_key_with_root_with, fold_rustc_env_deps_into_artifact_key, ArtifactKey,
     ContextKey,
@@ -78,7 +79,7 @@ impl DepGraph {
         entry.resolved_includes = scan_result.resolved;
         entry.unresolved_includes = scan_result.unresolved;
         entry.has_computed_includes = scan_result.has_computed;
-        entry.last_accessed = Instant::now();
+        entry.last_accessed_unix_ms = now_unix_ms();
         // DO NOT set state=Warm here — wait until all hashes succeed.
 
         // Compute artifact key — if any file is missing a hash, leave state
