@@ -26,9 +26,10 @@ pub(super) fn versioned_top_level(cache_dir: &Path) -> Option<(NormalizedPath, S
 }
 
 /// Bytes that removing the retired sibling stores of `top_level` would
-/// actually free: allocated bytes of `nlink == 1` regular files only.
-/// Symlinks/reparse points are never followed; a file whose link count is
-/// unknown is treated as shared.
+/// actually free: allocated bytes of `nlink == 1` regular files whose blocks
+/// are not reflink/snapshot shared (#1673). Symlinks/reparse points are
+/// never followed; a file whose link count or block sharing is unknown is
+/// treated as shared.
 pub(super) fn retired_store_bytes(top_level: &Path, current: &str) -> u64 {
     let Ok(entries) = std::fs::read_dir(top_level) else {
         return 0;
@@ -71,7 +72,7 @@ fn unshared_tree_bytes(root: &Path) -> u64 {
         }
         if metadata.is_dir() {
             total = total.saturating_add(unshared_tree_bytes(&path));
-        } else if metadata.is_file() && crate::core::config::file_link_count(&path) == Some(1) {
+        } else if metadata.is_file() && crate::core::config::file_frees_space_on_removal(&path) {
             total = total.saturating_add(crate::platform::fs::volume::allocated_bytes(
                 &path, &metadata,
             ));

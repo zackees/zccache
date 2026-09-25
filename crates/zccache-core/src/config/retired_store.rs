@@ -109,6 +109,23 @@ pub fn is_older_version_dir(name: &str, current: &str) -> bool {
     }
 }
 
+/// True when removing `path` provably frees its space: it is the last hard
+/// link (`nlink == 1`) and none of its blocks are shared. A reflink restore
+/// into `target/` (Windows ReFS, btrfs, XFS, APFS) leaves the cache file at
+/// `nlink == 1` while sharing every block, so the link count alone
+/// over-counts (#1673). Unknown sharing never counts.
+#[must_use]
+pub fn file_frees_space_on_removal(path: &Path) -> bool {
+    file_link_count(path) == Some(1) && blocks_are_exclusive(path)
+}
+
+fn blocks_are_exclusive(path: &Path) -> bool {
+    matches!(
+        kernal_api::platform::fs::extent_sharing(path),
+        Ok(kernal_api::platform::fs::ExtentSharing::Exclusive)
+    )
+}
+
 /// Outcome of a retired-store sweep — either [`sweep_retired_version_store`]
 /// on one store, or the summed totals from
 /// [`sweep_retired_version_stores_in`] across every retired sibling.
@@ -186,7 +203,9 @@ pub fn file_link_count(path: &Path) -> Option<u64> {
 ///    `now - max_age`, whatever its link count. In `Pressure` mode
 ///    `nlink == 1` is removed eagerly; `nlink > 1` or unknown still needs
 ///    the age gate. Bytes are only credited to `bytes_reclaimed` when
-///    removal provably frees space (`nlink == 1`).
+///    removal provably frees space: `nlink == 1` and
+///    `kernal_api::platform::fs::extent_sharing` reports `Exclusive` (a
+///    reflinked or snapshot-shared file frees nothing).
 /// 6. Directories that end up empty are removed bottom-up. If nothing but
 ///    `.writer.lock` / `.last-active` remains in the store root, the whole
 ///    store directory is removed (lock released first, since an open handle
@@ -444,6 +463,8 @@ fn sweep_regular_file(
     };
     let len = metadata.len();
     let link_count = file_link_count(path);
+    // Observed before removal, while the file still exists.
+    let frees_space = link_count == Some(1) && blocks_are_exclusive(path);
     let should_delete = match (mode, link_count) {
         (RetiredSweepMode::Pressure, Some(1)) => true,
         _ => is_older_than(&metadata, now, max_age),
@@ -455,12 +476,7 @@ fn sweep_regular_file(
         Ok(()) => {
             report.files_removed += 1;
             // Only credit bytes when removal provably frees space: the
-            // last link (nlink == 1). Shared or unknown counts free nothing
-            // we can prove, so they are never counted. Reflink (shared
-            // extent) sharing cannot be detected portably and
-            // `kernal_api::platform::fs` exposes no shared-extent query, so
-            // a reflinked nlink==1 file may be over-credited.
-            let frees_space = link_count == Some(1);
+            // last link with no shared or unknown-sharing extents.
             if frees_space {
                 report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(len);
             }

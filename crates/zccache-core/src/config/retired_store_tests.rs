@@ -549,3 +549,31 @@ fn is_older_version_dir_compares_numerically() {
     assert!(!is_older_version_dir("v1.0", "v2.0.0"));
     assert!(!is_older_version_dir("v1.0.0.0", "v2.0.0"));
 }
+
+/// #1673: a cache file restored into `target/` by reflink has `nlink == 1`
+/// but shares its blocks with the restored copy, so removing it frees
+/// nothing. The sweep removes it and credits no bytes. Runs its assertion
+/// only where the temp volume can reflink (btrfs, XFS, APFS, ReFS).
+#[test]
+fn issue_1673_reflinked_entry_credits_no_reclaimed_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("v1.0.0");
+    let cached = store.join("artifacts/a.bin");
+    write_file(&cached, &[7_u8; 256 * 1024]);
+    let restored = tmp.path().join("target/a.bin");
+    std::fs::create_dir_all(restored.parent().unwrap()).unwrap();
+    if kernal_api::platform::fs::reflink_file(&cached, &restored).is_err() {
+        return;
+    }
+    age_file(&cached, 30 * DAY);
+
+    let report = sweep_retired_version_store(
+        &store,
+        MAX_AGE,
+        SystemTime::now(),
+        RetiredSweepMode::Routine,
+    );
+    assert_eq!(report.files_removed, 1);
+    assert_eq!(report.bytes_reclaimed, 0);
+    assert_eq!(std::fs::read(&restored).unwrap().len(), 256 * 1024);
+}
