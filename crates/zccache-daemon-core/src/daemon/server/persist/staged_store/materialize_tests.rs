@@ -156,3 +156,60 @@ fn materialized_executable_runs_while_a_child_is_between_fork_and_exec() {
     let output = spawner.join().unwrap().unwrap();
     assert!(output.status.success());
 }
+
+/// zackees/soldr#3350: the spawn/materialize lock only excludes spawns that
+/// take it. Embedded in soldr's daemon, zccache shares the process with code
+/// that forks under a different lock or none, and such a child still
+/// inherits the copy's write descriptor across the rename. Materialization
+/// must not return until no process holds the published output open for
+/// writing, whoever forked it.
+#[cfg(target_os = "linux")]
+#[test]
+fn materialized_executable_runs_after_a_foreign_fork_inherits_the_copy() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("build_script_build-source");
+    let destination = dir.path().join("build-script-build");
+    fs::write(&source, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let hook = StagedHookGuard::arm(&destination, StagedHookPoint::MaterializeTemporaryOpen);
+    let source_for_thread = source.clone();
+    let destination_for_thread = destination.clone();
+    let materialize = std::thread::spawn(move || {
+        materialize_independent_with_stats(&source_for_thread, &destination_for_thread)
+    });
+    hook.wait_until_reached();
+
+    // A spawner outside zccache's lock forks while the copy's write
+    // descriptor is open; its fork-to-exec window is stretched to 500 ms.
+    let spawner = std::thread::spawn(|| {
+        let mut cmd = std::process::Command::new("true");
+        // SAFETY: the closure only sleeps.
+        unsafe {
+            cmd.pre_exec(|| {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                Ok(())
+            });
+        }
+        cmd.spawn().and_then(std::process::Child::wait_with_output)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    hook.resume();
+    materialize.join().unwrap().unwrap();
+
+    let status = std::process::Command::new(&destination)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "published output {} must be executable once materialization \
+                 returns, even after a foreign fork: {error}",
+                destination.display()
+            )
+        });
+    assert!(status.success());
+    assert!(spawner.join().unwrap().unwrap().status.success());
+}

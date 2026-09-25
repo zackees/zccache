@@ -86,7 +86,7 @@ rkyv = "0.8"
 # Exact pin: kernal-api is below 1.0, so every consumer pins the same published
 # release (kernal-api COMPATIBILITY.md). 0.1.17 carries every facade surface
 # this workspace uses; no local path or patch override remains.
-kernal-api = { version = "=0.1.17", default-features = false }
+kernal-api = { version = "=0.1.20", default-features = false }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }
