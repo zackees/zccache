@@ -149,8 +149,24 @@ fn materialize_verified_cached_file_observed(
     // A legacy cache-file hit can restore a Cargo build-script executable. Hold
     // the same exclusion as staged delivery through every materialization tier:
     // otherwise a daemon child can inherit a write descriptor and Cargo may
-    // fail to exec its hard-linked alias with ETXTBSY (#1597).
-    let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
+    // fail to exec its hard-linked alias with ETXTBSY (#1597). A spawn outside
+    // that lock is waited out once the guard is released (soldr#3350).
+    let result = {
+        let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
+        materialize_verified_cached_file_tiers(out_path, cache_file, delivery, force_observation)
+    };
+    if result.is_ok() {
+        crate::daemon::spawn_exclusion::await_publishable(out_path);
+    }
+    result
+}
+
+fn materialize_verified_cached_file_tiers(
+    out_path: &Path,
+    cache_file: &Path,
+    delivery: crate::compiler::DeliveryPolicy,
+    force_observation: bool,
+) -> std::io::Result<StagedMaterializationStats> {
     let staged = is_staged_artifact_path(cache_file);
     let observe = force_observation || staged;
     let observed = |reflink_count, hardlink_count, copy_count, copy_bytes| {

@@ -52,3 +52,40 @@ pub(crate) fn materialize_exclusive() -> RwLockWriteGuard<'static, ()> {
         .write()
         .unwrap_or_else(PoisonError::into_inner)
 }
+
+/// Longest a publisher waits for a foreign child to exec. A fork-to-exec
+/// window is normally microseconds; this bounds a pathological one.
+const PUBLISH_WRITER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Return only once no process holds the just-published `path` open for
+/// writing (zackees/soldr#3350).
+///
+/// The lock above excludes only spawns that take it. Embedded in soldr's
+/// daemon, zccache shares its process with code that forks under another
+/// lock or none, and such a child inherits the copy's write descriptor
+/// across the rename. Waiting here, after the exclusive guard is released,
+/// covers every spawner. Best effort: a timeout or an unobservable host is
+/// logged, never an error.
+pub(crate) fn await_publishable(path: &std::path::Path) {
+    use crate::platform::fs::writers::{await_no_writers, WriterWait};
+
+    match await_no_writers(path, PUBLISH_WRITER_TIMEOUT) {
+        Ok(WriterWait::Clear { waited }) if !waited.is_zero() => tracing::info!(
+            event = "materialize_awaited_inherited_writer",
+            path = %path.display(),
+            waited_us = waited.as_micros() as u64,
+            "a forked child held the published output open for writing"
+        ),
+        Ok(WriterWait::TimedOut) => tracing::warn!(
+            event = "materialize_inherited_writer_timeout",
+            path = %path.display(),
+            "the published output is still open for writing by another process"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::debug!(
+            event = "materialize_writer_probe_failed",
+            path = %path.display(),
+            %error
+        ),
+    }
+}

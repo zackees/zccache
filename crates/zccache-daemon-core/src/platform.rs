@@ -37,6 +37,10 @@ pub(crate) mod fs {
         pub(crate) use zccache_core::path::strip_verbatim_prefix;
     }
 
+    pub(crate) mod writers {
+        pub(crate) use kernal_api::platform::fs::{await_no_writers, WriterWait};
+    }
+
     pub(crate) mod permissions {
         #[cfg(test)]
         pub(crate) use kernal_api::platform::fs::make_executable;

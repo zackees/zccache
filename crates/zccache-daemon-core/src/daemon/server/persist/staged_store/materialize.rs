@@ -87,7 +87,8 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
     // with `Text file busy` for the child's fork-to-exec window even though
     // this process closed its descriptor before publishing (zccache#1562).
     // The exclusive guard below keeps every daemon child spawn out of the
-    // open-write-close + rename window; see `daemon::spawn_exclusion`.
+    // open-write-close + rename window; see `daemon::spawn_exclusion`. A
+    // spawn outside that lock is waited out after publishing (soldr#3350).
     let temporary = super::temporary_path(destination, "materialize");
     let result = (|| {
         let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
@@ -117,8 +118,11 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
             copy_bytes,
         })
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    match &result {
+        Ok(_) => crate::daemon::spawn_exclusion::await_publishable(destination),
+        Err(_) => {
+            let _ = fs::remove_file(&temporary);
+        }
     }
     result
 }
