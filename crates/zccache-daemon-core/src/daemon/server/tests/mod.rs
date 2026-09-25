@@ -12,6 +12,10 @@ mod client_env;
 mod compiler_hash;
 mod connection_disconnect;
 mod connection_self_profile;
+#[cfg(target_os = "linux")]
+mod cross_worktree_depfile;
+#[cfg(target_os = "linux")]
+mod cross_worktree_embedded_env;
 mod deferred_cold_path;
 mod depgraph_reset_reachability;
 mod depgraph_save_failure;

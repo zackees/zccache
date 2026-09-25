@@ -49,6 +49,9 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     /// Physical OUT_DIR of the current rustc request; used only to rebase
     /// dep-info after a cross-worktree hit, never to choose artifact bytes.
     pub(super) current_rustc_out_dir: Option<CertifiedOutDir>,
+    /// The requesting compile's key root, which replaces the logical root
+    /// in a delivered C/C++ user depfile. `None` for rustc.
+    pub(super) depfile_key_root: Option<NormalizedPath>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -75,6 +78,7 @@ pub(super) struct OwnedCachedHitMaterializeRequest {
     pub(super) secondary_output_dir: NormalizedPath,
     pub(super) current_depfile_dest: Option<NormalizedPath>,
     pub(super) current_rustc_out_dir: Option<CertifiedOutDir>,
+    pub(super) depfile_key_root: Option<NormalizedPath>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -104,6 +108,7 @@ pub(super) async fn materialize_cached_compile_hit_offloaded(
                 secondary_output_dir: request.secondary_output_dir,
                 current_depfile_dest: request.current_depfile_dest,
                 current_rustc_out_dir: request.current_rustc_out_dir,
+                depfile_key_root: request.depfile_key_root,
                 compile_start: request.compile_start,
                 hit_label: request.hit_label,
                 cached_error_label: request.cached_error_label,
@@ -160,6 +165,7 @@ pub(super) fn materialize_cached_compile_hit(
         secondary_output_dir,
         current_depfile_dest,
         current_rustc_out_dir,
+        depfile_key_root,
         compile_start,
         hit_label,
         cached_error_label,
@@ -444,7 +450,9 @@ pub(super) fn materialize_cached_compile_hit(
     let rehydrate_stderr = contains_staged_output_marker(stderr.as_slice());
     if !depfile_targets.is_empty() || rehydrate_stdout || rehydrate_stderr {
         for target in depfile_targets {
-            if let Err(error) = rehydrate_logical_depfile(target.as_path(), &targets) {
+            if let Err(error) = rehydrate_logical_depfile(target.as_path(), &targets)
+                .and_then(|()| rehydrate_depfile_root_file(target, depfile_key_root.as_ref()))
+            {
                 write_session_log(
                     &state.sessions,
                     sid,

@@ -9,8 +9,8 @@ use super::super::miss_profile::{
     emit_cc_miss_profile, emit_rust_miss_profile, CcMissProfile, RustMissProfile,
 };
 use super::super::miss_store::{
-    preserve_staged_depfile_for_persistence, store_miss_artifact, MissArtifactStoreRequest,
-    MissArtifactStoreStats,
+    canonicalize_captured_depfile_root, preserve_staged_depfile_for_persistence,
+    store_miss_artifact, MissArtifactStoreRequest, MissArtifactStoreStats,
 };
 
 #[path = "store_outcome_scan.rs"]
@@ -28,6 +28,9 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) staged_plan: Option<StagedCompilePlan>,
     pub(super) synchronous_persist: bool,
     pub(super) cwd_path: &'a NormalizedPath,
+    /// Root the context registered under; the stored user depfile names it
+    /// logically so sibling worktrees can share the entry.
+    pub(super) depfile_key_root: &'a NormalizedPath,
     pub(super) ctx: &'a CompileContext,
     pub(super) compilation: &'a crate::compiler::CacheableCompilation,
     pub(super) dependency_mode: DependencyDiscoveryMode,
@@ -150,6 +153,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         mut staged_plan,
         synchronous_persist,
         cwd_path,
+        depfile_key_root,
         ctx,
         compilation,
         dependency_mode,
@@ -363,6 +367,28 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         }
     } else {
         None
+    };
+    let user_depfile_persist_temp = if is_rustc {
+        user_depfile_persist_temp
+    } else {
+        match canonicalize_captured_depfile_root(
+            &mut user_depfile_capture,
+            user_depfile_persist_temp,
+            depfile_key_root.as_path(),
+            state.depfile_tmpdir.as_path(),
+        ) {
+            Ok(temp) => temp,
+            Err(error) => {
+                if let Some(plan) = staged_plan.as_ref() {
+                    let _ = plan.cleanup();
+                }
+                return Some(Response::Error {
+                    message: format!(
+                        "failed to store the user depfile with a logical worktree root: {error}"
+                    ),
+                });
+            }
+        }
     };
     // Resolve env-dep values from the request env NOW (the borrow doesn't
     // survive into the store task): the compile ran under exactly this env.
