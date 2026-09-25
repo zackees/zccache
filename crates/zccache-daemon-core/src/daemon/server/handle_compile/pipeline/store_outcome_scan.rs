@@ -14,6 +14,8 @@ pub(super) struct CompileScanRequest {
     pub(super) compiler_dependency_scan: Option<crate::depgraph::ScanResult>,
     pub(super) include_search: crate::depgraph::IncludeSearchPaths,
     pub(super) dependency_mode: DependencyDiscoveryMode,
+    /// Daemon-wide include-scan memo (zccache#1669).
+    pub(super) scan_cache: std::sync::Arc<crate::depgraph::scanner::RecursiveScanCache>,
 }
 
 pub(super) struct CompileScanCollection {
@@ -52,6 +54,7 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
         compiler_dependency_scan,
         include_search,
         dependency_mode,
+        scan_cache,
     } = req;
 
     if is_rustc {
@@ -122,7 +125,11 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                     if matches!(depfile_strategy, DepfileStrategy::Injected { .. }) {
                         let _ = std::fs::remove_file(path);
                     }
-                    crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                    crate::depgraph::scanner::scan_recursive_cached(
+                        &source_path,
+                        &include_search,
+                        &scan_cache,
+                    )
                 }
             }
         }
@@ -140,8 +147,11 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
                     used_static_fallback = true;
                     depfile_parse_warning = Some(format!("path={} error={e}", path.display()));
                     let _ = std::fs::remove_file(path);
-                    let fallback =
-                        crate::depgraph::scanner::scan_recursive(&source_path, &include_search);
+                    let fallback = crate::depgraph::scanner::scan_recursive_cached(
+                        &source_path,
+                        &include_search,
+                        &scan_cache,
+                    );
                     let mut result = if let Some(scan) = compiler_dependency_scan {
                         crate::depgraph::depfile::merge_scan_results(scan, fallback)
                     } else {
@@ -158,11 +168,19 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
         DepfileStrategy::CompilerTrace | DepfileStrategy::ShowIncludes => compiler_dependency_scan
             .unwrap_or_else(|| {
                 used_static_fallback = true;
-                crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+                crate::depgraph::scanner::scan_recursive_cached(
+                    &source_path,
+                    &include_search,
+                    &scan_cache,
+                )
             }),
         DepfileStrategy::Unsupported => {
             used_static_fallback = true;
-            crate::depgraph::scanner::scan_recursive(&source_path, &include_search)
+            crate::depgraph::scanner::scan_recursive_cached(
+                &source_path,
+                &include_search,
+                &scan_cache,
+            )
         }
     };
     apply_static_fallback_policy(
@@ -221,6 +239,7 @@ mod tests {
             }),
             include_search: Default::default(),
             dependency_mode: DependencyDiscoveryMode::AllHeaders,
+            scan_cache: Default::default(),
         });
 
         assert!(collection.scan_result.resolved.contains(&header));
@@ -265,6 +284,7 @@ mod tests {
             compiler_dependency_scan: None,
             include_search: Default::default(),
             dependency_mode: DependencyDiscoveryMode::AllHeaders,
+            scan_cache: Default::default(),
         });
 
         let names: Vec<String> = collection

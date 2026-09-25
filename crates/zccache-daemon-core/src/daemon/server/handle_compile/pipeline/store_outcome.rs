@@ -319,6 +319,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         depfile_strategy,
         compiler_dependency_scan,
         include_search: ctx.include_search.clone(),
+        scan_cache: Arc::clone(&state.include_scan_cache),
         dependency_mode,
     })
     .await;

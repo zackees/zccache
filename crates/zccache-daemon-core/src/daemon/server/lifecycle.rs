@@ -296,6 +296,7 @@ pub(super) fn new_shared_state(
             ended_sessions: DashMap::new(),
             request_validation_cache: DashMap::new(),
             compiler_hash_cache,
+            include_scan_cache: Arc::new(crate::depgraph::scanner::RecursiveScanCache::default()),
             watched_raw_dirs: DashMap::new(),
             pch_source_map: DashMap::new(),
             journal: CompileJournal::new(crate::core::config::log_dir_from_cache_dir(cache_dir)),

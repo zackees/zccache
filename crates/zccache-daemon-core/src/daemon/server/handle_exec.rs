@@ -25,7 +25,7 @@
 //! fires.
 
 use super::*;
-use crate::depgraph::scanner::scan_recursive;
+use crate::depgraph::scanner::scan_recursive_cached;
 use crate::depgraph::search_paths::IncludeSearchPaths;
 use crate::protocol::{ExecCachePolicy, ExecOutputStreams};
 use dashmap::mapref::entry::Entry;

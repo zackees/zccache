@@ -6,6 +6,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use super::search_paths::IncludeSearchPaths;
 use dashmap::DashMap;
@@ -38,14 +39,90 @@ pub struct IncludeDirective {
     pub line: u32,
 }
 
-/// Request-scoped memo for parsed source/header directives.
+/// Memo for parsed source/header directives, safe to keep across requests.
 ///
 /// A multi-source compile commonly gives every unit the same standard-library
 /// graph. Sharing this memo preserves each unit's independent recursive result
 /// while avoiding repeated reads and parsing of those common headers.
+///
+/// Each entry is keyed by path and validated against the file's current size
+/// and mtime, so a long-lived (daemon-wide) cache re-parses a file after it is
+/// modified. Read failures are never cached.
 #[derive(Default)]
 pub struct RecursiveScanCache {
-    directives: DashMap<NormalizedPath, Arc<Vec<IncludeDirective>>>,
+    directives: DashMap<NormalizedPath, CachedDirectives>,
+    /// Number of cache-miss parses performed through this cache.
+    parses: std::sync::atomic::AtomicU64,
+}
+
+/// A parsed-directive entry plus the file stat it was parsed from.
+struct CachedDirectives {
+    size: u64,
+    mtime: Option<SystemTime>,
+    directives: Arc<Vec<IncludeDirective>>,
+}
+
+impl RecursiveScanCache {
+    /// Create an empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of cached files.
+    pub fn len(&self) -> usize {
+        self.directives.len()
+    }
+
+    /// True if no files are cached.
+    pub fn is_empty(&self) -> bool {
+        self.directives.is_empty()
+    }
+
+    /// Drop every cached entry.
+    pub fn clear(&self) {
+        self.directives.clear();
+    }
+
+    /// Return the file's directives, re-parsing only if its stat changed.
+    ///
+    /// Returns `None` if the file cannot be read (any stale entry is removed).
+    fn get_or_scan(&self, file: &Path) -> Option<Arc<Vec<IncludeDirective>>> {
+        let key = NormalizedPath::from(file);
+        let meta = match std::fs::metadata(file) {
+            Ok(meta) => meta,
+            Err(_) => {
+                self.directives.remove(&key);
+                return None;
+            }
+        };
+        let size = meta.len();
+        let mtime = meta.modified().ok();
+        if let Some(entry) = self.directives.get(&key) {
+            if entry.size == size && entry.mtime == mtime {
+                return Some(Arc::clone(&entry.directives));
+            }
+        }
+        match scan_includes(file) {
+            Ok(directives) => {
+                self.parses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let directives = Arc::new(directives);
+                self.directives.insert(
+                    key,
+                    CachedDirectives {
+                        size,
+                        mtime,
+                        directives: Arc::clone(&directives),
+                    },
+                );
+                Some(directives)
+            }
+            Err(_) => {
+                self.directives.remove(&key);
+                None
+            }
+        }
+    }
 }
 
 /// Result of a recursive include scan.
@@ -337,14 +414,10 @@ fn scan_one_level(
     retain: &(dyn Fn(&Path, &IncludeDirective, &NormalizedPath) -> bool + Sync),
 ) -> Vec<NormalizedPath> {
     let directives = if let Some(cache) = cache {
-        let key = NormalizedPath::from(file);
-        Arc::clone(
-            cache
-                .directives
-                .entry(key)
-                .or_insert_with(|| Arc::new(scan_includes(file).unwrap_or_default()))
-                .value(),
-        )
+        match cache.get_or_scan(file) {
+            Some(directives) => directives,
+            None => return Vec::new(),
+        }
     } else {
         match scan_includes(file) {
             Ok(directives) => Arc::new(directives),
@@ -1075,7 +1148,91 @@ mod tests {
 
         assert_eq!(one.resolved.len(), 2);
         assert_eq!(two.resolved.len(), 2);
-        assert_eq!(cache.directives.len(), 4);
+        assert_eq!(cache.len(), 4);
+    }
+
+    fn parses(cache: &RecursiveScanCache) -> u64 {
+        cache.parses.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[test]
+    fn recursive_scan_cache_parses_shared_headers_once_across_tus() {
+        const N: usize = 8;
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.h"), "#include \"b.h\"\n").unwrap();
+        std::fs::write(dir.path().join("b.h"), "#include \"c.h\"\n").unwrap();
+        std::fs::write(dir.path().join("c.h"), "// leaf\n").unwrap();
+        let sources: Vec<_> = (0..N)
+            .map(|i| {
+                let path = dir.path().join(format!("src{i}.c"));
+                std::fs::write(&path, "#include \"a.h\"\n").unwrap();
+                path
+            })
+            .collect();
+        let search = IncludeSearchPaths::default();
+        let cache = RecursiveScanCache::new();
+
+        // The process-wide counter is shared with concurrently running tests,
+        // so only a lower bound is meaningful; the per-cache count is exact.
+        reset_scan_includes_calls();
+        let before = scan_includes_calls();
+        for source in &sources {
+            let cached = scan_recursive_cached(source, &search, &cache);
+            let uncached = scan_recursive(source, &search);
+            let mut cached_resolved = cached.resolved.clone();
+            let mut uncached_resolved = uncached.resolved.clone();
+            cached_resolved.sort();
+            uncached_resolved.sort();
+            assert_eq!(cached_resolved, uncached_resolved);
+            assert_eq!(cached.unresolved, uncached.unresolved);
+            assert_eq!(cached.has_computed, uncached.has_computed);
+            assert_eq!(cached.resolved.len(), 3);
+        }
+        assert!(scan_includes_calls() - before >= (N + 3) as u64);
+        assert_eq!(parses(&cache), (N + 3) as u64);
+        assert_eq!(cache.len(), N + 3);
+        assert!(!cache.is_empty());
+
+        // A second pass over unchanged files costs no parses at all.
+        for source in &sources {
+            scan_recursive_cached(source, &search, &cache);
+        }
+        assert_eq!(parses(&cache), (N + 3) as u64);
+
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn recursive_scan_cache_rescans_header_after_modification() {
+        let dir = TempDir::new().unwrap();
+        let main = dir.path().join("main.c");
+        std::fs::write(&main, "#include \"a.h\"\n").unwrap();
+        std::fs::write(dir.path().join("a.h"), "#include \"b.h\"\n").unwrap();
+        std::fs::write(dir.path().join("b.h"), "// leaf\n").unwrap();
+        std::fs::write(dir.path().join("d.h"), "// new leaf\n").unwrap();
+        let search = IncludeSearchPaths::default();
+        let cache = RecursiveScanCache::new();
+
+        let first = scan_recursive_cached(&main, &search, &cache);
+        assert_eq!(first.resolved.len(), 2);
+
+        // Different length guarantees a stat mismatch even on coarse-mtime
+        // filesystems.
+        std::fs::write(
+            dir.path().join("b.h"),
+            "// leaf, now with an extra include\n#include \"d.h\"\n",
+        )
+        .unwrap();
+
+        let second = scan_recursive_cached(&main, &search, &cache);
+        let d = normalize(&dir.path().join("d.h"));
+        assert!(
+            second.resolved.contains(&d),
+            "d.h missing after b.h modification: {:?}",
+            second.resolved
+        );
+        assert_eq!(second.resolved.len(), 3);
     }
 
     #[test]
@@ -1110,7 +1267,7 @@ mod tests {
 
         assert_eq!(result.resolved, vec![normalize(&user_dir.join("user.h"))]);
         assert!(!result.has_computed);
-        assert_eq!(cache.directives.len(), 2);
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
