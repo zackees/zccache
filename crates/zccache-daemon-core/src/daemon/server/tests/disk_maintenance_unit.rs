@@ -8,6 +8,7 @@ fn artifact(key: &str, bytes: u64, now: SystemTime, age: Duration) -> DiskArtifa
     DiskArtifact {
         key: key.to_string(),
         allocated_bytes: bytes,
+        reclaimable_bytes: bytes,
         last_access: now - age,
         recently_published: false,
         legacy_files: Vec::new(),
@@ -174,6 +175,7 @@ fn issue_1148_eviction_updates_files_live_map_index_and_only_owned_root() {
                 free_bytes: 500 * GIB,
             },
         },
+        retired_top_level: None,
     })
     .unwrap();
 
@@ -221,6 +223,7 @@ fn read_only_maintenance_scan_does_not_exclude_cache_hit_leases() {
                     policy: bytes_policy(1),
                     kind: MaintenanceKind::Pressure,
                     environment: &environment,
+                    retired_top_level: None,
                 },
                 Some(&publication_barrier),
             )
@@ -284,6 +287,7 @@ fn issue_1148_live_and_persisted_access_control_full_expiry() {
         policy: bytes_policy(1000 * GIB),
         kind: MaintenanceKind::Full,
         environment: &environment,
+        retired_top_level: None,
     })
     .unwrap();
     assert_eq!(protected.artifacts_removed, 0);
@@ -311,6 +315,7 @@ fn issue_1148_live_and_persisted_access_control_full_expiry() {
         policy: bytes_policy(1000 * GIB),
         kind: MaintenanceKind::Full,
         environment: &environment,
+        retired_top_level: None,
     })
     .unwrap();
     assert_eq!(expired.expired_artifacts_removed, 1);
@@ -489,6 +494,7 @@ fn issue_1148_cross_artifact_hardlink_replans_until_target_is_real() {
                 free_bytes: 500 * GIB,
             },
         },
+        retired_top_level: None,
     })
     .unwrap();
 
@@ -539,6 +545,7 @@ fn issue_1148_mixed_legacy_pack_and_staged_layouts_are_reclaimed() {
                 free_bytes: 500 * GIB,
             },
         },
+        retired_top_level: None,
     })
     .unwrap();
 
@@ -577,6 +584,7 @@ fn issue_1148_linked_artifact_root_cannot_escape_product_ownership() {
                 free_bytes: 500 * GIB,
             },
         },
+        retired_top_level: None,
     })
     .unwrap_err();
 
@@ -621,6 +629,7 @@ fn issue_1148_linked_staged_root_cannot_escape_product_ownership() {
                 free_bytes: 500 * GIB,
             },
         },
+        retired_top_level: None,
     })
     .unwrap_err();
 
@@ -1100,4 +1109,138 @@ async fn the_periodic_sweep_reclaims_a_dead_instances_depfile_dir() {
             .any(|event| event["event"] == crate::core::lifecycle::EVENT_STALE_DEPFILE_DIRS_SWEPT),
         "the sweep should record what it reclaimed"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #1659 follow-ups -- link-count-aware eviction and retired-store bytes
+// ---------------------------------------------------------------------------
+
+/// Plan ordering: an older entry whose files are hard-linked elsewhere frees
+/// nothing, so a newer `nlink == 1` entry is selected first.
+#[test]
+fn issue_1659_pressure_prefers_entries_that_actually_free_space() {
+    let now = SystemTime::UNIX_EPOCH + 100 * DAY;
+    let mut shared = artifact("shared", 30, now, 2 * DAY);
+    shared.reclaimable_bytes = 0;
+    let entries = vec![shared, artifact("unshared", 80, now, DAY)];
+    let plan = plan_maintenance(
+        bytes_policy(100),
+        MaintenanceKind::Pressure,
+        now,
+        FilesystemSpace {
+            capacity_bytes: 1000 * GIB,
+            free_bytes: 500 * GIB,
+        },
+        &entries,
+        0,
+    );
+    assert_eq!(plan.pressure, MaintenancePressure::Hard);
+    assert_eq!(plan.selected, vec!["unshared"]);
+}
+
+/// Acceptance 5: retired sibling-store bytes push usage over budget; the pass
+/// reclaims the retired store and evicts no live entry.
+#[test]
+fn issue_1659_retired_store_bytes_are_reclaimed_before_live_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let top_level = root.path().to_path_buf();
+    let current = crate::core::config::versioned_subdir();
+    let artifact_dir = top_level.join(&current).join("artifacts");
+    let retired = top_level.join("v0.0.1");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    std::fs::create_dir_all(retired.join("artifacts")).unwrap();
+    let live = artifact_dir.join("key.meta");
+    std::fs::write(&live, vec![0_u8; 4096]).unwrap();
+    let old = kernal_api::platform::fs::FileTime::from_system_time(SystemTime::now() - 10 * DAY);
+    for i in 0..10 {
+        let path = retired.join("artifacts").join(format!("old-{i}.meta"));
+        std::fs::write(&path, vec![0_u8; 4096]).unwrap();
+        kernal_api::platform::fs::set_file_mtime(&path, old).unwrap();
+    }
+    assert!(retired_store_bytes(&top_level, &current) > 20_000);
+
+    let artifacts = DashMap::new();
+    let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
+    let dep_graph = DepGraph::new();
+    let report = maintain_disk_artifacts(MaintenancePass {
+        artifact_dir: &artifact_dir,
+        artifacts: &artifacts,
+        artifact_store: &store,
+        index_writer_tx: None,
+        dep_graph: &dep_graph,
+        pending_write_bytes: 0,
+        policy: bytes_policy(20_000),
+        kind: MaintenanceKind::Pressure,
+        environment: &FixedEnvironment {
+            now: SystemTime::now(),
+            space: FilesystemSpace {
+                capacity_bytes: 1000 * GIB,
+                free_bytes: 500 * GIB,
+            },
+        },
+        retired_top_level: Some((
+            crate::core::NormalizedPath::from(top_level.clone()),
+            current.clone(),
+        )),
+    })
+    .unwrap();
+
+    assert_eq!(report.artifacts_removed, 0, "no live entry may be evicted");
+    assert!(live.exists());
+    for i in 0..10 {
+        assert!(!retired
+            .join("artifacts")
+            .join(format!("old-{i}.meta"))
+            .exists());
+    }
+    assert!(report.retired_bytes_reclaimed > 0);
+    assert!(report.bytes_reclaimed >= report.retired_bytes_reclaimed);
+    assert_eq!(retired_store_bytes(&top_level, &current), 0);
+}
+
+/// Acceptance 6: evicting an entry whose file is also hard-linked into a
+/// build tree frees nothing, so it is not reported as reclaimed, and the
+/// build tree's link survives.
+#[test]
+fn issue_1659_evicting_a_hard_linked_entry_reports_no_reclaimed_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    let artifact_dir = root.path().join("artifacts");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    std::fs::create_dir_all(&target).unwrap();
+    let cached = artifact_dir.join("key.meta");
+    std::fs::write(&cached, vec![0_u8; 4096]).unwrap();
+    std::fs::hard_link(&cached, target.join("out.o")).unwrap();
+
+    let artifacts = DashMap::new();
+    let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
+    let dep_graph = DepGraph::new();
+    let report = maintain_disk_artifacts(MaintenancePass {
+        artifact_dir: &artifact_dir,
+        artifacts: &artifacts,
+        artifact_store: &store,
+        index_writer_tx: None,
+        dep_graph: &dep_graph,
+        pending_write_bytes: 0,
+        policy: bytes_policy(1),
+        kind: MaintenanceKind::Pressure,
+        environment: &FixedEnvironment {
+            now: SystemTime::UNIX_EPOCH + 100 * DAY,
+            space: FilesystemSpace {
+                capacity_bytes: 1000 * GIB,
+                free_bytes: 500 * GIB,
+            },
+        },
+        retired_top_level: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.pressure, MaintenancePressure::Hard);
+    assert_eq!(report.artifacts_removed, 1);
+    assert_eq!(
+        report.bytes_reclaimed, 0,
+        "the target/ link still holds the blocks"
+    );
+    assert!(!cached.exists());
+    assert_eq!(std::fs::read(target.join("out.o")).unwrap().len(), 4096);
 }

@@ -7,6 +7,10 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
+
+#[path = "disk_maintenance_retired.rs"]
+mod retired;
+use retired::{retired_store_bytes, versioned_top_level};
 use std::time::{Duration, SystemTime};
 
 pub(crate) const CACHE_BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
@@ -207,12 +211,20 @@ pub(crate) struct DiskMaintenanceReport {
     pub(crate) artifacts_removed: usize,
     pub(crate) expired_artifacts_removed: usize,
     pub(crate) pending_write_bytes: u64,
+    /// Bytes freed by reclaiming retired sibling `v<VERSION>` stores during
+    /// this pass (already included in `bytes_reclaimed`).
+    pub(crate) retired_bytes_reclaimed: u64,
 }
 
 #[derive(Debug)]
 struct DiskArtifact {
     key: String,
     allocated_bytes: u64,
+    /// Allocated bytes of this artifact's files whose link count is exactly
+    /// one -- the space evicting it actually returns. A file hard-linked into
+    /// a build tree (or whose count is unknown) frees nothing when the cache
+    /// copy is unlinked (issue #1659).
+    reclaimable_bytes: u64,
     last_access: SystemTime,
     recently_published: bool,
     legacy_files: Vec<NormalizedPath>,
@@ -269,10 +281,12 @@ fn plan_maintenance(
         space,
         artifacts,
         pending_write_bytes,
+        0,
         MaintenancePressure::None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_maintenance_at_least(
     policy: MaintenancePolicy,
     kind: MaintenanceKind,
@@ -280,15 +294,23 @@ fn plan_maintenance_at_least(
     space: FilesystemSpace,
     artifacts: &[DiskArtifact],
     pending_write_bytes: u64,
+    retired_bytes: u64,
     minimum_pressure: MaintenancePressure,
 ) -> MaintenancePlan {
     let budget = policy.budget_bytes(space.capacity_bytes);
     let artifact_bytes = artifacts.iter().fold(0_u64, |total, artifact| {
         total.saturating_add(artifact.allocated_bytes)
     });
-    let usage = artifact_bytes.saturating_add(pending_write_bytes);
+    // Retired sibling stores count against the budget (#1659): they occupy
+    // the same disk, and the pass reclaims them before any live entry.
+    let usage = artifact_bytes
+        .saturating_add(pending_write_bytes)
+        .saturating_add(retired_bytes);
     let mut selected = HashSet::new();
+    // Accounted-usage reduction vs. real free-space gain: evicting a file
+    // that is hard-linked elsewhere lowers the former but not the latter.
     let mut reclaimed = 0_u64;
+    let mut freed = 0_u64;
     let mut expired = HashSet::new();
 
     if kind == MaintenanceKind::Full {
@@ -299,11 +321,12 @@ fn plan_maintenance_at_least(
             selected.insert(artifact.key.clone());
             expired.insert(artifact.key.clone());
             reclaimed = reclaimed.saturating_add(artifact.allocated_bytes);
+            freed = freed.saturating_add(artifact.reclaimable_bytes);
         }
     }
 
     let projected_usage = usage.saturating_sub(reclaimed);
-    let projected_free = space.free_bytes.saturating_add(reclaimed);
+    let projected_free = space.free_bytes.saturating_add(freed);
     let hard = projected_usage >= budget || projected_free < low_space_bytes(space.capacity_bytes);
     let soft = !hard && projected_usage >= budget.saturating_mul(85) / 100;
     let detected_pressure = if hard {
@@ -323,20 +346,19 @@ fn plan_maintenance_at_least(
         _ => MaintenancePressure::None,
     };
 
-    let desired_reclaim = match pressure {
-        MaintenancePressure::Hard => {
-            let usage_need = projected_usage.saturating_sub(budget.saturating_mul(80) / 100);
-            let free_need =
-                recovery_free_bytes(space.capacity_bytes).saturating_sub(projected_free);
-            usage_need.max(free_need)
-        }
-        MaintenancePressure::Soft => {
-            projected_usage.saturating_sub(budget.saturating_mul(70) / 100)
-        }
-        MaintenancePressure::None => 0,
+    let (usage_need, free_need) = match pressure {
+        MaintenancePressure::Hard => (
+            projected_usage.saturating_sub(budget.saturating_mul(80) / 100),
+            recovery_free_bytes(space.capacity_bytes).saturating_sub(projected_free),
+        ),
+        MaintenancePressure::Soft => (
+            projected_usage.saturating_sub(budget.saturating_mul(70) / 100),
+            0,
+        ),
+        MaintenancePressure::None => (0, 0),
     };
 
-    if desired_reclaim > 0 {
+    if usage_need > 0 || free_need > 0 {
         let mut candidates: Vec<&DiskArtifact> = artifacts
             .iter()
             .filter(|artifact| !selected.contains(&artifact.key))
@@ -347,14 +369,32 @@ fn plan_maintenance_at_least(
                     || artifact_age > SOFT_AGE
             })
             .collect();
-        candidates.sort_by_key(|artifact| artifact.last_access);
-        let mut pressure_reclaimed = 0_u64;
+        // #1659: entries whose files are linked only from the cache
+        // (`reclaimable_bytes > 0`) actually return disk space, so they go
+        // first; LRU order is kept within each group.
+        candidates.sort_by_key(|artifact| (artifact.reclaimable_bytes == 0, artifact.last_access));
+        let mut usage_reclaimed = 0_u64;
+        let mut free_reclaimed = 0_u64;
         for artifact in candidates {
-            if pressure_reclaimed >= desired_reclaim {
+            if usage_reclaimed >= usage_need && free_reclaimed >= free_need {
+                break;
+            }
+            // Once only fully shared entries remain, evicting them frees no
+            // disk space. Soft pressure stops there. Hard pressure keeps
+            // going (the pre-#1659 behaviour) so accounted usage still
+            // converges on the budget instead of starving; the usage counter
+            // still bounds how many are taken, and the free-space counter
+            // only credits bytes that are really returned -- so a shared
+            // entry is never evicted just to chase a free-space shortfall it
+            // cannot help with.
+            if artifact.reclaimable_bytes == 0
+                && (pressure != MaintenancePressure::Hard || usage_reclaimed >= usage_need)
+            {
                 break;
             }
             selected.insert(artifact.key.clone());
-            pressure_reclaimed = pressure_reclaimed.saturating_add(artifact.allocated_bytes);
+            usage_reclaimed = usage_reclaimed.saturating_add(artifact.allocated_bytes);
+            free_reclaimed = free_reclaimed.saturating_add(artifact.reclaimable_bytes);
         }
     }
 
@@ -383,12 +423,12 @@ fn add_file(
         .ok()
         .is_none_or(|id| seen.insert(id))
     {
-        artifact.allocated_bytes =
-            artifact
-                .allocated_bytes
-                .saturating_add(crate::platform::fs::volume::allocated_bytes(
-                    path, &metadata,
-                ));
+        let allocated = crate::platform::fs::volume::allocated_bytes(path, &metadata);
+        artifact.allocated_bytes = artifact.allocated_bytes.saturating_add(allocated);
+        // Unknown link count is treated as shared: never over-promise space.
+        if crate::core::config::file_link_count(path) == Some(1) {
+            artifact.reclaimable_bytes = artifact.reclaimable_bytes.saturating_add(allocated);
+        }
     }
     Ok(())
 }
@@ -492,6 +532,7 @@ fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
             .or_insert_with(|| DiskArtifact {
                 key: key.to_string(),
                 allocated_bytes: 0,
+                reclaimable_bytes: 0,
                 last_access: SystemTime::UNIX_EPOCH,
                 recently_published: false,
                 legacy_files: Vec::new(),
@@ -508,6 +549,7 @@ fn scan_artifacts(artifact_dir: &Path) -> io::Result<Vec<DiskArtifact>> {
         let artifact = groups.entry(key.clone()).or_insert_with(|| DiskArtifact {
             key: key.clone(),
             allocated_bytes: 0,
+            reclaimable_bytes: 0,
             last_access: SystemTime::UNIX_EPOCH,
             recently_published: false,
             legacy_files: Vec::new(),
@@ -538,6 +580,9 @@ struct MaintenancePass<'a> {
     policy: MaintenancePolicy,
     kind: MaintenanceKind,
     environment: &'a dyn MaintenanceEnvironment,
+    /// `(top_level, current v<VERSION>)` when the cache root is a versioned
+    /// store whose retired siblings count against the budget (#1659).
+    retired_top_level: Option<(crate::core::NormalizedPath, String)>,
 }
 
 fn refresh_live_access(
@@ -658,6 +703,7 @@ fn maintain_disk_artifacts_with_barrier(
         policy,
         kind,
         environment,
+        retired_top_level,
     } = pass;
 
     validate_owned_artifact_root(artifact_dir)?;
@@ -665,12 +711,23 @@ fn maintain_disk_artifacts_with_barrier(
     let initial_space = environment.filesystem_space(artifact_dir)?;
     let mut scanned = scan_artifacts(artifact_dir)?;
     refresh_live_access(&mut scanned, artifacts, dep_graph, now);
-    let usage_before = scanned.iter().fold(pending_write_bytes, |total, artifact| {
-        total.saturating_add(artifact.allocated_bytes)
-    });
+    let mut retired_bytes = retired_top_level
+        .as_ref()
+        .map_or(0, |(top_level, current)| {
+            retired_store_bytes(top_level, current)
+        });
+    let mut retired_swept = false;
+    let mut retired_bytes_reclaimed = 0_u64;
+    let usage_before = scanned
+        .iter()
+        .fold(pending_write_bytes, |total, artifact| {
+            total.saturating_add(artifact.allocated_bytes)
+        })
+        .saturating_add(retired_bytes);
     let mut pressure = MaintenancePressure::None;
     let mut removed = HashSet::new();
     let mut expired_removed = HashSet::new();
+    let mut artifact_bytes_reclaimed = 0_u64;
 
     loop {
         let space = environment.filesystem_space(artifact_dir)?;
@@ -681,8 +738,30 @@ fn maintain_disk_artifacts_with_barrier(
             space,
             &scanned,
             pending_write_bytes,
+            retired_bytes,
             pressure,
         );
+        // #1659: reclaim retired sibling stores before evicting any live
+        // entry. At most once per pass (bounded work, no loop): whatever
+        // survives -- a live writer lock, young shared files -- stays with
+        // the periodic retired-store sweep, and the re-plan below evicts
+        // live entries only for the remaining shortfall. We are already on
+        // a blocking maintenance worker, so the sweep runs inline.
+        if !retired_swept && retired_bytes > 0 && plan.pressure != MaintenancePressure::None {
+            if let Some((top_level, current)) = retired_top_level.as_ref() {
+                retired_swept = true;
+                let sweep = crate::core::config::sweep_retired_version_stores_in(
+                    top_level,
+                    current,
+                    RETIRED_STORE_MAX_AGE,
+                    now,
+                );
+                retired_bytes_reclaimed =
+                    retired_bytes_reclaimed.saturating_add(sweep.bytes_reclaimed);
+                retired_bytes = retired_store_bytes(top_level, current);
+                continue;
+            }
+        }
         if plan.selected.is_empty() {
             pressure = plan.pressure;
             break;
@@ -703,6 +782,7 @@ fn maintain_disk_artifacts_with_barrier(
                 commit_space,
                 &scanned,
                 pending_write_bytes,
+                retired_bytes,
                 pressure,
             );
             let removed = remove_planned_artifacts(
@@ -731,6 +811,16 @@ fn maintain_disk_artifacts_with_barrier(
         if removed_this_round.is_empty() {
             break;
         }
+        // Credit only bytes whose last link went with the eviction, captured
+        // from this round's scan before the rescan below replaces it.
+        let freed_by_key: HashMap<&str, u64> = scanned
+            .iter()
+            .map(|artifact| (artifact.key.as_str(), artifact.reclaimable_bytes))
+            .collect();
+        for key in &removed_this_round {
+            let freed = freed_by_key.get(key.as_str()).copied().unwrap_or(0);
+            artifact_bytes_reclaimed = artifact_bytes_reclaimed.saturating_add(freed);
+        }
         for key in removed_this_round {
             if plan.expired.contains(&key) {
                 expired_removed.insert(key.clone());
@@ -741,19 +831,25 @@ fn maintain_disk_artifacts_with_barrier(
         refresh_live_access(&mut scanned, artifacts, dep_graph, now);
     }
 
-    let usage_after = scanned.iter().fold(pending_write_bytes, |total, artifact| {
-        total.saturating_add(artifact.allocated_bytes)
-    });
+    let usage_after = scanned
+        .iter()
+        .fold(pending_write_bytes, |total, artifact| {
+            total.saturating_add(artifact.allocated_bytes)
+        })
+        .saturating_add(retired_bytes);
     Ok(DiskMaintenanceReport {
         kind,
         pressure,
         budget_bytes: policy.budget_bytes(initial_space.capacity_bytes),
         usage_before_bytes: usage_before,
         usage_after_bytes: usage_after,
-        bytes_reclaimed: usage_before.saturating_sub(usage_after),
+        // Only bytes whose last link was removed: an entry hard-linked into
+        // a build tree still occupies its blocks after eviction (#1659).
+        bytes_reclaimed: artifact_bytes_reclaimed.saturating_add(retired_bytes_reclaimed),
         artifacts_removed: removed.len(),
         expired_artifacts_removed: expired_removed.len(),
         pending_write_bytes,
+        retired_bytes_reclaimed,
     })
 }
 
@@ -825,6 +921,7 @@ pub(super) async fn maintain_state_disk(
                 policy,
                 kind,
                 environment: &RealMaintenanceEnvironment,
+                retired_top_level: versioned_top_level(maintenance_state.cache_dir.as_path()),
             },
             Some(&maintenance_state.artifact_publication),
         )
@@ -850,6 +947,7 @@ pub(super) async fn maintain_state_disk(
         usage_before_bytes = report.usage_before_bytes,
         usage_after_bytes = report.usage_after_bytes,
         bytes_reclaimed = report.bytes_reclaimed,
+        retired_bytes_reclaimed = report.retired_bytes_reclaimed,
         artifacts_removed = report.artifacts_removed,
         expired_artifacts_removed = report.expired_artifacts_removed,
         pending_write_bytes = report.pending_write_bytes,
@@ -1049,15 +1147,7 @@ async fn sweep_retired_version_stores(
     cache_dir: &Path,
     runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
 ) {
-    let current = crate::core::config::versioned_subdir();
-    let is_versioned_root = cache_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == current.as_str());
-    if !is_versioned_root {
-        return;
-    }
-    let Some(top_level) = cache_dir.parent().map(Path::to_path_buf) else {
+    let Some((top_level, current)) = versioned_top_level(cache_dir) else {
         return;
     };
 
