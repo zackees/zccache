@@ -8,15 +8,30 @@
 //! upgrade forever — on a real host, 99.7% of one 499 GB retired store was
 //! disk no build tree referenced any more.
 //!
-//! This module is the daemon-callable sweep: it removes files a retired
-//! store solely owns immediately, expires files still hard-linked into a
-//! `target/` tree once they age out, and removes the store directory itself
-//! once nothing remains. Liveness comes from the store's own
-//! `.writer.lock` (the same file + lock primitive
-//! `crates/zccache-daemon-core/src/daemon/server/state.rs`'s
-//! `CacheRootWriterLock` uses) — never from directory or file freshness,
-//! since any write to an unrelated file would otherwise pin the whole store
-//! forever.
+//! This module is the daemon-callable sweep. Only versions strictly *older*
+//! than the running one are ever swept ([`is_older_version_dir`]): a newer
+//! store belongs to a daemon this one cannot reason about, and switching
+//! back and forth between versions (A -> B -> A) must not destroy either
+//! cache (issue #1673).
+//!
+//! Liveness is layered:
+//! - `.writer.lock` (the same file + lock primitive
+//!   `crates/zccache-daemon-core/src/daemon/server/state.rs`'s
+//!   `CacheRootWriterLock` uses): a store whose lock is held is untouched.
+//! - `.last-active` ([`LAST_ACTIVE_MARKER_FILE`]): the owning daemon stamps
+//!   it via [`touch_store_activity_marker`]. In [`RetiredSweepMode::Routine`]
+//!   a marker younger than `max_age` skips the whole store
+//!   (`stores_recently_active`). A missing marker means a legacy store that
+//!   is not active. Only this dedicated marker counts — never directory or
+//!   arbitrary file freshness, since any write to an unrelated file would
+//!   otherwise pin the whole store forever.
+//! - Per file: in `Routine` mode every file must be older than `max_age`
+//!   regardless of link count. In [`RetiredSweepMode::Pressure`] mode
+//!   (disk pressure), the marker gate is bypassed and `nlink == 1` files
+//!   are removed eagerly; shared/unknown-count files still need the age gate.
+//!
+//! The store directory itself is removed once only `.writer.lock` /
+//! `.last-active` remain.
 //!
 //! Link-count and no-follow-symlink queries go through
 //! `kernal_api::platform::fs` (`hard_link_count`, `classify`) rather than a
@@ -39,6 +54,61 @@ use kernal_api::platform::fs::LinkKind;
 /// dependency on the daemon crate (dependency direction is the other way).
 const WRITER_LOCK_FILE_NAME: &str = ".writer.lock";
 
+/// Name of the activity marker the owning daemon stamps in its own store.
+/// Its mtime is the store's "last used" time for the routine sweep gate.
+pub const LAST_ACTIVE_MARKER_FILE: &str = ".last-active";
+
+/// Create or truncate `<store>/.last-active` and set its mtime to now.
+///
+/// Only the daemon that owns `store` calls this.
+///
+/// # Errors
+/// Returns any I/O error from opening the marker or setting its mtime.
+pub fn touch_store_activity_marker(store: &Path) -> io::Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(store.join(LAST_ACTIVE_MARKER_FILE))?;
+    file.set_modified(SystemTime::now())
+}
+
+/// How aggressively a retired-store sweep may reclaim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetiredSweepMode {
+    /// Periodic maintenance: honour `.last-active` and age-gate every file.
+    Routine,
+    /// Disk pressure: skip the `.last-active` gate and remove `nlink == 1`
+    /// files eagerly; shared/unknown files are still age-gated.
+    Pressure,
+}
+
+fn parse_version_triple(name: &str) -> Option<(u64, u64, u64)> {
+    let rest = name.strip_prefix('v').unwrap_or(name);
+    let mut parts = rest.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+/// True only when `name` (`vX.Y.Z`) is a strictly older version than
+/// `current` (`X.Y.Z` or `vX.Y.Z`). Unparseable input on either side is
+/// `false` so nothing ambiguous is ever swept.
+#[must_use]
+pub fn is_older_version_dir(name: &str, current: &str) -> bool {
+    if !name.starts_with('v') {
+        return false;
+    }
+    match (parse_version_triple(name), parse_version_triple(current)) {
+        (Some(n), Some(c)) => n < c,
+        _ => false,
+    }
+}
+
 /// Outcome of a retired-store sweep — either [`sweep_retired_version_store`]
 /// on one store, or the summed totals from
 /// [`sweep_retired_version_stores_in`] across every retired sibling.
@@ -52,6 +122,9 @@ pub struct RetiredStoreSweepReport {
     /// Stores skipped because a live daemon of that version still holds
     /// `.writer.lock`.
     pub stores_live: usize,
+    /// Stores skipped in `Routine` mode because their `.last-active` marker
+    /// is younger than `max_age` (issue #1673).
+    pub stores_recently_active: usize,
     /// Individual files removed, across every store this pass touched.
     pub files_removed: usize,
     /// Bytes freed: only files whose *last* hard link was removed count —
@@ -69,6 +142,9 @@ impl RetiredStoreSweepReport {
         self.stores_scanned = self.stores_scanned.saturating_add(other.stores_scanned);
         self.stores_removed = self.stores_removed.saturating_add(other.stores_removed);
         self.stores_live = self.stores_live.saturating_add(other.stores_live);
+        self.stores_recently_active = self
+            .stores_recently_active
+            .saturating_add(other.stores_recently_active);
         self.files_removed = self.files_removed.saturating_add(other.files_removed);
         self.bytes_reclaimed = self.bytes_reclaimed.saturating_add(other.bytes_reclaimed);
         self.failed = self.failed.saturating_add(other.failed);
@@ -98,23 +174,29 @@ pub fn file_link_count(path: &Path) -> Option<u64> {
 ///    this store `stores_live` and untouched; a missing lock file means no
 ///    daemon has ever written here (or none survived), so the sweep
 ///    proceeds without one.
-/// 3. Walk the tree without following symlinks/reparse points; any such
+/// 3. `Routine` mode only: if `<store>/.last-active` exists and is younger
+///    than `max_age`, the store is in recent use — count it in
+///    `stores_recently_active` and touch nothing. A missing marker is a
+///    legacy, inactive store. `Pressure` mode skips this gate.
+/// 4. Walk the tree without following symlinks/reparse points; any such
 ///    entry is unlinked itself (never traversed, its target never touched).
 ///    Directory mtimes are never consulted.
-/// 4. Each regular file other than `.writer.lock`: `nlink == 1` is removed
-///    eagerly with no age gate (nothing else can reference it). `nlink > 1`
-///    or unknown is removed only once its own mtime is older than
-///    `now - max_age`; bytes are only credited to `bytes_reclaimed` when
+/// 5. Each regular file other than the root `.writer.lock` / `.last-active`:
+///    in `Routine` mode it is removed only once its own mtime is older than
+///    `now - max_age`, whatever its link count. In `Pressure` mode
+///    `nlink == 1` is removed eagerly; `nlink > 1` or unknown still needs
+///    the age gate. Bytes are only credited to `bytes_reclaimed` when
 ///    removal provably frees space (`nlink == 1`).
-/// 5. Directories that end up empty are removed bottom-up. If nothing but
-///    `.writer.lock` remains in the store root, the whole store directory is
-///    removed (lock released first, since an open handle to it can block
-///    deletion on Windows).
+/// 6. Directories that end up empty are removed bottom-up. If nothing but
+///    `.writer.lock` / `.last-active` remains in the store root, the whole
+///    store directory is removed (lock released first, since an open handle
+///    to it can block deletion on Windows).
 #[must_use]
 pub fn sweep_retired_version_store(
     store: &Path,
     max_age: Duration,
     now: SystemTime,
+    mode: RetiredSweepMode,
 ) -> RetiredStoreSweepReport {
     let mut report = RetiredStoreSweepReport {
         stores_scanned: 1,
@@ -148,14 +230,19 @@ pub fn sweep_retired_version_store(
         }
     };
 
-    sweep_directory_contents(store, store, now, max_age, &mut report);
+    if mode == RetiredSweepMode::Routine {
+        let marker_recent = std::fs::metadata(store.join(LAST_ACTIVE_MARKER_FILE))
+            .is_ok_and(|metadata| !is_older_than(&metadata, now, max_age));
+        if marker_recent {
+            report.stores_recently_active += 1;
+            return report;
+        }
+    }
 
-    let only_lock_remains = std::fs::read_dir(store)
-        .map(|entries| {
-            entries
-                .flatten()
-                .all(|entry| entry.file_name() == WRITER_LOCK_FILE_NAME)
-        })
+    sweep_directory_contents(store, store, now, max_age, mode, &mut report);
+
+    let only_markers_remain = std::fs::read_dir(store)
+        .map(|entries| entries.flatten().all(|entry| is_root_marker(&entry.file_name())))
         .unwrap_or(false);
 
     // Release before removal: an open handle to `.writer.lock` can block
@@ -163,7 +250,7 @@ pub fn sweep_retired_version_store(
     // no-op beyond dropping the fd.
     drop(lock_guard);
 
-    if only_lock_remains {
+    if only_markers_remain {
         match std::fs::remove_dir_all(store) {
             Ok(()) => report.stores_removed += 1,
             // Best-effort, mirroring `prune_stale_version_dirs_in`: a
@@ -177,11 +264,11 @@ pub fn sweep_retired_version_store(
     report
 }
 
-/// Sweep every `v<X.Y.Z>` child of `top_level` except `keep`.
+/// Sweep every `v<X.Y.Z>` child of `top_level` strictly older than `keep`.
 ///
-/// Non-version-shaped siblings (`logs`, `vprivate`, ...) and `keep` itself
-/// (the running version; `"1.2.3"` and `"v1.2.3"` are both accepted) are
-/// never inspected. Missing `top_level` is a
+/// Non-version-shaped siblings (`logs`, `vprivate`, ...), `keep` itself
+/// (the running version; `"1.2.3"` and `"v1.2.3"` are both accepted), and
+/// every *newer* version are never inspected, in either mode. Missing `top_level` is a
 /// silent no-op, matching [`super::resolve::prune_stale_version_dirs_in`].
 #[must_use]
 pub fn sweep_retired_version_stores_in(
@@ -189,6 +276,7 @@ pub fn sweep_retired_version_stores_in(
     keep: &str,
     max_age: Duration,
     now: SystemTime,
+    mode: RetiredSweepMode,
 ) -> RetiredStoreSweepReport {
     let mut report = RetiredStoreSweepReport::default();
     let entries = match std::fs::read_dir(top_level) {
@@ -200,15 +288,15 @@ pub fn sweep_retired_version_stores_in(
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let keep_name = if keep.starts_with('v') {
-            keep.to_owned()
-        } else {
-            format!("v{keep}")
-        };
-        if name == keep_name || !super::resolve::is_version_dir_name(&name) {
+        if !super::resolve::is_version_dir_name(&name) || !is_older_version_dir(&name, keep) {
             continue;
         }
-        report.merge(&sweep_retired_version_store(&entry.path(), max_age, now));
+        report.merge(&sweep_retired_version_store(
+            &entry.path(),
+            max_age,
+            now,
+            mode,
+        ));
     }
     report
 }
@@ -248,8 +336,12 @@ fn acquire_store_lock(
     }
 }
 
+fn is_root_marker(name: &std::ffi::OsStr) -> bool {
+    name == WRITER_LOCK_FILE_NAME || name == LAST_ACTIVE_MARKER_FILE
+}
+
 /// Recursively sweep `dir`'s entries. `store_root` is passed through so the
-/// `.writer.lock` exemption applies only at the store's top level (nested
+/// `.writer.lock` / `.last-active` exemption applies only at the store's top level (nested
 /// directories cannot contain the store's own lock file, but comparing
 /// explicitly keeps the exemption from ever applying by name collision
 /// alone).
@@ -258,6 +350,7 @@ fn sweep_directory_contents(
     store_root: &Path,
     now: SystemTime,
     max_age: Duration,
+    mode: RetiredSweepMode,
     report: &mut RetiredStoreSweepReport,
 ) {
     let entries = match std::fs::read_dir(dir) {
@@ -275,7 +368,7 @@ fn sweep_directory_contents(
                 continue;
             }
         };
-        if dir == store_root && entry.file_name() == WRITER_LOCK_FILE_NAME {
+        if dir == store_root && is_root_marker(&entry.file_name()) {
             continue;
         }
         let path = entry.path();
@@ -300,13 +393,13 @@ fn sweep_directory_contents(
             }
         };
         if is_dir {
-            sweep_directory_contents(&path, store_root, now, max_age, report);
+            sweep_directory_contents(&path, store_root, now, max_age, mode, report);
             if is_dir_empty(&path) {
                 let _ = std::fs::remove_dir(&path);
             }
             continue;
         }
-        sweep_regular_file(&path, now, max_age, report);
+        sweep_regular_file(&path, now, max_age, mode, report);
     }
 }
 
@@ -329,11 +422,12 @@ fn is_dir_empty(dir: &Path) -> bool {
 }
 
 /// Apply the per-file eager/expire rule to one regular file and update
-/// `report`. See [`sweep_retired_version_store`]'s step 4 for the contract.
+/// `report`. See [`sweep_retired_version_store`]'s step 5 for the contract.
 fn sweep_regular_file(
     path: &Path,
     now: SystemTime,
     max_age: Duration,
+    mode: RetiredSweepMode,
     report: &mut RetiredStoreSweepReport,
 ) {
     let metadata = match std::fs::symlink_metadata(path) {
@@ -346,9 +440,9 @@ fn sweep_regular_file(
     };
     let len = metadata.len();
     let link_count = file_link_count(path);
-    let should_delete = match link_count {
-        Some(1) => true,
-        Some(_) | None => is_older_than(&metadata, now, max_age),
+    let should_delete = match (mode, link_count) {
+        (RetiredSweepMode::Pressure, Some(1)) => true,
+        _ => is_older_than(&metadata, now, max_age),
     };
     if !should_delete {
         return;
@@ -358,7 +452,10 @@ fn sweep_regular_file(
             report.files_removed += 1;
             // Only credit bytes when removal provably frees space: the
             // last link (nlink == 1). Shared or unknown counts free nothing
-            // we can prove, so they are never counted.
+            // we can prove, so they are never counted. Reflink (shared
+            // extent) sharing cannot be detected portably and
+            // `kernal_api::platform::fs` exposes no shared-extent query, so
+            // a reflinked nlink==1 file may be over-credited.
             let frees_space = link_count == Some(1);
             if frees_space {
                 report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(len);

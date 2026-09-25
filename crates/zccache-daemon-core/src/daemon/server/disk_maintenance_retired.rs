@@ -30,11 +30,6 @@ pub(super) fn versioned_top_level(cache_dir: &Path) -> Option<(NormalizedPath, S
 /// Symlinks/reparse points are never followed; a file whose link count is
 /// unknown is treated as shared.
 pub(super) fn retired_store_bytes(top_level: &Path, current: &str) -> u64 {
-    let keep = if current.starts_with('v') {
-        current.to_owned()
-    } else {
-        format!("v{current}")
-    };
     let Ok(entries) = std::fs::read_dir(top_level) else {
         return 0;
     };
@@ -44,7 +39,9 @@ pub(super) fn retired_store_bytes(top_level: &Path, current: &str) -> u64 {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == keep || !crate::core::config::is_version_dir_name(&name) {
+        if !crate::core::config::is_version_dir_name(&name)
+            || !crate::core::config::is_older_version_dir(&name, current)
+        {
             continue;
         }
         total = total.saturating_add(unshared_tree_bytes(&entry.path()));

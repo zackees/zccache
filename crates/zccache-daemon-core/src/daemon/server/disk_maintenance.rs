@@ -38,10 +38,12 @@ const HARD_PRESSURE_MIN_AGE: Duration = PRESSURE_INTERVAL;
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const FULL_MARKER: &str = ".disk-maintenance-last-full-v1";
-/// How long a hard-linked artifact inside a *retired* `v<VERSION>` store may
-/// sit before its per-file expiry reclaims it (issue #1659). An `nlink == 1`
-/// file in a retired store is removed on sight with no age gate regardless
-/// of this value -- nothing still alive can reference it.
+/// Grace period for retired `v<VERSION>` stores (issues #1659, #1673). It
+/// gates both the whole-store `.last-active` check (a store stamped within
+/// this window is still in use and is left alone) and the per-file unused
+/// check (a file touched within this window survives a routine sweep). Only
+/// stores of an *older* version than the running daemon are ever swept;
+/// newer sibling stores belong to a newer daemon and are never touched.
 const RETIRED_STORE_MAX_AGE: Duration = Duration::from_secs(72 * 60 * 60);
 
 fn launch_maintenance_blocking<F, R>(
@@ -755,6 +757,7 @@ fn maintain_disk_artifacts_with_barrier(
                     current,
                     RETIRED_STORE_MAX_AGE,
                     now,
+                    crate::core::config::RetiredSweepMode::Pressure,
                 );
                 retired_bytes_reclaimed =
                     retired_bytes_reclaimed.saturating_add(sweep.bytes_reclaimed);
@@ -1151,12 +1154,18 @@ async fn sweep_retired_version_stores(
         return;
     };
 
+    // #1673: periodic stamp -- keep the running store's `.last-active`
+    // fresh so a sibling daemon of another version never treats it as idle.
+    if let Err(error) = crate::core::config::touch_store_activity_marker(cache_dir) {
+        tracing::debug!(%error, cache_root = %cache_dir.display(), "failed to stamp store activity marker");
+    }
     let report = launch_maintenance_blocking(runtime_handle, move || {
         crate::core::config::sweep_retired_version_stores_in(
             &top_level,
             &current,
             RETIRED_STORE_MAX_AGE,
             SystemTime::now(),
+            crate::core::config::RetiredSweepMode::Routine,
         )
     })
     .await;

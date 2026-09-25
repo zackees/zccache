@@ -1244,3 +1244,21 @@ fn issue_1659_evicting_a_hard_linked_entry_reports_no_reclaimed_bytes() {
     assert!(!cached.exists());
     assert_eq!(std::fs::read(target.join("out.o")).unwrap().len(), 4096);
 }
+
+/// #1673: a *newer* sibling store belongs to a newer daemon and never counts
+/// as reclaimable; only older-version siblings do.
+#[test]
+fn issue_1673_retired_store_bytes_ignore_newer_sibling_stores() {
+    let root = tempfile::tempdir().unwrap();
+    let top_level = root.path().to_path_buf();
+    std::fs::create_dir_all(top_level.join("v1.0.0")).unwrap();
+    let newer = top_level.join("v2.0.0").join("artifacts");
+    std::fs::create_dir_all(&newer).unwrap();
+    std::fs::write(newer.join("new.meta"), vec![0_u8; 4096]).unwrap();
+    assert_eq!(retired_store_bytes(&top_level, "v1.0.0"), 0);
+
+    let older = top_level.join("v0.9.0").join("artifacts");
+    std::fs::create_dir_all(&older).unwrap();
+    std::fs::write(older.join("old.meta"), vec![0_u8; 4096]).unwrap();
+    assert!(retired_store_bytes(&top_level, "v1.0.0") > 0);
+}

@@ -226,6 +226,11 @@ impl CacheRootWriterLock {
         // itself is what enforces exclusion, so a failed write is not fatal.
         let _ = lock.file().set_len(0);
         let _ = writeln!(lock.file(), "{}", std::process::id());
+        // #1673: stamp the store as in use on daemon start so an older-version
+        // daemon's retired-store sweep leaves it alone. Never fails acquire.
+        if let Err(error) = crate::core::config::touch_store_activity_marker(cache_dir) {
+            tracing::debug!(%error, cache_root = %cache_dir.display(), "failed to stamp store activity marker");
+        }
         Ok(Self {
             lock: std::sync::Mutex::new(Some(lock)),
         })
