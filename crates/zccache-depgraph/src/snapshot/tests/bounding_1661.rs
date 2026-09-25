@@ -139,7 +139,10 @@ fn every_field_round_trips_through_the_file() {
         );
         let mut got = got.clone();
         got.last_accessed_unix_ms = want.last_accessed_unix_ms;
-        assert_eq!(format!("{got:?}"), format!("{want:?}"));
+        // Paths are normalized to the host separator on load (backslashes
+        // on Windows), so compare with separators folded to '/'.
+        let got_dbg = format!("{got:?}").replace("\\\\", "/");
+        assert_eq!(got_dbg, format!("{want:?}"));
     }
     assert_eq!(contexts.len(), 2);
 }
@@ -276,7 +279,11 @@ fn size_budget_evicts_lru_and_keeps_newest() {
     let make_snapshot = || DepGraphSnapshot {
         files: Vec::new(),
         contexts: (0..n)
-            .map(|i| ctx_snap(i, T0 - u64::from(n - i) * 60_000)) // minutes: stays within Instant range on fresh runners
+            // One-second steps: ages are rebuilt as `Instant::now() - age`,
+            // and on Windows `Instant` counts from boot, so a freshly booted
+            // runner may not represent ages of tens of minutes (checked_sub
+            // fails, every age collapses to "now", and LRU order is lost).
+            .map(|i| ctx_snap(i, T0 - u64::from(n - i) * 1_000))
             .collect(),
         stats: SnapshotStats {
             saved_at_epoch_secs: T0 / 1000,
