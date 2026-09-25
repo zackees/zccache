@@ -857,14 +857,14 @@ mod tests {
     #[test]
     fn single_pass_matches_reference_on_mixed_source() {
         let source = concat!(
-            "#inc\\\r\nlude <a.h>\r\n",              // lines 1-2
-            "int x; /* start\r\n",                   // line 3
-            "#include \"b.h\"\r\n",                  // line 4 (in comment)
-            "end */\r\n",                            // line 5
-            "#include \"b.h\"\r\n",                  // line 6
-            "// #include <c.h>\r\n",                 // line 7
+            "#inc\\\r\nlude <a.h>\r\n",                // lines 1-2
+            "int x; /* start\r\n",                     // line 3
+            "#include \"b.h\"\r\n",                    // line 4 (in comment)
+            "end */\r\n",                              // line 5
+            "#include \"b.h\"\r\n",                    // line 6
+            "// #include <c.h>\r\n",                   // line 7
             "const char* s = \"#include <d.h>\";\r\n", // line 8
-            "#  include_next <e.h>\r\n",             // line 9
+            "#  include_next <e.h>\r\n",               // line 9
         );
         let got: Vec<(IncludeKind, String, u32)> = scan_includes_str(source)
             .into_iter()

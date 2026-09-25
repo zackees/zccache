@@ -57,9 +57,15 @@ fn build_header(id: usize) -> String {
     let mut block = 0usize;
     while s.lines().count() < TARGET_LINES {
         let _ = writeln!(s, "/**");
-        let _ = writeln!(s, " * \\brief Synthetic API number {block} for header {id}.");
+        let _ = writeln!(
+            s,
+            " * \\brief Synthetic API number {block} for header {id}."
+        );
         let _ = writeln!(s, " *");
-        let _ = writeln!(s, " * The #include <not_real.h> text inside a comment must be skipped.");
+        let _ = writeln!(
+            s,
+            " * The #include <not_real.h> text inside a comment must be skipped."
+        );
         let _ = writeln!(s, " */");
         let _ = writeln!(s, "#ifdef __AVR_FEATURE_{block}__");
         let _ = writeln!(s, "#define SYNTH_MACRO_{id}_{block}(x, y) \\");
@@ -68,10 +74,22 @@ fn build_header(id: usize) -> String {
         let _ = writeln!(s, "    }} while (0)");
         let _ = writeln!(s, "#endif // __AVR_FEATURE_{block}__");
         let _ = writeln!(s, "// Register accessor for block {block}");
-        let _ = writeln!(s, "extern uint8_t synth_reg_{id}_{block}(uint16_t addr, uint8_t mask);");
-        let _ = writeln!(s, "extern void synth_write_{id}_{block}(uint16_t addr, uint8_t v);");
-        let _ = writeln!(s, "static inline int synth_inline_{id}_{block}(int a) {{ return a * {block}; }}");
-        let _ = writeln!(s, "typedef struct {{ uint8_t lo; uint8_t hi; }} synth_pair_{id}_{block}_t;");
+        let _ = writeln!(
+            s,
+            "extern uint8_t synth_reg_{id}_{block}(uint16_t addr, uint8_t mask);"
+        );
+        let _ = writeln!(
+            s,
+            "extern void synth_write_{id}_{block}(uint16_t addr, uint8_t v);"
+        );
+        let _ = writeln!(
+            s,
+            "static inline int synth_inline_{id}_{block}(int a) {{ return a * {block}; }}"
+        );
+        let _ = writeln!(
+            s,
+            "typedef struct {{ uint8_t lo; uint8_t hi; }} synth_pair_{id}_{block}_t;"
+        );
         let _ = writeln!(s);
         block += 1;
     }
