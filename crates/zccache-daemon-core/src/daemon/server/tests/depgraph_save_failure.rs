@@ -8,7 +8,7 @@
 //! Failures are induced through the depgraph crate's own seam,
 //! `inject_save_failures_for_tests`, so the real `save_to_file` runs up to the
 //! point of failure (tmp file created) and then returns `Err`. The seam is a
-//! process-global counter, so every test here holds [`INJECTION_LOCK`] to keep
+//! process-global (path-scoped) counter, so every test here holds [`INJECTION_LOCK`] to keep
 //! one test's injected failures from being consumed by another's save.
 
 use super::super::*;
@@ -103,7 +103,7 @@ async fn a_failed_periodic_save_keeps_the_loop_running_and_retries() {
     std::fs::remove_file(&depgraph_path).ok();
     state.dep_graph_persisted.store(false, Ordering::Release);
 
-    crate::depgraph::inject_save_failures_for_tests(3);
+    crate::depgraph::inject_save_failures_for_tests(root.path(), 3);
     let started = MaintenanceSchedule::new(
         Arc::clone(&state),
         MaintenancePolicy::default(),
@@ -127,7 +127,7 @@ async fn a_failed_periodic_save_keeps_the_loop_running_and_retries() {
     std::fs::remove_file(&depgraph_path).unwrap();
     let saved_again = wait_until(|| depgraph_path.exists()).await;
     stop(&state);
-    crate::depgraph::inject_save_failures_for_tests(0);
+    crate::depgraph::inject_save_failures_for_tests(root.path(), 0);
     assert!(
         saved_again,
         "the save loop must still be alive after failing"
@@ -150,7 +150,7 @@ async fn a_save_after_failures_persists_later_registrations() {
         .load()
         .register(context(root.path(), "first.c"));
 
-    crate::depgraph::inject_save_failures_for_tests(4);
+    crate::depgraph::inject_save_failures_for_tests(root.path(), 4);
     MaintenanceSchedule::new(
         Arc::clone(&state),
         MaintenancePolicy::default(),
@@ -171,7 +171,7 @@ async fn a_save_after_failures_persists_later_registrations() {
         .register(context(root.path(), "second.c"));
     let second = wait_until(|| persisted_contexts(&depgraph_path) == Some(2)).await;
     stop(&state);
-    crate::depgraph::inject_save_failures_for_tests(0);
+    crate::depgraph::inject_save_failures_for_tests(root.path(), 0);
     assert!(
         second,
         "a context registered after the failed saves must reach the snapshot"
@@ -194,9 +194,9 @@ fn a_failed_save_leaves_the_prior_snapshot_intact() {
     let before = std::fs::read(&path).unwrap();
 
     graph.register(context(root.path(), "b.c"));
-    crate::depgraph::inject_save_failures_for_tests(1);
+    crate::depgraph::inject_save_failures_for_tests(root.path(), 1);
     let result = crate::depgraph::save_to_file(&graph, &path);
-    crate::depgraph::inject_save_failures_for_tests(0);
+    crate::depgraph::inject_save_failures_for_tests(root.path(), 0);
 
     assert!(result.is_err(), "the injected failure must surface as Err");
     assert_eq!(
@@ -274,9 +274,9 @@ async fn a_depgraph_failure_does_not_abort_embedded_shutdown() {
             .is_ok());
     }
 
-    crate::depgraph::inject_save_failures_for_tests(1);
+    crate::depgraph::inject_save_failures_for_tests(tmp.path(), 1);
     let report = daemon.shutdown().await;
-    crate::depgraph::inject_save_failures_for_tests(0);
+    crate::depgraph::inject_save_failures_for_tests(tmp.path(), 0);
 
     let outcome = |name: &str| {
         report

@@ -26,7 +26,6 @@
 
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bincode::Options;
@@ -51,22 +50,39 @@ pub const SNAPSHOT_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 /// Each round re-measures after evicting, so this is only a backstop.
 const MAX_EVICTION_ROUNDS: usize = 16;
 
-/// Pending injected save failures (see [`inject_save_failures_for_tests`]).
-static INJECTED_SAVE_FAILURES: AtomicUsize = AtomicUsize::new(0);
+/// Pending injected save failures (see [`inject_save_failures_for_tests`]):
+/// `(path prefix, remaining count)`. Scoped to a path prefix so a test that
+/// injects failures cannot break unrelated saves running concurrently in the
+/// same process (e.g. under `cargo test`, which runs tests as threads).
+static INJECTED_SAVE_FAILURES: std::sync::Mutex<Option<(String, usize)>> =
+    std::sync::Mutex::new(None);
 
-/// Test seam: make the next `count` saves fail *after* the tmp file has been
-/// created, exactly like a mid-write I/O error. Process-global, so tests
-/// using it should not run concurrently with other depgraph saves in the
-/// same process. Pass 0 to clear.
+/// Test seam: make the next `count` saves whose target path lies under
+/// `scope` fail *after* the tmp file has been created, exactly like a
+/// mid-write I/O error. Saves to other paths are unaffected. Pass 0 to clear.
 #[doc(hidden)]
-pub fn inject_save_failures_for_tests(count: usize) {
-    INJECTED_SAVE_FAILURES.store(count, Ordering::SeqCst);
+pub fn inject_save_failures_for_tests(scope: &Path, count: usize) {
+    let mut slot = INJECTED_SAVE_FAILURES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = (count > 0).then(|| (scope.to_string_lossy().into_owned(), count));
 }
 
-fn take_injected_failure() -> bool {
-    INJECTED_SAVE_FAILURES
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-        .is_ok()
+fn take_injected_failure(path: &Path) -> bool {
+    let mut slot = INJECTED_SAVE_FAILURES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some((scope, remaining)) = slot.as_mut() else {
+        return false;
+    };
+    if !path.starts_with(Path::new(scope.as_str())) {
+        return false;
+    }
+    *remaining -= 1;
+    if *remaining == 0 {
+        *slot = None;
+    }
+    true
 }
 
 /// Options for [`save_to_file_with`]. [`Default`] uses the real clock,
@@ -233,7 +249,7 @@ fn write_tmp(
     writer.write_all(&DEPGRAPH_VERSION.to_le_bytes())?;
     writer.write_all(&payload_len.to_le_bytes())?;
 
-    if fail_injection || take_injected_failure() {
+    if fail_injection || take_injected_failure(tmp_path) {
         return Err(SnapshotError::Io(std::io::Error::other(
             "injected depgraph save failure",
         )));
