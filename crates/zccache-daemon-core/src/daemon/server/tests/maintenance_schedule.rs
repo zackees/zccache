@@ -272,6 +272,10 @@ async fn zccache_owned_maintenance_reclaims_a_retired_version_store() {
     std::fs::create_dir_all(&retired).expect("retired store");
     let victim = retired.join("blob.bin");
     std::fs::write(&victim, b"stale retired-store artifact").expect("victim artifact");
+    // The disk loop waits for the startup artifact/depgraph loads, which the
+    // real daemon runs; this test has no loader, so mark them complete.
+    state.artifacts_loaded.store(true, Ordering::Release);
+    state.dep_graph_load_complete.store(true, Ordering::Release);
 
     let started = MaintenanceSchedule::new(
         Arc::clone(&state),
@@ -310,6 +314,10 @@ async fn host_owned_maintenance_does_not_touch_retired_version_stores() {
     std::fs::create_dir_all(&retired).expect("retired store");
     let victim = retired.join("blob.bin");
     std::fs::write(&victim, b"stale retired-store artifact").expect("victim artifact");
+    // The disk loop waits for the startup artifact/depgraph loads, which the
+    // real daemon runs; this test has no loader, so mark them complete.
+    state.artifacts_loaded.store(true, Ordering::Release);
+    state.dep_graph_load_complete.store(true, Ordering::Release);
 
     let started = MaintenanceSchedule::new(
         Arc::clone(&state),
