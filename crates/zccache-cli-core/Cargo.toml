@@ -29,7 +29,7 @@ cli = [
     "symbols",
     "zccache-artifact/cli",
 ]
-download = ["dep:zccache-download", "dep:futures", "dep:reqwest"]
+download = ["dep:zccache-download", "dep:reqwest"]
 download-client = [
     "download",
     "download-protocol",
@@ -81,7 +81,6 @@ tracing-subscriber = { workspace = true, optional = true }
 # download stack
 reqwest = { workspace = true, features = ["json"], optional = true }
 sha2 = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
