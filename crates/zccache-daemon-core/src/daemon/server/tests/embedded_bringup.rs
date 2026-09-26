@@ -116,8 +116,12 @@ async fn readiness_does_not_wait_for_a_slow_depgraph_load() {
     register_context(&first.state, work.path());
     first.shutdown().await;
 
-    let delay = std::time::Duration::from_millis(1500);
-    let _delay = LoadDelay::set(delay.as_millis() as u64);
+    // #1716: far longer than any observed start (about 1.8s on a slow arm
+    // runner), so the load is certainly still pending when start returns.
+    // `dep_graph_load_complete == false` below is the deterministic proof
+    // that readiness did not wait; the wall-clock bound is a coarse guard.
+    let delay = std::time::Duration::from_millis(5000);
+    let load_delay = LoadDelay::set(delay.as_millis() as u64);
     let started = std::time::Instant::now();
     let second = start(&cache_dir).await;
     let ready = started.elapsed();
@@ -132,6 +136,8 @@ async fn readiness_does_not_wait_for_a_slow_depgraph_load() {
 
     // Shutdown joins the load, so the restored graph is what gets saved.
     assert!(super::super::embedded_bringup::await_depgraph_load(&second.state).await);
+    // The process-wide delay must not outlive the load it was set for.
+    drop(load_delay);
     assert_eq!(second.state.dep_graph.load().stats().context_count, 1);
     second.shutdown().await;
 
