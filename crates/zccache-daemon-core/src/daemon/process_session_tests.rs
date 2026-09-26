@@ -346,3 +346,73 @@ async fn compiler_session_records_a_tree_peak_that_covers_a_heavy_descendant() {
         "tree peak {tree} must exceed the child's own {own}"
     );
 }
+
+#[test]
+fn a_driver_waiting_on_a_busy_compiler_child_is_making_progress() {
+    let driver = Some(std::time::Duration::from_millis(40));
+    assert!(super::session::stall_cpu_advanced(
+        driver,
+        driver,
+        Some(1_000),
+        Some(1_250)
+    ));
+    assert!(!super::session::stall_cpu_advanced(
+        driver,
+        driver,
+        Some(1_250),
+        Some(1_250)
+    ));
+}
+
+#[test]
+fn a_driver_moving_from_its_compiler_to_its_assembler_is_making_progress() {
+    // cc1plus exits and `as` starts: the live descendants' total drops.
+    let driver = Some(std::time::Duration::from_millis(40));
+    assert!(super::session::stall_cpu_advanced(
+        driver,
+        driver,
+        Some(30_000),
+        Some(3)
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn descendant_cpu_counts_a_busy_compiler_child_of_a_waiting_driver() {
+    use std::os::unix::process::CommandExt;
+    // The trailing `exit` keeps the shell waiting, as gcc waits on cc1plus.
+    let mut driver = std::process::Command::new("sh")
+        .args(["-c", "sh -c 'while :; do :; done'; exit 0"])
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let pid = driver.id();
+    // The busy compiler is the driver's one child, once the driver forks it.
+    let compiler = loop {
+        let children =
+            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+        if let Some(child) = children.split_whitespace().next() {
+            break child.parse::<u32>().unwrap();
+        }
+        assert!(driver.try_wait().unwrap().is_none(), "the driver exited");
+        std::thread::yield_now();
+    };
+    use crate::platform::process::inspect::{cpu_ticks, descendant_cpu_ticks};
+    let start = descendant_cpu_ticks(pid);
+    let compiler_start = cpu_ticks(compiler);
+    // Wait on the event itself, the compiler's own CPU advancing, however long
+    // a loaded host starves it; the driver's total already includes
+    // `compiler_start`, so it must have advanced past `start` too.
+    while cpu_ticks(compiler).is_some_and(|now| Some(now) <= compiler_start) {
+        std::thread::yield_now();
+    }
+    let now = descendant_cpu_ticks(pid);
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .status();
+    let _ = driver.wait();
+    assert!(
+        matches!((start, now), (Some(start), Some(now)) if now > start),
+        "the busy child's CPU must count as the driver's progress: {start:?} -> {now:?}"
+    );
+}
