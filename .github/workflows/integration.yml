@@ -217,6 +217,10 @@ jobs:
           # This repeats the full-workspace compilation shape above.
           CARGO_BUILD_JOBS: "1"
           SOLDR_JOBS: "1"
+          # zccache#1670's `matches_legacy_on_corpus_dir` checks the
+          # single-pass include lexer against the legacy scanner over a real
+          # header tree; the runner's system headers are that tree (#1648).
+          ZCCACHE_SCAN_CORPUS_DIR: /usr/include
         run: |
           set +e
           unset ZCCACHE_CACHE_DIR
