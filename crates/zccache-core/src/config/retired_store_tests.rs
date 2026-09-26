@@ -629,7 +629,9 @@ fn issue_1673_pressure_estimate_counts_unknown_but_not_proven_shared() {
 fn issue_1687_removal_frees_space_truth_table() {
     use kernal_api::platform::fs::ExtentSharing::{self, Exclusive, Shared, Unknown};
     // `None` sharing = the probe itself failed (no FIEMAP, network share).
-    let rows: [(&str, Option<u64>, Option<ExtentSharing>, bool, bool); 7] = [
+    // (case, link count, sharing, frees under estimate, frees under strict)
+    type Row = (&'static str, Option<u64>, Option<ExtentSharing>, bool, bool);
+    let rows: [Row; 7] = [
         ("last link, exclusive", Some(1), Some(Exclusive), true, true),
         (
             "last link, reflink-shared",
