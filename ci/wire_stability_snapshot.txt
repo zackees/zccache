@@ -84,6 +84,7 @@ DaemonStatus	29	watcher_degradations	uint64
 DaemonStatus	30	index_writer_gone	bool
 DaemonStatus	31	bincode_requests_by_type	map<string, uint64>
 DaemonStatus	32	bincode_request_telemetry_available	bool
+DaemonStatus	33	materialization	MaterializationStatus
 EnvVar	1	name	string
 EnvVar	2	value	string
 Error	1	message	string
@@ -156,6 +157,11 @@ LookupOutcomes	3	depgraph_cold_skip	uint64
 LookupOutcomes	4	depgraph_other_miss	map<string, uint64>
 LookupResult	1	hit	ArtifactData
 LookupResult	2	miss	Empty
+MaterializationStatus	1	mode	string
+MaterializationStatus	2	reflink	uint64
+MaterializationStatus	3	hardlink	uint64
+MaterializationStatus	4	copy	uint64
+MaterializationStatus	5	reflink_fallbacks	uint64
 Path	1	value	string
 PhaseProfileSummary	1	hit_count	uint64
 PhaseProfileSummary	2	miss_count	uint64
