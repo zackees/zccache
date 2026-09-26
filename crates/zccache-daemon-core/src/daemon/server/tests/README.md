@@ -5,7 +5,8 @@ Split per domain so each file stays well under 1,000 LOC; one module per
 sibling `server/` subject (pack/persist, cache trim, fingerprint, link cache,
 PCH resolution, write-cached-output, post-link hook, server IPC end-to-end).
 `fs_matrix.rs` runs the same materialization contract against every available
-filesystem fixture and always prints executed/skipped rows with reasons.
+filesystem fixture and always prints executed/skipped rows with reasons; its
+`ZCCACHE_MODE` column runs all four modes on every row (#1683).
 `write_cached_mode.rs` runs the cache-hit executor under each `ZCCACHE_MODE`
 (#1683): COPY/REFLINK share one independent-delivery contract, LINK shares the
 cache inode only for eligible outputs, and switching modes migrates outputs.

@@ -1,0 +1,57 @@
+name: Reflink e2e
+
+# ZCCACHE_MODE end to end on a real reflink volume (#1683, #1691). Called
+# from ci.yml; not a standalone PR workflow (#1639). A host btrfs loop mount
+# on the hosted runner provides reflink + FIEMAP extent-sharing evidence,
+# the runner's own ext4 temp directory the cross-device case.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  btrfs:
+    name: Reflink e2e (btrfs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: zackees/setup-soldr@dfbe9627f6cb0226716b61625b99a58949162720 # v0.9.79
+        with:
+          save-cache: auto
+          zccache-seed-strict: true
+          toolchain: 1.95.0
+          cache: true
+          linker: fast
+      - name: Mount a btrfs loop volume
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y btrfs-progs
+          truncate -s 4G "$RUNNER_TEMP/btrfs.img"
+          mkfs.btrfs -q "$RUNNER_TEMP/btrfs.img"
+          mkdir -p "$RUNNER_TEMP/btrfs"
+          sudo mount -o loop "$RUNNER_TEMP/btrfs.img" "$RUNNER_TEMP/btrfs"
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/btrfs"
+          echo probe > "$RUNNER_TEMP/btrfs/probe"
+          cp --reflink=always "$RUNNER_TEMP/btrfs/probe" "$RUNNER_TEMP/btrfs/probe-clone"
+          echo "ZCCACHE_REFLINK_E2E_ROOT=$RUNNER_TEMP/btrfs" >> "$GITHUB_ENV"
+          echo "ZCCACHE_REFLINK_E2E_OTHER_ROOT=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Parent/child worktree cache sharing in every mode
+        env:
+          ZCCACHE_REQUIRE_REFLINK_E2E: "1"
+        run: >-
+          soldr cargo test -p zccache --features test-support --test cache_rust
+          -- --ignored reflink_e2e --nocapture --test-threads=1
+      - name: Mode, store, accounting and COPY-block tests on btrfs
+        env:
+          TMPDIR: ${{ runner.temp }}/btrfs
+        run: |
+          soldr cargo test -p zccache-daemon-core --features test-support --lib -- write_cached_mode store_mode delivery_mode issue_1687 mode_tests
+          soldr cargo test -p zccache-core --lib -- materialization_mode issue_1687
+          soldr cargo test -p zccache-artifact --lib -- bundle_mode
