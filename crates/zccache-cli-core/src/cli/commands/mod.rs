@@ -83,6 +83,26 @@ pub fn run() -> ExitCode {
     run_with_args(&args)
 }
 
+/// Whether `args` (a full argv) runs one compiler invocation through the
+/// wrapper: `zccache <compiler> ...`, or the `cc` / `c++` wrapper subcommands.
+///
+/// A build spawns one such process per compile unit and it lives for the
+/// whole compile, so it is the hot path that must not arm anything with a
+/// steady CPU cost (#1649).
+#[must_use]
+pub fn is_compiler_wrapper_invocation(args: &[String]) -> bool {
+    let Some(rest) = args.get(1..) else {
+        return false;
+    };
+    match wrap::strip_leading_wrapper_flags(rest) {
+        Ok((_, wrapper_args)) => wrapper_args.first().is_some_and(|first| {
+            matches!(first.as_str(), "cc" | "c++")
+                || (!KNOWN_SUBCOMMANDS.contains(&first.as_str()) && !first.starts_with("--"))
+        }),
+        Err(_) => false,
+    }
+}
+
 /// Parse and dispatch an explicit full argv vector.
 ///
 /// Embedders use this entrypoint to invoke daemon-free CLI subcommands without

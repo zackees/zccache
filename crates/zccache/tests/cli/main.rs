@@ -26,5 +26,6 @@ mod cli_session_end;
 mod cli_single_daemon_per_session;
 mod cli_wrapper_failure_boundaries;
 mod cli_wrapper_passthrough;
+mod cli_wrapper_startup_budget;
 mod formatter_api;
 mod single_binary_distribution;

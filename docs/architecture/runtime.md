@@ -531,6 +531,19 @@ Auto-surfacing: every successful `install()` refreshes `<cache>/last_run_<bin>.t
 
 The dumper is intentionally text-only for v1 — minidumps via `MiniDumpWriteDump` / `minidump-writer` are out of scope (see issue #313).
 
+**Compiler-wrapper processes skip native capture (#1649).** kernal-api's
+native capture runs an all-thread pre-crash sampler that takes a resolved
+snapshot every 50 ms (about 300 ms of CPU each) for the life of the process
+and joins an in-flight capture on exit. A wrapper process lives for its whole
+compile, so arming it put a sampler on every concurrent compile: a cold
+`cargo build -p zccache -j4` took 131-146 s instead of 41 s, and each
+`rustc -vV` probe 358 ms instead of 41 ms. The `zccache` binary therefore calls
+`install_without_native_capture` when argv is a compiler invocation
+(`zccache <compiler> ...`, `zccache cc|c++ ...`; see
+`is_compiler_wrapper_invocation`). It keeps the panic hook, spool drain and
+last-run marker. The daemon and every other subcommand keep full native
+capture. `cli_wrapper_startup_budget` guards the wrapper's cost.
+
 ### Artifact Store Recovery
 
 **Orphaned temp directories:** On startup, `{cache_root}/tmp/` is deleted recursively. This removes any incomplete artifact writes from a previous crash.

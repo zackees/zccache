@@ -249,6 +249,25 @@ pub struct CrashGuard {
 /// otherwise stack panic hooks and re-register signal handlers — both
 /// safe but wasteful.)
 pub fn install(bin_stem: &'static str) -> CrashGuard {
+    install_with(bin_stem, true)
+}
+
+/// [`install`] without native signal capture, for hot-path processes (#1649).
+///
+/// kernal-api's native capture runs an all-thread pre-crash sampler that
+/// takes a full resolved snapshot every 50 ms, about 300 ms of CPU each, for
+/// the whole life of the process, and joins an in-flight capture on exit. A
+/// compiler-wrapper process lives for its entire compile, so every concurrent
+/// compile carried a sampler burning most of a core: a cold `cargo build` of
+/// this workspace took 131-146 s instead of 41 s, and each `rustc -vV` probe
+/// 358 ms instead of 52 ms. Wrapper processes keep the panic hook, spool
+/// drain and last-run marker; the daemon, which does the compile work, keeps
+/// native capture.
+pub fn install_without_native_capture(bin_stem: &'static str) -> CrashGuard {
+    install_with(bin_stem, false)
+}
+
+fn install_with(bin_stem: &'static str, native: bool) -> CrashGuard {
     // First call wins; subsequent calls observe the already-set stem
     // and return an empty guard.
     if BIN_STEM.set(bin_stem.to_string()).is_err() {
@@ -257,7 +276,11 @@ pub fn install(bin_stem: &'static str) -> CrashGuard {
 
     install_panic_hook();
     point_native_spool_at_this_cache_dir();
-    let handler = install_signal_handler();
+    let handler = if native {
+        install_signal_handler()
+    } else {
+        None
+    };
     // The facade captures a fatal signal to a binary record and deliberately
     // does not format anything from signal context. Turning those records
     // into this crate's own dumps is the client's half of that bargain, and

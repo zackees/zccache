@@ -46,7 +46,14 @@ fn run_main() -> ExitCode {
     // handler so a fault inside arg parsing or symbol install still
     // leaves a dump under `~/.zccache/crashes/`. Guard stays alive
     // until main returns. See issue #313.
-    let _crash_guard = zccache::core::crash::install("zccache");
+    // #1649: a compiler-wrapper process lives for its whole compile, so it
+    // must not carry native capture's always-on sampler.
+    let args: Vec<String> = std::env::args().collect();
+    let _crash_guard = if zccache::cli::commands::is_compiler_wrapper_invocation(&args) {
+        zccache::core::crash::install_without_native_capture("zccache")
+    } else {
+        zccache::core::crash::install("zccache")
+    };
     zccache::core::crash::note_previous_crashes();
 
     zccache::cli::commands::run()
