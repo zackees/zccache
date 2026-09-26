@@ -654,7 +654,9 @@ fn commit_rustc_artifact_index(
 ///
 /// The requested depfile on disk keeps the compiler's bytes; the cached
 /// payload comes from a private copy so a sibling worktree's hit can
-/// rehydrate its own root (`rehydrate_depfile_root_file`).
+/// rehydrate its own root (`rehydrate_delivered_depfile`). A depfile that
+/// still names the root in a spelling the rewrite missed is bound to this
+/// root, so a sibling's hit recompiles rather than replaying it.
 pub(super) fn canonicalize_captured_depfile_root(
     capture: &mut Option<(NormalizedPath, Vec<u8>)>,
     persist_temp: Option<tempfile::TempDir>,
@@ -664,7 +666,10 @@ pub(super) fn canonicalize_captured_depfile_root(
     let Some((source_path, bytes)) = capture.as_mut() else {
         return Ok(persist_temp);
     };
-    let canonical = canonicalize_depfile_root(bytes, key_root);
+    let mut canonical = canonicalize_depfile_root(bytes, key_root);
+    if names_unrewritten_root_path(&canonical, key_root) {
+        canonical = bind_depfile_to_root(&canonical, key_root);
+    }
     if canonical == *bytes {
         return Ok(persist_temp);
     }

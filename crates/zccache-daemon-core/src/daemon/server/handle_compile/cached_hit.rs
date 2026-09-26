@@ -430,8 +430,8 @@ pub(super) fn materialize_cached_compile_hit(
     let rehydrate_stderr = contains_staged_output_marker(stderr.as_slice());
     if !depfile_targets.is_empty() || rehydrate_stdout || rehydrate_stderr {
         for target in depfile_targets {
-            if let Err(error) = rehydrate_logical_depfile(target.as_path(), &targets)
-                .and_then(|()| rehydrate_depfile_root_file(target, depfile_key_root.as_ref()))
+            if let Err(error) =
+                rehydrate_delivered_depfile(target, &targets, depfile_key_root.as_ref())
             {
                 write_session_log(
                     &state.sessions,
