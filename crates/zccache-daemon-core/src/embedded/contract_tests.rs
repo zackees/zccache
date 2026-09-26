@@ -29,7 +29,6 @@ fn concurrent_real_cache_hits_leave_embedded_control_plane_responsive() {
     let temp = TempDir::new().expect("fixture directory");
     let mut settings = config(&temp, "real-hit-control-plane", None);
     settings.runtime.handle = Some(host_rt.handle().clone());
-    let artifact_dir = crate::core::config::artifacts_dir_from_cache_dir(&settings.cache_root);
     let service = host_rt
         .block_on(ZccacheService::start(settings))
         .expect("embedded service starts");
@@ -85,6 +84,11 @@ fn concurrent_real_cache_hits_leave_embedded_control_plane_responsive() {
     let service = host_rt
         .block_on(ZccacheService::start(replay_settings))
         .expect("restart embedded service for staged replay");
+    // Lock the store the daemon really serves. The configured cache root is
+    // not it: the daemon scopes artifacts under a per-version subdirectory,
+    // so locking `artifacts_dir_from_cache_dir(cache_root)` contended with
+    // nothing and the "held" hits finished whenever they won the race.
+    let artifact_dir = service.daemon.test_artifact_dir();
 
     let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);

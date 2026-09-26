@@ -63,6 +63,13 @@ impl EmbeddedDaemon {
         self.state.active_cache_requests()
     }
 
+    /// The artifact directory the running daemon actually serves, which is
+    /// the version-scoped subdirectory of the configured cache root.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn test_artifact_dir(&self) -> crate::core::NormalizedPath {
+        self.state.artifact_dir.clone()
+    }
+
     #[cfg(test)]
     pub(crate) async fn start(
         endpoint: String,

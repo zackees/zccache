@@ -161,39 +161,54 @@ pub fn reset_scan_includes_calls() {
 /// and string/character literals. Handles backslash line continuations.
 pub fn scan_includes_str(source: &str) -> Vec<IncludeDirective> {
     SCAN_INCLUDES_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let joined = join_continuations(source);
     let mut results = Vec::new();
-
-    // Track original line numbers: each line in `joined` maps to a source line.
-    // After joining continuations, we need to track the starting line of each
-    // logical line.
-    let line_map = build_line_map(source);
-
     let mut in_block_comment = false;
+    // Reused only when a logical line spans backslash continuations.
+    let mut buf = String::new();
+    let mut rest = source;
+    let mut line_no: u32 = 0;
 
-    for (logical_idx, line) in joined.lines().enumerate() {
-        let source_line = if logical_idx < line_map.len() {
-            line_map[logical_idx]
+    while !rest.is_empty() {
+        line_no += 1;
+        let source_line = line_no;
+        let (phys, had_newline, tail) = split_physical_line(rest);
+        rest = tail;
+
+        let logical: &str = if had_newline && phys.ends_with('\\') {
+            buf.clear();
+            buf.push_str(&phys[..phys.len() - 1]);
+            loop {
+                let (p, nl, t) = split_physical_line(rest);
+                rest = t;
+                if p.is_empty() && !nl {
+                    break;
+                }
+                line_no += 1;
+                if nl && p.ends_with('\\') {
+                    buf.push_str(&p[..p.len() - 1]);
+                } else {
+                    buf.push_str(p);
+                    break;
+                }
+            }
+            buf.as_str()
         } else {
-            (logical_idx + 1) as u32
+            phys
         };
 
         if in_block_comment {
-            if let Some(end) = line.find("*/") {
+            if let Some(end) = logical.find("*/") {
                 // Block comment ends on this line. Check rest of line.
-                let rest = &line[end + 2..];
-                if let Some(dir) = parse_include_from_line(rest) {
+                let after = &logical[end + 2..];
+                if let Some(dir) = parse_include_from_line(after) {
                     results.push(IncludeDirective {
                         line: source_line,
                         ..dir
                     });
                 }
                 in_block_comment = false;
-                // Could have another block comment start after — fuse the
-                // detect-and-locate into one search to drop the expect and
-                // halve the scanner's per-line work on the hot path.
-                if let Some(after_end) = rest.find("/*") {
-                    if !rest[..after_end].contains("*/") {
+                if let Some(after_end) = after.find("/*") {
+                    if !after[..after_end].contains("*/") {
                         in_block_comment = true;
                     }
                 }
@@ -201,17 +216,53 @@ pub fn scan_includes_str(source: &str) -> Vec<IncludeDirective> {
             continue;
         }
 
-        // Strip line comments first.
-        let effective = strip_comments(line, &mut in_block_comment);
-        if let Some(dir) = parse_include_from_line(&effective) {
-            results.push(IncludeDirective {
-                line: source_line,
-                ..dir
-            });
+        let bytes = logical.as_bytes();
+        let has_hash = bytes.contains(&b'#');
+        let has_slash = bytes.contains(&b'/');
+        if !has_slash {
+            // No comment markers: only a directive line can matter.
+            if has_hash {
+                if let Some(dir) = parse_include_from_line(logical) {
+                    results.push(IncludeDirective {
+                        line: source_line,
+                        ..dir
+                    });
+                }
+            }
+            continue;
+        }
+        if !has_hash && !bytes.windows(2).any(|w| w == b"/*") {
+            // Only `//` comments and no directive: nothing to track.
+            continue;
+        }
+
+        // Strip comments (also updates block-comment state).
+        let effective = strip_comments(logical, &mut in_block_comment);
+        if has_hash {
+            if let Some(dir) = parse_include_from_line(&effective) {
+                results.push(IncludeDirective {
+                    line: source_line,
+                    ..dir
+                });
+            }
         }
     }
 
     results
+}
+
+/// Split off one physical line. Returns the line (without `\n` and, when
+/// newline-terminated, without a trailing `\r`), whether it ended in `\n`,
+/// and the remaining input.
+fn split_physical_line(s: &str) -> (&str, bool, &str) {
+    match s.as_bytes().iter().position(|&b| b == b'\n') {
+        Some(nl) => {
+            let line = &s[..nl];
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            (line, true, &s[nl + 1..])
+        }
+        None => (s, false, ""),
+    }
 }
 
 /// Scan a file on disk for `#include` directives.
@@ -470,52 +521,6 @@ fn scan_one_level(
 }
 
 // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-/// Join backslash-continued lines into single logical lines.
-fn join_continuations(source: &str) -> String {
-    let mut result = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.peek() {
-                Some('\n') => {
-                    // Don't emit either the backslash or the newline.
-                    chars.next();
-                }
-                Some('\r') => {
-                    chars.next(); // consume \r
-                    if chars.peek() == Some(&'\n') {
-                        chars.next(); // consume \n
-                    }
-                    // Don't emit.
-                }
-                _ => result.push(ch),
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-
-    result
-}
-
-/// Build a map from logical line index to 1-based source line number.
-/// Accounts for backslash continuations merging multiple source lines.
-fn build_line_map(source: &str) -> Vec<u32> {
-    let mut map = Vec::new();
-    let mut continued = false;
-
-    for (source_line, line) in (1_u32..).zip(source.split('\n')) {
-        if !continued {
-            map.push(source_line);
-        }
-        let trimmed = line.trim_end_matches('\r');
-        continued = trimmed.ends_with('\\');
-    }
-
-    map
-}
 
 /// Strip line comments and block comments from a line.
 /// Updates `in_block_comment` state for multi-line block comments.
@@ -847,6 +852,41 @@ mod tests {
         let includes = scan_includes_str(source);
         assert_eq!(includes.len(), 1);
         assert_eq!(includes[0].path, "after.h");
+    }
+
+    #[test]
+    fn single_pass_matches_reference_on_mixed_source() {
+        let source = concat!(
+            "#inc\\\r\nlude <a.h>\r\n",                // lines 1-2
+            "int x; /* start\r\n",                     // line 3
+            "#include \"b.h\"\r\n",                    // line 4 (in comment)
+            "end */\r\n",                              // line 5
+            "#include \"b.h\"\r\n",                    // line 6
+            "// #include <c.h>\r\n",                   // line 7
+            "const char* s = \"#include <d.h>\";\r\n", // line 8
+            "#  include_next <e.h>\r\n",               // line 9
+        );
+        let got: Vec<(IncludeKind, String, u32)> = scan_includes_str(source)
+            .into_iter()
+            .map(|d| (d.kind, d.path, d.line))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (IncludeKind::AngleBracket, "a.h".to_string(), 1),
+                (IncludeKind::Quoted, "b.h".to_string(), 6),
+                (IncludeKind::AngleBracketNext, "e.h".to_string(), 9),
+            ]
+        );
+    }
+
+    #[test]
+    fn line_numbers_after_continuation() {
+        let source = "#define X \\\n  1 \\\n  2\n#include \"z.h\"\n";
+        let includes = scan_includes_str(source);
+        assert_eq!(includes.len(), 1);
+        assert_eq!(includes[0].path, "z.h");
+        assert_eq!(includes[0].line, 4);
     }
 
     // â”€â”€ resolve_include tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1292,17 +1332,6 @@ mod tests {
     }
 
     // â”€â”€ Helper function tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    #[test]
-    fn join_continuations_merges_lines() {
-        assert_eq!(join_continuations("a\\\nb"), "ab");
-        assert_eq!(join_continuations("a\\\r\nb"), "ab");
-    }
-
-    #[test]
-    fn join_continuations_preserves_normal_lines() {
-        assert_eq!(join_continuations("a\nb"), "a\nb");
-    }
 
     #[test]
     fn strip_comments_handles_line_comment() {

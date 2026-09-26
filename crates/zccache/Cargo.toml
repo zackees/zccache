@@ -263,6 +263,14 @@ name = "scan_recursive"
 harness = false
 
 [[bench]]
+name = "scan_includes"
+harness = false
+
+[[bench]]
+name = "miss_overhead"
+harness = false
+
+[[bench]]
 name = "fingerprint"
 harness = false
 
