@@ -223,9 +223,10 @@ struct DiskArtifact {
     key: String,
     allocated_bytes: u64,
     /// Allocated bytes of this artifact's files whose link count is exactly
-    /// one -- the space evicting it actually returns. A file hard-linked into
-    /// a build tree (or whose count is unknown) frees nothing when the cache
-    /// copy is unlinked (issue #1659).
+    /// one and whose blocks are not proven shared -- the space evicting it
+    /// actually returns. A file hard-linked into a build tree (or whose count
+    /// is unknown) frees nothing when the cache copy is unlinked (issue
+    /// #1659), nor does one reflinked into a build tree (#1687).
     reclaimable_bytes: u64,
     last_access: SystemTime,
     recently_published: bool,
@@ -428,7 +429,9 @@ fn add_file(
         let allocated = crate::platform::fs::volume::allocated_bytes(path, &metadata);
         artifact.allocated_bytes = artifact.allocated_bytes.saturating_add(allocated);
         // Unknown link count is treated as shared: never over-promise space.
-        if crate::core::config::file_link_count(path) == Some(1) {
+        // A reflink clone in a build tree leaves the cache file at nlink == 1
+        // while sharing its blocks, so proven sharing is excluded too (#1687).
+        if crate::core::config::file_may_free_space_on_removal(path) {
             artifact.reclaimable_bytes = artifact.reclaimable_bytes.saturating_add(allocated);
         }
     }
