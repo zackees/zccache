@@ -640,9 +640,7 @@ fn drop_time_checkpoint(state: &SharedState) {
         }
         // zccache#1661: a failed save is logged and the drop carries on to the
         // metadata snapshot; it must never abort the rest of the recovery.
-        match state.with_depgraph_persistence(|| {
-            crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path)
-        }) {
+        match state.with_depgraph_snapshot(|dg| crate::depgraph::save_to_file(dg, &depgraph_path)) {
             Ok(()) => persisted.push("depgraph"),
             Err(error) => tracing::warn!(
                 path = %depgraph_path.display(),
@@ -759,16 +757,15 @@ async fn flush_embedded_state(
         .await,
     );
 
-    let dg = state.dep_graph.load_full();
     let depgraph_path = embedded_depgraph_file_path(state);
     let depgraph_state = Arc::clone(state);
     steps.push(
         flush_step("depgraph", async move {
-            run_depgraph_save_with(Arc::clone(&depgraph_state), runtime_handle, move || {
+            run_depgraph_save_with(Arc::clone(&depgraph_state), runtime_handle, move |dg| {
                 if let Some(parent) = depgraph_path.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                 }
-                crate::depgraph::save_to_file(&dg, depgraph_path.as_path())
+                crate::depgraph::save_to_file(dg, depgraph_path.as_path())
                     .map_err(|error| error.to_string())?;
                 depgraph_state
                     .dep_graph_persisted

@@ -428,8 +428,7 @@ impl MaintenanceSchedule {
                             return;
                         }
                         waited += tick;
-                        let dg = state.dep_graph.load_full();
-                        let contexts = dg.stats().context_count;
+                        let contexts = state.dep_graph.load().stats().context_count;
                         let decision =
                             depgraph_save_due(waited, interval, contexts, last_saved_contexts);
                         let Some(reason) = decision else {
@@ -439,19 +438,21 @@ impl MaintenanceSchedule {
                         if let Some(parent) = path.parent() {
                             std::fs::create_dir_all(parent).ok();
                         }
-                        let save_state = Arc::clone(&state);
                         let save_path = path.clone();
                         match run_depgraph_save_with(
-                            save_state,
+                            Arc::clone(&state),
                             runtime_handle.as_ref(),
-                            move || crate::depgraph::save_to_file(&dg, &save_path),
+                            move |dg| {
+                                let saved = dg.stats().context_count;
+                                crate::depgraph::save_to_file(dg, &save_path).map(|()| saved)
+                            },
                         )
                         .await
                         {
-                            Ok(Ok(())) => {
+                            Ok(Ok(saved)) => {
                                 state.dep_graph_persisted.store(true, Ordering::Release);
-                                last_saved_contexts = contexts;
-                                tracing::info!(contexts, reason, "depgraph save");
+                                last_saved_contexts = saved;
+                                tracing::info!(contexts = saved, reason, "depgraph save");
                             }
                             // zccache#1661: a failed save is logged and the
                             // loop keeps ticking. The next due tick retries;
@@ -463,7 +464,10 @@ impl MaintenanceSchedule {
                                 reason,
                                 "periodic depgraph save failed; will retry next tick: {e}"
                             ),
-                            Err(e) => tracing::warn!("periodic depgraph save task failed: {e}"),
+                            Err(e) => {
+                                reraise_depgraph_save_panic(&e);
+                                tracing::warn!("periodic depgraph save task was cancelled: {e}");
+                            }
                         }
                     }
                 }
@@ -570,11 +574,19 @@ pub(super) fn run_depgraph_save_with<T, F>(
 ) -> kernal_api::async_engine::Task<T>
 where
     T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
+    F: FnOnce(&crate::depgraph::DepGraph) -> T + Send + 'static,
 {
-    launch_maintenance_blocking(runtime_handle, move || {
-        state.with_depgraph_persistence(save)
-    })
+    launch_maintenance_blocking(runtime_handle, move || state.with_depgraph_snapshot(save))
+}
+
+/// Re-raise a panic from the blocking periodic save inside the loop task, so
+/// the supervisor logs its payload, writes the durable death event and bounds
+/// restarts exactly as it did when the save ran inline (#1684, #1661). A
+/// cancelled save is not a fault and returns normally.
+pub(super) fn reraise_depgraph_save_panic(error: &kernal_api::async_engine::TaskError) {
+    if let Some(message) = supervise::panic_message(error) {
+        panic!("periodic depgraph save panicked: {message}");
+    }
 }
 
 #[cfg(test)]

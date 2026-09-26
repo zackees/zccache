@@ -209,7 +209,7 @@ async fn depgraph_saves_are_exclusive_without_blocking_async_progress() {
     let first_flag = Arc::clone(&first_done);
     let first_state = Arc::clone(&state);
     let first = tokio::spawn(async move {
-        run_depgraph_save_with(first_state, None, move || {
+        run_depgraph_save_with(first_state, None, move |_| {
             entered_tx.send(()).expect("test observes first save");
             release_rx.recv().expect("test releases first save");
             first_flag.store(true, Ordering::Release);
@@ -230,7 +230,7 @@ async fn depgraph_saves_are_exclusive_without_blocking_async_progress() {
 
     let second_state = Arc::clone(&state);
     let second = tokio::spawn(async move {
-        run_depgraph_save_with(second_state, None, move || {
+        run_depgraph_save_with(second_state, None, move |_| {
             first_done.load(Ordering::Acquire)
         })
         .await
@@ -243,6 +243,73 @@ async fn depgraph_saves_are_exclusive_without_blocking_async_progress() {
         second.await.expect("second task"),
         "same-state depgraph saves must not overlap"
     );
+}
+
+/// #1684: a save queued behind another must write the graph that is current
+/// when it gets the lock. The startup loader replaces the whole graph object
+/// (`DepGraphSetter::install`), so a snapshot taken before the lock could
+/// otherwise publish the graph the loader just replaced.
+#[tokio::test]
+async fn a_queued_depgraph_save_writes_the_graph_current_at_lock_time() {
+    let root = tempfile::tempdir().expect("cache root");
+    let state = test_state(&crate::core::NormalizedPath::new(root.path()));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let first_state = Arc::clone(&state);
+    let first = tokio::spawn(async move {
+        run_depgraph_save_with(first_state, None, move |_| {
+            entered_tx.send(()).expect("test observes first save");
+            release_rx.recv().expect("test releases first save");
+        })
+        .await
+        .expect("first blocking save")
+    });
+    entered_rx.await.expect("first save entered");
+
+    let second_state = Arc::clone(&state);
+    let second = tokio::spawn(async move {
+        run_depgraph_save_with(second_state, None, |graph| {
+            std::ptr::from_ref(graph) as usize
+        })
+        .await
+        .expect("second blocking save")
+    });
+
+    let installed = Arc::new(crate::depgraph::DepGraph::new());
+    let installed_addr = Arc::as_ptr(&installed) as usize;
+    state.dep_graph.store(installed);
+    release_tx.send(()).expect("release first save");
+    first.await.expect("first task");
+    assert_eq!(
+        second.await.expect("second task"),
+        installed_addr,
+        "the queued save must serialize the graph installed while it waited"
+    );
+}
+
+/// #1684: a panic inside the blocking save must reach the supervisor, which
+/// logs its payload, writes the durable `background-task-died` event and
+/// bounds restarts. Swallowing it as a `warn!` lost all three.
+#[tokio::test]
+async fn a_panicking_depgraph_save_is_reraised_for_the_supervisor() {
+    let error = kernal_api::async_engine::launch_blocking(|| panic!("serializer exploded"))
+        .await
+        .expect_err("the blocking save panicked");
+    let reraised = kernal_api::async_engine::launch(async move {
+        reraise_depgraph_save_panic(&error);
+    })
+    .await
+    .expect_err("a save panic must end the loop task");
+    assert_eq!(
+        supervise::panic_message(&reraised).as_deref(),
+        Some("periodic depgraph save panicked: serializer exploded"),
+        "the supervisor must see the original payload"
+    );
+
+    let cancelled = kernal_api::async_engine::launch(std::future::pending::<()>());
+    cancelled.cancel();
+    let cancelled = cancelled.await.expect_err("cancelled");
+    reraise_depgraph_save_panic(&cancelled);
 }
 
 #[tokio::test]
