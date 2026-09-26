@@ -44,7 +44,10 @@ pub(super) const TASK_DEPGRAPH_SAVE: &str = "depgraph-save";
 pub(super) const DEPGRAPH_SAVE_BATCH: usize = 32;
 /// How often the batch condition is polled between interval saves.
 pub(super) const DEPGRAPH_SAVE_BATCH_POLL: Duration = Duration::from_secs(5);
-const DEPGRAPH_SHUTDOWN_POLL: Duration = Duration::from_millis(100);
+/// How often the save loop checks the latched shutdown flag between ticks.
+/// It polls the flag rather than the shared `Notify` for the reasons on
+/// `wait_for_next_pass_or_shutdown`.
+const DEPGRAPH_SHUTDOWN_POLL: Duration = Duration::from_secs(1);
 
 /// Pure decision core for the save loop: `Some(reason)` when a save is due.
 pub(super) fn depgraph_save_due(
@@ -171,6 +174,7 @@ impl Default for MaintenanceIntervals {
 /// `started` is built by pushing at each spawn site — never derived from
 /// [`MAINTENANCE_TASKS`] — so the parity test compares real behaviour against
 /// the declaration rather than the declaration against itself.
+#[must_use = "dropping it cancels the owned disk-maintenance and depgraph-save loops"]
 pub(super) struct StartedMaintenance {
     pub(super) started: Vec<&'static str>,
     /// The disk-maintenance loop, which both shutdown paths join.
@@ -414,7 +418,12 @@ impl MaintenanceSchedule {
                     let mut last_saved_contexts = 0usize;
                     let mut waited = Duration::ZERO;
                     loop {
-                        if wait_for_depgraph_tick_or_shutdown(&state.shutdown_requested, tick).await
+                        if wait_for_next_pass_or_shutdown(
+                            &state.shutdown_requested,
+                            tick,
+                            DEPGRAPH_SHUTDOWN_POLL,
+                        )
+                        .await
                         {
                             return;
                         }
@@ -551,23 +560,6 @@ impl MaintenanceSchedule {
         })
         .detach();
         TASK_PRIVATE_DAEMON_OWNERS
-    }
-}
-
-async fn wait_for_depgraph_tick_or_shutdown(
-    shutdown_requested: &AtomicBool,
-    tick: Duration,
-) -> bool {
-    let deadline = kernal_api::async_engine::Deadline::after(tick);
-    loop {
-        if shutdown_requested.load(Ordering::Acquire) {
-            return true;
-        }
-        let remaining = deadline.remaining();
-        if remaining.is_zero() {
-            return false;
-        }
-        kernal_api::async_engine::sleep(remaining.min(DEPGRAPH_SHUTDOWN_POLL)).await;
     }
 }
 

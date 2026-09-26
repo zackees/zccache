@@ -996,7 +996,7 @@ fn pressure_scan_needed(state: &SharedState, policy: MaintenancePolicy) -> io::R
 /// and miss `notify_waiters()` between checking `shutdown_requested` and
 /// registering the waiter. Polling the durable atomic flag keeps shutdown
 /// bounded without either race.
-async fn wait_for_next_pass_or_shutdown(
+pub(super) async fn wait_for_next_pass_or_shutdown(
     shutdown_requested: &AtomicBool,
     interval: Duration,
     poll_interval: Duration,
