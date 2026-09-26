@@ -436,9 +436,9 @@ The mode governs every delivery, not just cache hits. The *store* direction
 `COPY`/`REFLINK`, so the build output never shares the blob's inode; `COPY`
 also skips the clone. Staged miss-path delivery (compile, link, exec,
 multi-source) and rust-plan bundles are always independent and skip the clone
-under `COPY`. `zccache warm` follows the same shareable tiers (`AUTO`:
-reflink, hardlink, copy); an independent warm output stamps the cache file
-directly so eviction still sees it as recently used. Every raw hardlink or
+under `COPY`. `zccache warm` keeps its historical hardlink-first order under
+`AUTO` and otherwise follows the shareable tiers; an independent warm output
+stamps the cache file directly so eviction still sees it as recently used. Every raw hardlink or
 reflink call lives in one of these mode-aware modules, which a guard test in
 `zccache-core` enforces.
 Unsupported shapes—including shared multi-source side outputs, C++ modules,
