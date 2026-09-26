@@ -259,6 +259,7 @@ pub(super) fn new_shared_state(
             session_staged_profiles: DashMap::new(),
             link_output_locks: DashMap::new(),
             system_includes: Mutex::new(system_includes_loaded),
+            system_include_probes: KeyedLocks::default(),
             system_includes_cache_path,
             dep_graph: arc_swap::ArcSwap::from_pointee(DepGraph::new()),
             artifacts,

@@ -18,6 +18,8 @@ Topic-focused submodules:
 - `rsp_cache.rs` — response-file (`@file`) expansion + caching
 - `cache_trim.rs` — time-based + size-capped trimmers for the ephemeral caches
 - `in_flight.rs` — RAII guard for `state.in_flight_bytes`
+- `keyed_locks.rs` — `KeyedLocks`, per-key async locks that single-flight the
+  system-include and compiler-identity probes (FastLED/fbuild#1466)
 - `pch.rs` — PCH source-header resolution
 - `client_env.rs` — replay client env into compiler children
 - `session.rs` — `Request::SessionStart` handler + session log writer

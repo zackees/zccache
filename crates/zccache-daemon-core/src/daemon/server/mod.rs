@@ -193,6 +193,7 @@ mod handle_release_worktree_handles;
 mod in_flight;
 mod index_reconcile;
 mod inner_trace;
+mod keyed_locks;
 mod keys;
 mod lifecycle;
 mod link_hash;
@@ -234,6 +235,7 @@ use handle_exec::handle_generic_tool_exec;
 use handle_link::handle_link_ephemeral;
 use handle_release_worktree_handles::handle_release_worktree_handles;
 use in_flight::*;
+use keyed_locks::KeyedLocks;
 use keys::*;
 #[doc(hidden)]
 pub use lifecycle::ProfileHandle;

@@ -81,8 +81,18 @@ pub(super) async fn discover_system_includes(
         if let Some(paths) = cached {
             (paths, false)
         } else {
-            let discovered =
-                discover_system_include_paths(compiler, lineage, compiler_priority, use_fast).await;
+            // FastLED/fbuild#1466: single-flight the probe per compiler. A
+            // cold burst of TUs would otherwise all miss above and each spawn
+            // its own `-v -E` / `-###`. The guard is held through the insert
+            // below, so waiters re-check here and reuse the first result.
+            let probe_gate = state.system_include_probes.get(compiler);
+            let _probe_guard = probe_gate.lock_owned().await;
+            let filled_while_waiting = state.system_includes.lock().await.get(compiler).is_some();
+            let discovered = if filled_while_waiting {
+                None
+            } else {
+                discover_system_include_paths(compiler, lineage, compiler_priority, use_fast).await
+            };
             // Inserted-this-call flag drives a single async write-through
             // snapshot after we drop the cache lock. We never block the
             // request thread on disk I/O — the snapshot runs in a
@@ -387,5 +397,67 @@ mod tests {
         for compiler in ["gcc", "/usr/bin/clang++", "rustc", "cl-something"] {
             assert_eq!(msvc_cl_system_includes(compiler, Some(&block)), None);
         }
+    }
+
+    /// FastLED/fbuild#1466: a cold burst of compiles for one compiler must
+    /// spawn the system-include probe once, not once per compile.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_cold_discovery_probes_the_compiler_once() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let include_dir = tmp.path().join("include");
+        std::fs::create_dir_all(&include_dir).unwrap();
+        let log = tmp.path().join("probes.log");
+        // gcc-family name, so discovery takes the `-v -E` path. The sleep
+        // keeps every concurrent request inside the probe window.
+        let compiler = tmp.path().join("fake-avr-g++");
+        std::fs::write(
+            &compiler,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{log}'\nsleep 0.3\n\
+                 printf '#include <...> search starts here:\\n {inc}\\nEnd of search list.\\n' >&2\n",
+                log = log.display(),
+                inc = include_dir.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cache_dir = NormalizedPath::new(tmp.path().join("cache"));
+        let server =
+            DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir)
+                .unwrap();
+        let state = server.test_state_arc();
+        let compiler = NormalizedPath::new(&compiler);
+
+        let mut requests = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let state = Arc::clone(&state);
+            let compiler = compiler.clone();
+            requests.spawn(async move {
+                let lineage = crate::daemon::lineage::Lineage::current(None, None);
+                discover_system_includes(
+                    &state,
+                    &compiler,
+                    &lineage,
+                    CompilePriority::Normal,
+                    false,
+                    None,
+                )
+                .await
+            });
+        }
+        while let Some(outcome) = requests.join_next().await {
+            let outcome = outcome.unwrap();
+            assert_eq!(outcome.includes.len(), 1, "every request sees the roots");
+            assert!(!outcome.empty_discovery);
+        }
+        let probes = std::fs::read_to_string(&log).unwrap().lines().count();
+        assert_eq!(
+            probes, 1,
+            "16 concurrent cold requests spawned {probes} probes"
+        );
     }
 }
