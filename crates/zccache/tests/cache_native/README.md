@@ -39,5 +39,6 @@ cargo nextest run --test cache_native -E 'test(/^<file_stem>::/)'
 - `daemon_ninja_rebuild_meson_test`
 - `daemon_pch_cache_basic_test`
 - `daemon_pch_cache_invalidation_test`
+- `daemon_pch_gcc_implicit_test`
 - `daemon_response_file_cache`
 - `link_bundle_integration_test`
