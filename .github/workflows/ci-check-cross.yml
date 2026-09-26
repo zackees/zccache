@@ -50,6 +50,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
+          # Cross-target closure: justified in ci/check_cache_footprint.py.
           cache-key-suffix: check-${{ inputs.label }}
           linker: fast
           cross-targets: ${{ inputs.target }}

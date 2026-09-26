@@ -37,7 +37,6 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
-          cache-key-suffix: check-${{ inputs.os }}
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
@@ -70,7 +69,6 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
-          cache-key-suffix: test-${{ inputs.os }}
           # Bound compile and test concurrency for the 8-GB ARM runner. This
           # is the prescribed ci-tests resource contract; the Test step below
           # remains the only lib/bin test-profile compilation.

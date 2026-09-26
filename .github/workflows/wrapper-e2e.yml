@@ -77,7 +77,6 @@ jobs:
           ci-tests: true
           zccache-seed-strict: true
           cache: true
-          cache-key-suffix: wrapper-e2e-${{ matrix.os }}
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: "--release"
@@ -90,7 +89,6 @@ jobs:
           ci-tests: true
           zccache-seed-strict: true
           cache: true
-          cache-key-suffix: wrapper-e2e-${{ matrix.os }}
           linker: fast
 
       - name: restore source tree after dependency cook
