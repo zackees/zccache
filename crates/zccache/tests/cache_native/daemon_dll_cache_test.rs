@@ -39,10 +39,21 @@ async fn start_daemon() -> (
 
 /// Compile a minimal C source to an object file using gcc.
 fn compile_object(gcc: &std::path::Path, dir: &std::path::Path, name: &str, body: &str) {
+    compile_object_args(gcc, dir, name, body, &[]);
+}
+
+fn compile_object_args(
+    gcc: &std::path::Path,
+    dir: &std::path::Path,
+    name: &str,
+    body: &str,
+    extra: &[&str],
+) {
     let src = dir.join(format!("{name}.c"));
     let obj = dir.join(format!("{name}.o"));
     std::fs::write(&src, body).unwrap();
     let status = std::process::Command::new(gcc)
+        .args(extra)
         .args(["-c", &src.to_string_lossy(), "-o", &obj.to_string_lossy()])
         .current_dir(dir)
         .status()
@@ -50,7 +61,27 @@ fn compile_object(gcc: &std::path::Path, dir: &std::path::Path, name: &str, body
     assert!(status.success(), "gcc -c should succeed for {name}.c");
 }
 
-#[cfg(windows)]
+/// Compile an object destined for a host shared library (#1608, #1648).
+///
+/// `body` is plain C. On Windows every function is exported with
+/// `__declspec(dllexport)` (a MinGW DLL); elsewhere the object is built
+/// position-independent and relies on default ELF / Mach-O visibility, so the
+/// same fixture exercises `gcc -shared` link caching on every host instead of
+/// feeding MSVC-only syntax to a Linux GCC.
+fn compile_shared_object(gcc: &std::path::Path, dir: &std::path::Path, name: &str, body: &str) {
+    if cfg!(windows) {
+        let exported = format!("__declspec(dllexport) {body}");
+        compile_object_args(gcc, dir, name, &exported, &[]);
+    } else {
+        compile_object_args(gcc, dir, name, body, &["-fPIC"]);
+    }
+}
+
+/// Host shared-library path: `lib<stem>.dll` / `.so` / `.dylib`.
+fn shared_lib_path(dir: &std::path::Path, stem: &str) -> std::path::PathBuf {
+    dir.join(format!("lib{stem}{}", std::env::consts::DLL_SUFFIX))
+}
+
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_cache_miss_then_hit() {
@@ -63,20 +94,20 @@ async fn test_dll_cache_miss_then_hit() {
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    compile_object(
+    compile_shared_object(
         &gcc_path,
         tmp.path(),
         "add",
-        "__declspec(dllexport) int add(int a, int b) { return a + b; }\n",
+        "int add(int a, int b) { return a + b; }\n",
     );
-    compile_object(
+    compile_shared_object(
         &gcc_path,
         tmp.path(),
         "mul",
-        "__declspec(dllexport) int mul(int a, int b) { return a * b; }\n",
+        "int mul(int a, int b) { return a * b; }\n",
     );
 
-    let output_dll = tmp.path().join("libmath.dll");
+    let output_dll = shared_lib_path(tmp.path(), "math");
 
     let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
@@ -170,7 +201,6 @@ async fn test_dll_cache_miss_then_hit() {
     server_handle.await.unwrap();
 }
 
-#[cfg(windows)]
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_cache_invalidated_on_input_change() {
@@ -183,14 +213,14 @@ async fn test_dll_cache_invalidated_on_input_change() {
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    compile_object(
+    compile_shared_object(
         &gcc_path,
         tmp.path(),
         "func",
-        "__declspec(dllexport) int func(void) { return 42; }\n",
+        "int func(void) { return 42; }\n",
     );
 
-    let output_dll = tmp.path().join("libfunc.dll");
+    let output_dll = shared_lib_path(tmp.path(), "func");
 
     let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
@@ -235,11 +265,11 @@ async fn test_dll_cache_invalidated_on_input_change() {
     let original_dll = std::fs::read(&output_dll).unwrap();
 
     // Recompile with different function body
-    compile_object(
+    compile_shared_object(
         &gcc_path,
         tmp.path(),
         "func",
-        "__declspec(dllexport) int func(void) { return 99; }\n",
+        "int func(void) { return 99; }\n",
     );
 
     // Delete output to verify it gets recreated
@@ -280,7 +310,6 @@ async fn test_dll_cache_invalidated_on_input_change() {
     server_handle.await.unwrap();
 }
 
-#[cfg(windows)]
 #[tokio::test]
 #[ignore] // Integration test — starts a real daemon + gcc. Run with `test --full`.
 async fn test_dll_non_deterministic_warning() {
@@ -293,14 +322,14 @@ async fn test_dll_non_deterministic_warning() {
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    compile_object(
+    compile_shared_object(
         &gcc_path,
         tmp.path(),
         "warn",
-        "__declspec(dllexport) int warn_fn(void) { return 1; }\n",
+        "int warn_fn(void) { return 1; }\n",
     );
 
-    let output_dll = tmp.path().join("libwarn.dll");
+    let output_dll = shared_lib_path(tmp.path(), "warn");
 
     let (endpoint, server_handle, shutdown, _cache_root) = start_daemon().await;
     let mut client = zccache::ipc::connect(&endpoint).await.unwrap();
@@ -336,8 +365,12 @@ async fn test_dll_non_deterministic_warning() {
             warning,
             ..
         }) => {
-            // The link should succeed (gcc may or may not support --build-id on Windows).
-            // If gcc doesn't support it and fails, that's fine — we still test the daemon path.
+            // GNU ld on Linux always supports --build-id=uuid, so a failed link
+            // there is a real failure. Elsewhere (MinGW ld, Apple ld) the flag
+            // may be rejected; the daemon still ran the tool, which is enough.
+            if cfg!(target_os = "linux") {
+                assert_eq!(exit_code, 0, "gcc -shared -Wl,--build-id=uuid should link");
+            }
             if exit_code == 0 {
                 assert!(!cached, "first invocation should be a cache miss");
                 assert!(
