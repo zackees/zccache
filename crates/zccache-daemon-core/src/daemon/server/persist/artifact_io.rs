@@ -156,8 +156,9 @@ pub(in crate::daemon::server) fn persist_artifact_paths(
     artifact_dir: &Path,
     key_hex: &str,
     sources: &[NormalizedPath],
+    mode: MaterializationMode,
 ) -> std::io::Result<()> {
-    persist_artifact_paths_with_stats(artifact_dir, key_hex, sources).map(|_| ())
+    persist_artifact_paths_with_stats(artifact_dir, key_hex, sources, mode).map(|_| ())
 }
 
 /// Same as `persist_artifact_paths`, plus aggregate hardlink/copy/copy-bytes
@@ -169,9 +170,10 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
     artifact_dir: &Path,
     key_hex: &str,
     sources: &[NormalizedPath],
+    mode: MaterializationMode,
 ) -> std::io::Result<PersistArtifactFileStats> {
     if staged_artifacts_enabled() && staged_key_supported(key_hex) && !pack_mode_enabled() {
-        let stats = persist_staged_artifact_paths(artifact_dir, key_hex, sources)?;
+        let stats = persist_staged_artifact_paths_with_mode(artifact_dir, key_hex, sources, mode)?;
         return Ok(PersistArtifactFileStats {
             reflink_count: stats.reflink_count,
             hardlink_count: 0,
@@ -201,7 +203,7 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
                 LegacyPathPurpose::LegacyWrite,
                 "artifact_io::persist_artifact_paths_with_stats:inline",
             );
-            let one = persist_artifact_file(&cache_path, source.as_path())?;
+            let one = persist_artifact_file(&cache_path, source.as_path(), mode)?;
             stats.hardlink_count += one.hardlink_count;
             stats.copy_count += one.copy_count;
             stats.copy_bytes += one.copy_bytes;
@@ -220,7 +222,7 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
                 LegacyPathPurpose::LegacyWrite,
                 "artifact_io::persist_artifact_paths_with_stats:parallel",
             );
-            persist_artifact_file(&cache_path, source.as_path())
+            persist_artifact_file(&cache_path, source.as_path(), mode)
         })
         .reduce(
             || Ok(PersistArtifactFileStats::default()),
@@ -253,6 +255,7 @@ pub(in crate::daemon::server) struct PersistArtifactFileStats {
 pub(in crate::daemon::server) fn persist_artifact_file(
     cache_path: &Path,
     source_path: &Path,
+    mode: MaterializationMode,
 ) -> std::io::Result<PersistArtifactFileStats> {
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent)
@@ -269,8 +272,15 @@ pub(in crate::daemon::server) fn persist_artifact_file(
     // regressed the STORE-direction fast path to a full byte copy on every
     // non-reflink filesystem (most Linux ext4, most Windows NTFS without
     // ReFS) — issue #1042.
+    //
+    // `ZCCACHE_MODE` (#1683) applies to the store as well: COPY and REFLINK
+    // promise that no build-tree output shares the cache blob's inode, so
+    // they never hardlink the compiler output in; COPY does not clone it.
+    let store_plan = plan_store_tiers(mode);
     let result = (|| {
-        if kernal_api::platform::fs::reflink_file(source_path, &tmp_path).is_ok() {
+        if store_plan.reflink
+            && kernal_api::platform::fs::reflink_file(source_path, &tmp_path).is_ok()
+        {
             crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
             digest.write_for(&tmp_path, cache_path)?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
@@ -283,7 +293,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
         // (platform-dependent); clear it defensively before the next tier,
         // since std::fs::hard_link fails if the destination already exists.
         let _ = std::fs::remove_file(&tmp_path);
-        if std::fs::hard_link(source_path, &tmp_path).is_ok() {
+        if store_plan.hardlink && std::fs::hard_link(source_path, &tmp_path).is_ok() {
             // The hardlink shares the compiler output's inode. Changing its
             // read-only bit through `tmp_path` would also make the still-live
             // source path read-only (and on Windows changes its FILE_ATTRIBUTE_READONLY),
@@ -298,7 +308,10 @@ pub(in crate::daemon::server) fn persist_artifact_file(
                 ..PersistArtifactFileStats::default()
             });
         }
-        let copy_bytes = std::fs::copy(source_path, &tmp_path)?;
+        // The byte-copy tier creates its destination exclusively; clear any
+        // leftover temporary (e.g. from a crashed store) first.
+        let _ = std::fs::remove_file(&tmp_path);
+        let copy_bytes = mode.copy_file(source_path, &tmp_path)?;
         crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
         digest.write_for(&tmp_path, cache_path)?;
         replace_artifact_cache_file(&tmp_path, cache_path)?;

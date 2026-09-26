@@ -167,6 +167,16 @@ pub(super) fn context_files_fresh(
             }
         }
     }
+    // Force-includes (`-include`, `-include-pch`) are key inputs too. A PCH
+    // binary regenerated under an ignored `build/` directory has no watcher
+    // event, so silence here must not authorize a zero-hash hit (#1609).
+    if let Some(force_includes) = state.dep_graph.load().get_force_includes(context_key) {
+        for path in &force_includes {
+            if !journal_proves_fresh(journal, path, since) {
+                return false;
+            }
+        }
+    }
     if let Some(externs) = state.dep_graph.load().get_rustc_externs(context_key) {
         for (_, path) in &externs {
             if !journal_proves_fresh(journal, path, since) {

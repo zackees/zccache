@@ -613,3 +613,34 @@ fn compiler_hash_cache_merge_from_drains_other() {
         .entries
         .contains_key(&crate::core::NormalizedPath::new(&b)));
 }
+
+/// FastLED/fbuild#1466: concurrent cold requests for one compiler must run
+/// the async identity probe (`--version`) once, not once per request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compiler_hash_cache_single_flights_concurrent_async_probes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let compiler = tmp.path().join("avr-g++");
+    std::fs::write(&compiler, b"fake gcc").unwrap();
+
+    let cache = Arc::new(CompilerHashCache::new());
+    let probes = Arc::new(AtomicUsize::new(0));
+    let mut requests = tokio::task::JoinSet::new();
+    for _ in 0..16 {
+        let cache = Arc::clone(&cache);
+        let probes = Arc::clone(&probes);
+        let compiler = compiler.clone();
+        requests.spawn(async move {
+            cache
+                .get_or_hash_with_async(&compiler, |_| async move {
+                    probes.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Some(ContentHash::from_bytes([5; 32]))
+                })
+                .await
+        });
+    }
+    while let Some(hash) = requests.join_next().await {
+        assert_eq!(hash.unwrap(), Some(ContentHash::from_bytes([5; 32])));
+    }
+    assert_eq!(probes.load(Ordering::Relaxed), 1);
+}

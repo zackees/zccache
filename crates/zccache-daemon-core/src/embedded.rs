@@ -16,6 +16,7 @@ use crate::daemon::server::{
 };
 
 pub use crate::audit::{AuditConfig, AuditContext, AuditEvent};
+pub use crate::core::config::{InvalidMaterializationMode, MaterializationMode};
 pub use crate::daemon::compile_journal::ChildMemory;
 pub use crate::daemon::server::compile_resource_gate::{
     HostAdmissionClassifier, HostAdmissionError, HostAdmissionPermit, HostCompilerRequest,
@@ -1015,3 +1016,7 @@ mod tests;
 #[cfg(test)]
 #[path = "embedded/admission_tests.rs"]
 mod admission_tests;
+
+#[cfg(test)]
+#[path = "embedded/metadata_persist_tests.rs"]
+mod metadata_persist_tests;

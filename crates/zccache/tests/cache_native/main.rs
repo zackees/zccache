@@ -25,5 +25,6 @@ mod daemon_ninja_rebuild_direct_test;
 mod daemon_ninja_rebuild_meson_test;
 mod daemon_pch_cache_basic_test;
 mod daemon_pch_cache_invalidation_test;
+mod daemon_pch_gcc_implicit_test;
 mod daemon_response_file_cache;
 mod link_bundle_integration_test;

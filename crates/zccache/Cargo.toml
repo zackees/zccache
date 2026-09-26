@@ -267,10 +267,6 @@ name = "scan_includes"
 harness = false
 
 [[bench]]
-name = "miss_overhead"
-harness = false
-
-[[bench]]
 name = "fingerprint"
 harness = false
 
@@ -348,6 +344,11 @@ harness = false
 
 [[bench]]
 name = "exec"
+harness = false
+required-features = ["test-support"]
+
+[[bench]]
+name = "miss_overhead"
 harness = false
 required-features = ["test-support"]
 

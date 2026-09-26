@@ -382,6 +382,21 @@ pub(super) async fn parse_single_compile_request(
                 tracker.record_non_cacheable()
             });
             write_session_log(&state.sessions, sid, &format!("non-cacheable: {reason}"));
+            // A side-output compile (`--coverage`, ...) rewrites the same
+            // object and default depfile a cached compile may have
+            // materialized as hardlinks; detach them first, as the staged
+            // unsupported-mode path did before commit 89e91c19 moved this rejection
+            // ahead of it (#1648).
+            if let Some(compilations) =
+                crate::compiler::side_output_compilations(compiler_str, effective_args)
+            {
+                let cwd_path = NormalizedPath::new(cwd);
+                super::super::super::handle_compile_multi::detach_direct_batch_outputs(
+                    &compilations,
+                    effective_args,
+                    &cwd_path,
+                )?;
+            }
             return Err(run_compiler_direct(
                 state,
                 compiler,

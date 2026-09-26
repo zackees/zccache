@@ -1,6 +1,6 @@
 //! Independent requested-path materialization and physical-work observations.
 
-use super::copy_output;
+use super::copy_output_with;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -59,9 +59,13 @@ pub(in crate::daemon::server) fn materialization_error_progress(
         .map_or_else(StagedMaterializationStats::default, |error| error.progress)
 }
 
-pub(in crate::daemon::server) fn materialize_independent_with_stats(
+/// Deliver a private staged output to its requested path under an explicit
+/// `ZCCACHE_MODE`: every mode delivers an independent file here; `COPY`
+/// skips the reflink attempt (#1683).
+pub(in crate::daemon::server) fn materialize_independent_with_mode(
     source: &Path,
     destination: &Path,
+    mode: crate::core::config::MaterializationMode,
 ) -> io::Result<StagedMaterializationStats> {
     #[cfg(test)]
     super::hook::pause(destination, super::StagedHookPoint::MaterializeOutput);
@@ -92,7 +96,7 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
     let temporary = super::temporary_path(destination, "materialize");
     let result = (|| {
         let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
-        let (reflink, copy_bytes) = copy_output(source, &temporary)?;
+        let (reflink, copy_bytes) = copy_output_with(source, &temporary, mode)?;
         #[cfg(test)]
         {
             // Test seam: keep a write descriptor on the temporary open while
@@ -110,6 +114,10 @@ pub(in crate::daemon::server) fn materialize_independent_with_stats(
             let _ = crate::platform::fs::permissions::set_readonly(destination, false);
         }
         super::replace_staged_path(&temporary, destination)?;
+        crate::daemon::server::persist::record_delivery(u64::from(reflink), 0, u64::from(!reflink));
+        if !reflink && mode == crate::core::config::MaterializationMode::Reflink {
+            crate::daemon::server::persist::note_reflink_fallback(source, destination);
+        }
         let _ = crate::platform::fs::permissions::set_readonly(destination, false);
         Ok(StagedMaterializationStats {
             reflink_count: u64::from(reflink),

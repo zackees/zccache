@@ -728,11 +728,13 @@ mod staged_depfile_restart_tests {
     }
 
     #[tokio::test]
-    #[ignore = "integration: ZCCACHE_STAGED_ARTIFACTS=c-cpp + real clang"]
+    #[ignore = "integration: real clang; opts into ZCCACHE_STAGED_ARTIFACTS=c-cpp"]
     async fn staged_custom_depfile_survives_flush_shutdown_and_restart_hit() {
         let Some(clang) = crate::test_support::find_clang() else {
             return;
         };
+        let _staged =
+            crate::daemon::server::tests::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
         crate::test_support::test_timeout(Box::pin(async move {
             let temp = TempDir::new().expect("temp root");
             let cache_root = temp.path().join("cache root # $");
@@ -782,7 +784,7 @@ mod staged_depfile_restart_tests {
             let stats = service.stats().await.expect("cold service stats");
             assert_eq!(
                 stats.phase_profile.staged.counters["compiler_staged"], 1,
-                "run with ZCCACHE_STAGED_ARTIFACTS=c-cpp so this exercises the staged lane"
+                "the c-cpp opt-in must route this compile through the staged lane"
             );
 
             let flush = service.flush_detailed().await.expect("durable flush");

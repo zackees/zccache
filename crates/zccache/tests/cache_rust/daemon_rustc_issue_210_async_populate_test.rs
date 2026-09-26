@@ -14,7 +14,7 @@
 
 use kernal_api::async_engine::Notify;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 use zccache::core::NormalizedPath;
 use zccache::daemon::DaemonServer;
@@ -26,8 +26,7 @@ type ClientConn = zccache::ipc::IpcConnection;
 type ClientConn = zccache::ipc::IpcClientConnection;
 
 fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::cache_env_lock()
 }
 
 struct CacheEnvGuard {

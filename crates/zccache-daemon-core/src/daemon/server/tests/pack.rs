@@ -109,7 +109,7 @@ fn persist_artifact_paths_preserves_compiler_output_writability() {
         NormalizedPath::from(src_a.clone()),
         NormalizedPath::from(src_b.clone()),
     ];
-    persist_artifact_paths(dir.path(), key, &sources).unwrap();
+    persist_artifact_paths(dir.path(), key, &sources, MaterializationMode::Auto).unwrap();
 
     if staged_artifacts_enabled() {
         let payloads = load_staged_artifact_paths(dir.path(), key, &[10, 11])
@@ -206,7 +206,7 @@ fn persist_artifact_paths_falls_back_to_copy_when_source_missing() {
     let sources = vec![NormalizedPath::from(missing)];
     // Hardlink fails (source missing), copy also fails → err propagates.
     // Caller's contract is "best effort; on err skip caching."
-    assert!(persist_artifact_paths(dir.path(), key, &sources).is_err());
+    assert!(persist_artifact_paths(dir.path(), key, &sources, MaterializationMode::Auto).is_err());
 }
 
 #[test]
@@ -223,7 +223,8 @@ fn persist_artifact_paths_err_includes_diagnostics_for_missing_source() {
     let key = "diagkey";
     let missing = dir.path().join("does-not-exist.rlib");
     let sources = vec![NormalizedPath::from(missing.clone())];
-    let err = persist_artifact_paths(dir.path(), key, &sources).expect_err("expected err");
+    let err = persist_artifact_paths(dir.path(), key, &sources, MaterializationMode::Auto)
+        .expect_err("expected err");
     let msg = format!("{err}");
     assert!(msg.contains("src="), "missing src= field in {msg}");
     assert!(msg.contains("dst="), "missing dst= field in {msg}");

@@ -223,9 +223,10 @@ struct DiskArtifact {
     key: String,
     allocated_bytes: u64,
     /// Allocated bytes of this artifact's files whose link count is exactly
-    /// one -- the space evicting it actually returns. A file hard-linked into
-    /// a build tree (or whose count is unknown) frees nothing when the cache
-    /// copy is unlinked (issue #1659).
+    /// one and whose blocks are not proven shared -- the space evicting it
+    /// actually returns. A file hard-linked into a build tree (or whose count
+    /// is unknown) frees nothing when the cache copy is unlinked (issue
+    /// #1659), nor does one reflinked into a build tree (#1687).
     reclaimable_bytes: u64,
     last_access: SystemTime,
     recently_published: bool,
@@ -428,7 +429,9 @@ fn add_file(
         let allocated = crate::platform::fs::volume::allocated_bytes(path, &metadata);
         artifact.allocated_bytes = artifact.allocated_bytes.saturating_add(allocated);
         // Unknown link count is treated as shared: never over-promise space.
-        if crate::core::config::file_link_count(path) == Some(1) {
+        // A reflink clone in a build tree leaves the cache file at nlink == 1
+        // while sharing its blocks, so proven sharing is excluded too (#1687).
+        if crate::core::config::file_may_free_space_on_removal(path) {
             artifact.reclaimable_bytes = artifact.reclaimable_bytes.saturating_add(allocated);
         }
     }
@@ -752,7 +755,7 @@ fn maintain_disk_artifacts_with_barrier(
         if !retired_swept && retired_bytes > 0 && plan.pressure != MaintenancePressure::None {
             if let Some((top_level, current)) = retired_top_level.as_ref() {
                 retired_swept = true;
-                let sweep = crate::core::config::sweep_retired_version_stores_in(
+                let sweep = crate::core::config::sweep_retired_version_stores_in_with_mode(
                     top_level,
                     current,
                     RETIRED_STORE_MAX_AGE,
@@ -996,7 +999,7 @@ fn pressure_scan_needed(state: &SharedState, policy: MaintenancePolicy) -> io::R
 /// and miss `notify_waiters()` between checking `shutdown_requested` and
 /// registering the waiter. Polling the durable atomic flag keeps shutdown
 /// bounded without either race.
-async fn wait_for_next_pass_or_shutdown(
+pub(super) async fn wait_for_next_pass_or_shutdown(
     shutdown_requested: &AtomicBool,
     interval: Duration,
     poll_interval: Duration,
@@ -1160,7 +1163,7 @@ async fn sweep_retired_version_stores(
         tracing::debug!(%error, cache_root = %cache_dir.display(), "failed to stamp store activity marker");
     }
     let report = launch_maintenance_blocking(runtime_handle, move || {
-        crate::core::config::sweep_retired_version_stores_in(
+        crate::core::config::sweep_retired_version_stores_in_with_mode(
             &top_level,
             &current,
             RETIRED_STORE_MAX_AGE,

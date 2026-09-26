@@ -9,7 +9,7 @@
 )]
 
 use std::os::unix::fs::PermissionsExt;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, MutexGuard};
 
 use zccache::core::NormalizedPath;
 use zccache::daemon::DaemonServer;
@@ -19,9 +19,8 @@ type ClientConn = zccache::ipc::IpcConnection;
 
 /// These integration tests start real daemons that resolve the cache root
 /// from the process-global environment on each request. Keep their temporary
-/// cache roots isolated even when the test harness runs them concurrently.
-static CACHE_DIR_ENV_LOCK: Mutex<()> = Mutex::new(());
-
+/// cache roots isolated even when the test harness runs them concurrently;
+/// the lock is shared with every other env-mutating module in this binary.
 struct CacheDirEnvGuard {
     previous: Option<std::ffi::OsString>,
     _lock: MutexGuard<'static, ()>,
@@ -29,7 +28,7 @@ struct CacheDirEnvGuard {
 
 impl CacheDirEnvGuard {
     fn set(cache_dir: &std::path::Path) -> Self {
-        let lock = CACHE_DIR_ENV_LOCK
+        let lock = crate::cache_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = std::env::var_os("ZCCACHE_CACHE_DIR");

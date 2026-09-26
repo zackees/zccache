@@ -9,6 +9,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use super::search_paths::IncludeSearchPaths;
+
+mod lex;
+#[cfg(test)]
+mod lex_tests;
 use dashmap::DashMap;
 use zccache_core::NormalizedPath;
 
@@ -157,112 +161,13 @@ pub fn reset_scan_includes_calls() {
 
 /// Scan a source string for `#include` directives.
 ///
-/// Skips directives inside `//` line comments, `/* */` block comments,
-/// and string/character literals. Handles backslash line continuations.
+/// Skips directives inside `//` line comments and `/* */` block comments,
+/// and only recognizes `#` as the first significant byte of a line (so an
+/// `#include` inside a string literal is ignored). Handles backslash line
+/// continuations. Single pass, no whole-file allocation (zccache#1670).
 pub fn scan_includes_str(source: &str) -> Vec<IncludeDirective> {
     SCAN_INCLUDES_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut results = Vec::new();
-    let mut in_block_comment = false;
-    // Reused only when a logical line spans backslash continuations.
-    let mut buf = String::new();
-    let mut rest = source;
-    let mut line_no: u32 = 0;
-
-    while !rest.is_empty() {
-        line_no += 1;
-        let source_line = line_no;
-        let (phys, had_newline, tail) = split_physical_line(rest);
-        rest = tail;
-
-        let logical: &str = if had_newline && phys.ends_with('\\') {
-            buf.clear();
-            buf.push_str(&phys[..phys.len() - 1]);
-            loop {
-                let (p, nl, t) = split_physical_line(rest);
-                rest = t;
-                if p.is_empty() && !nl {
-                    break;
-                }
-                line_no += 1;
-                if nl && p.ends_with('\\') {
-                    buf.push_str(&p[..p.len() - 1]);
-                } else {
-                    buf.push_str(p);
-                    break;
-                }
-            }
-            buf.as_str()
-        } else {
-            phys
-        };
-
-        if in_block_comment {
-            if let Some(end) = logical.find("*/") {
-                // Block comment ends on this line. Check rest of line.
-                let after = &logical[end + 2..];
-                if let Some(dir) = parse_include_from_line(after) {
-                    results.push(IncludeDirective {
-                        line: source_line,
-                        ..dir
-                    });
-                }
-                in_block_comment = false;
-                if let Some(after_end) = after.find("/*") {
-                    if !after[..after_end].contains("*/") {
-                        in_block_comment = true;
-                    }
-                }
-            }
-            continue;
-        }
-
-        let bytes = logical.as_bytes();
-        let has_hash = bytes.contains(&b'#');
-        let has_slash = bytes.contains(&b'/');
-        if !has_slash {
-            // No comment markers: only a directive line can matter.
-            if has_hash {
-                if let Some(dir) = parse_include_from_line(logical) {
-                    results.push(IncludeDirective {
-                        line: source_line,
-                        ..dir
-                    });
-                }
-            }
-            continue;
-        }
-        if !has_hash && !bytes.windows(2).any(|w| w == b"/*") {
-            // Only `//` comments and no directive: nothing to track.
-            continue;
-        }
-
-        // Strip comments (also updates block-comment state).
-        let effective = strip_comments(logical, &mut in_block_comment);
-        if has_hash {
-            if let Some(dir) = parse_include_from_line(&effective) {
-                results.push(IncludeDirective {
-                    line: source_line,
-                    ..dir
-                });
-            }
-        }
-    }
-
-    results
-}
-
-/// Split off one physical line. Returns the line (without `\n` and, when
-/// newline-terminated, without a trailing `\r`), whether it ended in `\n`,
-/// and the remaining input.
-fn split_physical_line(s: &str) -> (&str, bool, &str) {
-    match s.as_bytes().iter().position(|&b| b == b'\n') {
-        Some(nl) => {
-            let line = &s[..nl];
-            let line = line.strip_suffix('\r').unwrap_or(line);
-            (line, true, &s[nl + 1..])
-        }
-        None => (s, false, ""),
-    }
+    lex::scan_directives(source)
 }
 
 /// Scan a file on disk for `#include` directives.
@@ -522,52 +427,8 @@ fn scan_one_level(
 
 // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// Strip line comments and block comments from a line.
-/// Updates `in_block_comment` state for multi-line block comments.
-///
-/// String literals are NOT stripped. This is intentional:
-/// `#include "foo.h"` has quotes that look like strings but are part of
-/// the directive syntax. False positives like `const char* s = "#include ..."`
-/// are handled by `parse_include_from_line` which requires `#` to be the
-/// first non-whitespace character on the line.
-fn strip_comments(line: &str, in_block_comment: &mut bool) -> String {
-    let mut result = String::with_capacity(line.len());
-    let bytes = line.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    while i < len {
-        if *in_block_comment {
-            if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                *in_block_comment = false;
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-
-        // Line comment â€” stop processing this line.
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            break;
-        }
-
-        // Block comment start.
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            *in_block_comment = true;
-            i += 2;
-            continue;
-        }
-
-        result.push(bytes[i] as char);
-        i += 1;
-    }
-
-    result
-}
-
 /// Parse an `#include` directive from a (comment-stripped) line.
-fn parse_include_from_line(line: &str) -> Option<IncludeDirective> {
+pub(super) fn parse_include_from_line(line: &str) -> Option<IncludeDirective> {
     let trimmed = line.trim();
 
     // Must start with #
@@ -852,41 +713,6 @@ mod tests {
         let includes = scan_includes_str(source);
         assert_eq!(includes.len(), 1);
         assert_eq!(includes[0].path, "after.h");
-    }
-
-    #[test]
-    fn single_pass_matches_reference_on_mixed_source() {
-        let source = concat!(
-            "#inc\\\r\nlude <a.h>\r\n",                // lines 1-2
-            "int x; /* start\r\n",                     // line 3
-            "#include \"b.h\"\r\n",                    // line 4 (in comment)
-            "end */\r\n",                              // line 5
-            "#include \"b.h\"\r\n",                    // line 6
-            "// #include <c.h>\r\n",                   // line 7
-            "const char* s = \"#include <d.h>\";\r\n", // line 8
-            "#  include_next <e.h>\r\n",               // line 9
-        );
-        let got: Vec<(IncludeKind, String, u32)> = scan_includes_str(source)
-            .into_iter()
-            .map(|d| (d.kind, d.path, d.line))
-            .collect();
-        assert_eq!(
-            got,
-            vec![
-                (IncludeKind::AngleBracket, "a.h".to_string(), 1),
-                (IncludeKind::Quoted, "b.h".to_string(), 6),
-                (IncludeKind::AngleBracketNext, "e.h".to_string(), 9),
-            ]
-        );
-    }
-
-    #[test]
-    fn line_numbers_after_continuation() {
-        let source = "#define X \\\n  1 \\\n  2\n#include \"z.h\"\n";
-        let includes = scan_includes_str(source);
-        assert_eq!(includes.len(), 1);
-        assert_eq!(includes[0].path, "z.h");
-        assert_eq!(includes[0].line, 4);
     }
 
     // â”€â”€ resolve_include tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1329,38 +1155,5 @@ mod tests {
         assert_eq!(result.resolved.len(), 2);
         assert!(result.resolved.contains(&normalize(&inc.join("lib.h"))));
         assert!(result.resolved.contains(&normalize(&inc.join("detail.h"))));
-    }
-
-    // â”€â”€ Helper function tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    #[test]
-    fn strip_comments_handles_line_comment() {
-        let mut in_block = false;
-        let result = strip_comments("code // comment", &mut in_block);
-        assert_eq!(result, "code ");
-        assert!(!in_block);
-    }
-
-    #[test]
-    fn strip_comments_handles_block_comment() {
-        let mut in_block = false;
-        let result = strip_comments("before /* inside */ after", &mut in_block);
-        assert_eq!(result, "before  after");
-        assert!(!in_block);
-    }
-
-    #[test]
-    fn strip_comments_handles_unterminated_block() {
-        let mut in_block = false;
-        let result = strip_comments("code /* start", &mut in_block);
-        assert_eq!(result, "code ");
-        assert!(in_block);
-    }
-
-    #[test]
-    fn strip_comments_preserves_string_literal() {
-        let mut in_block = false;
-        let result = strip_comments(r#"x = "hello""#, &mut in_block);
-        assert_eq!(result, r#"x = "hello""#);
     }
 }

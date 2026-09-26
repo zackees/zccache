@@ -14,6 +14,7 @@ use super::fingerprint::FingerprintManager;
 use super::process::CompilePriority;
 use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 use crate::artifact::{ArtifactIndex, ArtifactStore, ArtifactVerdict, KvError, KvStore};
+use crate::core::config::MaterializationMode;
 use crate::core::NormalizedPath;
 use crate::depgraph::{
     CompileContext, ContextKey, DepGraph, DepfileStrategy, SessionId, SessionManager,
@@ -90,6 +91,9 @@ pub(crate) struct EmbeddedDaemon {
     index_writer_rx: Option<kernal_api::async_engine::UnboundedReceiver<IndexWriterCommand>>,
     index_writer_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     maintenance_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
+    depgraph_maintenance_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
+    /// The post-readiness startup depgraph load (#1652), joined by shutdown.
+    depgraph_load_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     /// Periodic tasks this service started, as reported by
     /// [`maintenance_schedule::MaintenanceSchedule::start`] (#1160). Retained
     /// so the parity guard can assert against a real embedded service rather
@@ -124,6 +128,22 @@ pub(crate) enum FlushStepOutcome {
     Completed,
     Failed(String),
     TimedOut,
+}
+
+impl FlushStepOutcome {
+    /// Merges two outcomes of one step: a timeout dominates, and failures join.
+    pub(crate) fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::TimedOut, _) | (_, Self::TimedOut) => Self::TimedOut,
+            (Self::Completed, Self::Completed) => Self::Completed,
+            (Self::Failed(error), Self::Completed) | (Self::Completed, Self::Failed(error)) => {
+                Self::Failed(error)
+            }
+            (Self::Failed(first), Self::Failed(second)) => {
+                Self::Failed(format!("{first}; {second}"))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +184,7 @@ mod dependency_policy;
 mod directory_link;
 mod disk_maintenance;
 mod embedded;
+mod embedded_bringup;
 mod handle_clear;
 mod handle_compile;
 mod handle_compile_ephemeral;
@@ -175,6 +196,7 @@ mod handle_release_worktree_handles;
 mod in_flight;
 mod index_reconcile;
 mod inner_trace;
+mod keyed_locks;
 mod keys;
 mod lifecycle;
 mod link_hash;
@@ -216,7 +238,10 @@ use handle_exec::handle_generic_tool_exec;
 use handle_link::handle_link_ephemeral;
 use handle_release_worktree_handles::handle_release_worktree_handles;
 use in_flight::*;
+use keyed_locks::KeyedLocks;
 use keys::*;
+#[doc(hidden)]
+pub use lifecycle::ProfileHandle;
 use lifecycle::*;
 use link_helpers::*;
 #[cfg(test)]

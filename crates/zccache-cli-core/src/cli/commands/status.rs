@@ -136,6 +136,10 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
                 };
                 println!("  Watcher:       {watcher}");
             }
+            println!(
+                "  Delivery:      {}",
+                format_materialization(&s.materialization)
+            );
             if s.index_writer_gone {
                 // Worse than a performance cliff: the daemon still serves from
                 // memory, so it looks healthy, but nothing it publishes is
@@ -188,6 +192,28 @@ pub(crate) async fn cmd_status(endpoint: &str, json: bool) -> ExitCode {
     }
 }
 
+/// One-line `ZCCACHE_MODE` delivery summary (#1683): the service-default
+/// mode and per-tier counts since the daemon started, with REFLINK fallbacks
+/// called out because they mean the volume could not clone.
+fn format_materialization(status: &crate::protocol::MaterializationStatus) -> String {
+    let mode = if status.mode.is_empty() {
+        "AUTO"
+    } else {
+        status.mode.as_str()
+    };
+    let mut line = format!(
+        "{mode} ({} reflink, {} hardlink, {} copy)",
+        status.reflink, status.hardlink, status.copy
+    );
+    if status.reflink_fallbacks > 0 {
+        line.push_str(&format!(
+            " — {} REFLINK fallback(s) to copy",
+            status.reflink_fallbacks
+        ));
+    }
+    line
+}
+
 fn print_status_ok_json(endpoint: &str, s: &crate::protocol::DaemonStatus) {
     let total = s.cache_hits + s.cache_misses;
     let hit_rate = if total > 0 {
@@ -222,4 +248,40 @@ fn print_status_error_json(endpoint: &str, message: &str) {
         "error": message,
     });
     print_json_value(&value);
+}
+
+#[cfg(test)]
+mod materialization_tests {
+    use super::format_materialization;
+    use crate::protocol::MaterializationStatus;
+
+    #[test]
+    fn delivery_line_shows_mode_and_tier_counts() {
+        let status = MaterializationStatus {
+            mode: "COPY".to_string(),
+            reflink: 0,
+            hardlink: 2,
+            copy: 40,
+            reflink_fallbacks: 0,
+        };
+        assert_eq!(
+            format_materialization(&status),
+            "COPY (0 reflink, 2 hardlink, 40 copy)"
+        );
+    }
+
+    #[test]
+    fn delivery_line_calls_out_reflink_fallbacks_and_defaults_to_auto() {
+        let status = MaterializationStatus {
+            mode: String::new(),
+            reflink: 1,
+            hardlink: 0,
+            copy: 3,
+            reflink_fallbacks: 3,
+        };
+        assert_eq!(
+            format_materialization(&status),
+            "AUTO (1 reflink, 0 hardlink, 3 copy) — 3 REFLINK fallback(s) to copy"
+        );
+    }
 }

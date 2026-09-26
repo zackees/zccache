@@ -176,10 +176,36 @@ should_run = mgr.check("my_tests", lambda: FingerprintResult(
 ))
 
 if should_run:
-    run_tests()
+    ok = run_tests()
     mgr.update_test_metadata("my_tests", num_tests_run=42, num_tests_passed=42, duration_seconds=1.5)
-    mgr.save_all("success")
+    mgr.save("my_tests", "success" if ok else "failure")
 ```
+
+#### Checking is not completing (#1650)
+
+`check()` only *inspects* a fingerprint. It never certifies that the guarded
+operation ran, so a caller that checks several operations but executes only
+some of them must name what completed:
+
+| Call | Certifies |
+|---|---|
+| `save(name, status)` | that one operation |
+| `save_many(names, status)` | exactly the named operations |
+| `mark_ran(name)` then `save_all(status)` | every operation marked as run |
+| `update_test_metadata(name, ...)` then `save_all(status)` | metadata implies the operation ran |
+| `save_all(status, all_ran=True)` | every checked operation (caller asserts all ran) |
+
+`mark_ran`, `save` and `save_many` raise `KeyError` for a name that was never
+checked. For checked operations that did **not** run, `save_all` writes no new
+status: a cache hit is refreshed with its prior status and test metadata, and
+a cache miss is left untouched, so it is still reported as needing to run.
+
+**Behavior change:** before #1650, `save_all(status)` stamped *status* on every
+checked fingerprint, so `check(A); check(B); run(A); save_all("success")` made
+`B` skip on the next run even though it never executed. Callers that relied on
+that must now mark what ran, or pass `all_ran=True` when every checked
+operation genuinely executed. A caller that is not updated re-runs unmarked
+cache misses instead of skipping them — slower, never falsely green.
 
 ### Building from Source
 

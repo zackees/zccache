@@ -14,7 +14,8 @@ Modules:
 - `compile_commands` — parser for `compile_commands.json`.
 - `depfile` — depfile rewriting (`prepare_depfile`).
 - `graph` — `DepGraph`, `CacheVerdict`, freshness state machine.
-- `scanner` / `search_paths` — include resolution.
+- `scanner` / `search_paths` — include resolution; `scanner/lex.rs` is the
+  single-pass `#include` lexer (zccache#1670).
 - `session` — per-session bookkeeping and stats.
 - `show_includes` — MSVC `/showIncludes` parsing.
 - `snapshot/` — disk persistence via bincode 1 (serde), bounded by a 7-day wall-clock TTL and a 256 MiB LRU size budget (zccache#1661).

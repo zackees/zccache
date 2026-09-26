@@ -11,6 +11,11 @@ use super::*;
 /// Prefix of the environment namespace forwarded to the spawned daemon.
 const ZCCACHE_ENV_PREFIX: &str = "ZCCACHE_";
 
+/// kernal-api's opt-out of its crash handler, whose sampler snapshots the
+/// whole process every 50 ms. The caller's choice is forwarded like zccache's
+/// own settings, so a daemon costs no more CPU than the wrappers that start it.
+const CRASH_HANDLER_OPT_OUT_ENV: &str = "KERNAL_API_NO_CRASH_HANDLER";
+
 /// Initialize spawn-lineage env vars on a command the CLI is about to spawn.
 ///
 /// Mirrors the daemon-side propagation in `zccache_daemon::lineage` so that
@@ -25,8 +30,8 @@ fn apply_cli_spawn_lineage(cmd: &mut std::process::Command) {
     }
 }
 
-/// Every `ZCCACHE_*` variable in the CLI's environment, to be replayed onto
-/// the daemon it spawns.
+/// Every `ZCCACHE_*` variable in the CLI's environment, and the crash handler
+/// opt-out, to be replayed onto the daemon it spawns.
 ///
 /// The former `running_process::spawn_daemon` rebuilt the environment block
 /// rather than inheriting it — that is the point of the sanitized spawn, which exists to
@@ -48,10 +53,6 @@ fn apply_cli_spawn_lineage(cmd: &mut std::process::Command) {
 /// the daemon is zccache, this is its configuration namespace, and an
 /// allowlist silently drifts every time a knob is added — which is precisely
 /// the failure mode being fixed.
-fn zccache_config_env() -> Vec<(String, String)> {
-    zccache_config_env_from(std::env::vars())
-}
-
 /// The filter, over a supplied iterator rather than the process environment,
 /// so it is testable without mutating global state the rest of the test
 /// binary shares.
@@ -60,7 +61,7 @@ where
     I: IntoIterator<Item = (String, String)>,
 {
     vars.into_iter()
-        .filter(|(key, _)| key.starts_with(ZCCACHE_ENV_PREFIX))
+        .filter(|(key, _)| key.starts_with(ZCCACHE_ENV_PREFIX) || key == CRASH_HANDLER_OPT_OUT_ENV)
         .collect()
 }
 
@@ -392,6 +393,42 @@ pub fn gc_daemon_spawn_logs() {
     gc_log_directory();
 }
 
+/// The daemon's command line and the environment it is given on top of the
+/// spawn's baseline, from the CLI's environment `vars`.
+fn daemon_command<I>(
+    spawn_bin: &Path,
+    spawned_as_daemon: bool,
+    endpoint: &str,
+    log_arg: &str,
+    vars: I,
+) -> std::process::Command
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let mut cmd = std::process::Command::new(spawn_bin);
+    // On the fallback (running this exe in place), route into the daemon via
+    // the argv[0]-independent `daemon-run` escape hatch (#998); the
+    // materialized copy needs no subcommand because argv[0] already selects
+    // the daemon.
+    if !spawned_as_daemon {
+        cmd.arg("daemon-run");
+    }
+    cmd.args([
+        "--foreground",
+        "--endpoint",
+        endpoint,
+        "--log-file",
+        log_arg,
+    ]);
+    // Forward zccache's own configuration namespace before the lineage
+    // overrides, so lineage still wins on any collision.
+    for (key, value) in zccache_config_env_from(vars) {
+        cmd.env(key, value);
+    }
+    apply_cli_spawn_lineage(&mut cmd);
+    cmd
+}
+
 pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     // Issue #982: backstop for the host no-spawn guard — refuse before
     // `materialize_daemon_exe` copies anything, so a guarded run leaves zero
@@ -449,27 +486,13 @@ pub fn spawn_daemon(endpoint: &str) -> Result<(), String> {
     // `DaemonChild` always opens NUL for its stdio at the spawn site;
     // the daemon then redirects its own stdout + stderr to `--log-file`
     // once it's running.
-    let mut cmd = std::process::Command::new(spawn_bin);
-    // On the fallback (running this exe in place), route into the daemon via
-    // the argv[0]-independent `daemon-run` escape hatch (#998); the
-    // materialized copy needs no subcommand because argv[0] already selects
-    // the daemon.
-    if !spawned_as_daemon {
-        cmd.arg("daemon-run");
-    }
-    cmd.args([
-        "--foreground",
-        "--endpoint",
+    let mut cmd = daemon_command(
+        spawn_bin,
+        spawned_as_daemon,
         endpoint,
-        "--log-file",
         &log_arg,
-    ]);
-    // Forward zccache's own configuration namespace before the lineage
-    // overrides, so lineage still wins on any collision.
-    for (key, value) in zccache_config_env() {
-        cmd.env(key, value);
-    }
-    apply_cli_spawn_lineage(&mut cmd);
+        std::env::vars(),
+    );
     // Detached (no breakaway request), null stdio. The environment base is
     // inherited: the facade offers no user-baseline rebuild, and the
     // `ZCCACHE_*` namespace is still replayed explicitly above so the
@@ -546,6 +569,32 @@ mod spawn_env_tests {
         assert!(
             forwarded.is_empty(),
             "matching mid-name would forward unrelated variables: {forwarded:?}"
+        );
+    }
+
+    /// kernal-api's crash handler snapshots the whole process every 50 ms; a
+    /// caller that turned it off for its wrappers must reach the long-lived
+    /// daemon too, whose spawn otherwise rebuilds the environment without it.
+    #[test]
+    fn the_spawned_daemon_keeps_the_crash_handler_opt_out() {
+        let cmd = daemon_command(
+            Path::new("/cache/zccache-daemon"),
+            true,
+            "endpoint",
+            "/logs/daemon.log",
+            pairs(&[
+                ("KERNAL_API_NO_CRASH_HANDLER", "1"),
+                ("ZCCACHE_CACHE_DIR", "/tmp/isolated"),
+            ]),
+        );
+
+        let environment: Vec<_> = cmd.get_envs().collect();
+        assert!(
+            environment.contains(&(
+                std::ffi::OsStr::new("KERNAL_API_NO_CRASH_HANDLER"),
+                Some(std::ffi::OsStr::new("1"))
+            )),
+            "{environment:?}"
         );
     }
 

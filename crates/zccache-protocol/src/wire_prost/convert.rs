@@ -427,6 +427,13 @@ pub(super) fn daemon_status_to_prost(status: &crate::DaemonStatus) -> zccache_v1
         watcher_active: status.watcher_active,
         watcher_degradations: status.watcher_degradations,
         index_writer_gone: status.index_writer_gone,
+        materialization: Some(zccache_v1::MaterializationStatus {
+            mode: status.materialization.mode.clone(),
+            reflink: status.materialization.reflink,
+            hardlink: status.materialization.hardlink,
+            copy: status.materialization.copy,
+            reflink_fallbacks: status.materialization.reflink_fallbacks,
+        }),
     }
 }
 
@@ -470,6 +477,16 @@ pub(super) fn daemon_status_from_prost(
         watcher_active: status.watcher_active,
         watcher_degradations: status.watcher_degradations,
         index_writer_gone: status.index_writer_gone,
+        materialization: status
+            .materialization
+            .map(|materialization| crate::MaterializationStatus {
+                mode: materialization.mode,
+                reflink: materialization.reflink,
+                hardlink: materialization.hardlink,
+                copy: materialization.copy,
+                reflink_fallbacks: materialization.reflink_fallbacks,
+            })
+            .unwrap_or_default(),
     })
 }
 

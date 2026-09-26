@@ -68,3 +68,33 @@ pub(super) fn resolve_pch_source(
     // Fallback: filesystem heuristic.
     pch_source_header(path)
 }
+
+/// Hash a dependency path for a cache key, PCH-aware.
+///
+/// For a PCH binary (`.pch`/`.gch`) the identity is its source header's hash
+/// *folded with the binary's own hash*. The header alone is not enough: it is
+/// byte-identical when a header it includes changes, and only the regenerated
+/// binary reflects that. Keying consumers on the header let a build-directory
+/// PCH consumer hit stale after `sub.h` changed (#1609). Folding in the binary
+/// needs no in-memory closure, so it also holds after a daemon restart empties
+/// `pch_source_map`. Keeping the header in the fold means editing it without
+/// regenerating the PCH still misses and lets the compiler report the stale
+/// PCH. A PCH regenerated through the cache restores identical bytes, so
+/// consumers keep hitting on an unchanged tree. Every other path hashes as a
+/// plain file.
+pub(super) fn hash_dependency(
+    cache_system: &CacheSystem,
+    pch_map: &DashMap<NormalizedPath, NormalizedPath>,
+    path: &Path,
+    clock: Clock,
+) -> Result<ContentHash, String> {
+    let Some(source_header) = resolve_pch_source(path, pch_map) else {
+        return hash_file(cache_system, path, clock);
+    };
+    let header_hash = hash_file(cache_system, &source_header, clock)?;
+    let binary_hash = hash_file(cache_system, path, clock)?;
+    let mut folded = [0u8; 64];
+    folded[..32].copy_from_slice(header_hash.as_bytes());
+    folded[32..].copy_from_slice(binary_hash.as_bytes());
+    Ok(crate::hash::hash_bytes(&folded))
+}

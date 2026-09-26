@@ -17,6 +17,7 @@ def _workflow(
 def _job(
     name: str, ref: str = CURRENT, os: str = "ubuntu-latest", **inputs: str
 ) -> str:
+    inputs.setdefault("cook-delta", "false")
     lines = "".join(f"          {k}: {v}\n" for k, v in inputs.items())
     return (
         f"  {name}:\n    runs-on: {os}\n    steps:\n"
@@ -86,6 +87,31 @@ def test_new_pin_auto_or_unset_is_green(tmp_path: Path) -> None:
     assert guard.check(tmp_path) == []
 
 
+def test_local_action_must_disable_pr_saves(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        "  action:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./\n",
+    )
+
+    assert any(
+        "local action can save caches on pull_request" in error
+        for error in guard.check(tmp_path)
+    )
+
+
+def test_local_action_main_only_save_gate_passes(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        "  action:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - uses: ./\n        with:\n"
+        "          save-cache: ${{ github.ref == 'refs/heads/main' }}\n",
+    )
+
+    assert guard.check(tmp_path) == []
+
+
 def test_save_cache_true_needs_justification(tmp_path: Path) -> None:
     _workflow(tmp_path, "a.yml", _job("seed", **{"save-cache": '"true"'}))
     assert any("JUSTIFIED_PR_SAVES" in e for e in guard.check(tmp_path))
@@ -97,7 +123,10 @@ def test_save_cache_true_with_justification_passes(tmp_path: Path, monkeypatch) 
     assert guard.check(tmp_path) == []
 
 
-def test_old_pin_false_expression_or_cache_off_passes(tmp_path: Path) -> None:
+def test_old_pin_false_expression_or_cache_off_passes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setitem(guard.COOK_DELTA_REFS, OLD, "test")
     _workflow(
         tmp_path,
         "a.yml",
@@ -117,6 +146,33 @@ def test_reusable_workflow_counts_as_pr_reachable(tmp_path: Path) -> None:
     assert guard.check(tmp_path) != []
 
 
-def test_push_only_workflow_may_save(tmp_path: Path) -> None:
+def test_push_only_workflow_may_save(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(guard.COOK_DELTA_REFS, OLD, "test")
     _workflow(tmp_path, "a.yml", _job("a", ref=OLD), on="[push]")
+    assert guard.check(tmp_path) == []
+
+
+def test_cook_delta_unset_or_true_is_red(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        _job("a", **{"cook-delta": '""'}) + _job("b", **{"cook-delta": "true"}),
+    )
+    errors = [e for e in guard.check(tmp_path) if "cook-delta" in e]
+    assert len(errors) == 2
+
+
+def test_cook_delta_justified_passes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(guard.JUSTIFIED_COOK_DELTA, "a.yml:a", "measured win")
+    _workflow(tmp_path, "a.yml", _job("a", **{"cook-delta": "true"}))
+    assert guard.check(tmp_path) == []
+
+
+def test_cook_delta_false_on_ref_without_input_is_red(tmp_path: Path) -> None:
+    _workflow(tmp_path, "a.yml", _job("a", ref=OLD, **{"save-cache": "false"}))
+    assert any("does not honor it" in e for e in guard.check(tmp_path))
+
+
+def test_cook_delta_ignored_when_cache_off(tmp_path: Path) -> None:
+    _workflow(tmp_path, "a.yml", _job("a", cache="false", **{"cook-delta": "true"}))
     assert guard.check(tmp_path) == []

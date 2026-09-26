@@ -6,6 +6,7 @@ use super::super::{
     StagedHookGuard, StagedHookPoint,
 };
 use super::*;
+use crate::core::config::MaterializationMode;
 
 #[test]
 fn staged_persist_and_materialization_report_physical_work() {
@@ -25,7 +26,9 @@ fn staged_persist_and_materialization_report_physical_work() {
         .unwrap()
         .remove(0);
     let destination = dir.path().join("restored.rlib");
-    let materialized = materialize_independent_with_stats(&payload, &destination).unwrap();
+    let materialized =
+        materialize_independent_with_mode(&payload, &destination, MaterializationMode::Auto)
+            .unwrap();
     assert_eq!(materialized.reflink_count + materialized.copy_count, 1);
     assert_eq!(fs::read(destination).unwrap(), b"observable staged payload");
 }
@@ -38,7 +41,8 @@ fn independent_materialization_faults_fall_back_or_fail_cleanly() {
 
     let fallback = dir.path().join("fallback.rlib");
     let reflink_fault = StagedFaultGuard::arm(dir.path(), [StagedFaultPoint::MaterializeReflink]);
-    let observed = materialize_independent_with_stats(&source, &fallback).unwrap();
+    let observed =
+        materialize_independent_with_mode(&source, &fallback, MaterializationMode::Auto).unwrap();
     assert_eq!(observed.reflink_count, 0);
     assert_eq!(observed.copy_count, 1);
     assert_eq!(observed.copy_bytes, 35);
@@ -56,7 +60,7 @@ fn independent_materialization_faults_fall_back_or_fail_cleanly() {
             StagedFaultPoint::MaterializeCopy,
         ],
     );
-    materialize_independent_with_stats(&source, &failed).unwrap_err();
+    materialize_independent_with_mode(&source, &failed, MaterializationMode::Auto).unwrap_err();
     assert!(
         !failed.exists(),
         "failed copy tier left a partial destination"
@@ -76,7 +80,11 @@ fn independent_materialization_publishes_only_complete_outputs() {
     let source_for_thread = source.clone();
     let destination_for_thread = destination.clone();
     let materialize = std::thread::spawn(move || {
-        materialize_independent_with_stats(&source_for_thread, &destination_for_thread)
+        materialize_independent_with_mode(
+            &source_for_thread,
+            &destination_for_thread,
+            MaterializationMode::Auto,
+        )
     });
 
     hook.wait_until_reached();
@@ -91,7 +99,7 @@ fn independent_materialization_publishes_only_complete_outputs() {
 /// across the rename, so executing the published output fails with
 /// `ETXTBSY` until the child execs. The spawn/materialize lock must keep
 /// the fork out of the copy window. Disabling the exclusive guard in
-/// `materialize_independent_with_stats` makes this test fail.
+/// `materialize_independent_with_mode` makes this test fail.
 #[cfg(target_os = "linux")]
 #[test]
 fn materialized_executable_runs_while_a_child_is_between_fork_and_exec() {
@@ -108,7 +116,11 @@ fn materialized_executable_runs_while_a_child_is_between_fork_and_exec() {
     let source_for_thread = source.clone();
     let destination_for_thread = destination.clone();
     let materialize = std::thread::spawn(move || {
-        materialize_independent_with_stats(&source_for_thread, &destination_for_thread)
+        materialize_independent_with_mode(
+            &source_for_thread,
+            &destination_for_thread,
+            MaterializationMode::Auto,
+        )
     });
     hook.wait_until_reached();
 
@@ -179,7 +191,11 @@ fn materialized_executable_runs_after_a_foreign_fork_inherits_the_copy() {
     let source_for_thread = source.clone();
     let destination_for_thread = destination.clone();
     let materialize = std::thread::spawn(move || {
-        materialize_independent_with_stats(&source_for_thread, &destination_for_thread)
+        materialize_independent_with_mode(
+            &source_for_thread,
+            &destination_for_thread,
+            MaterializationMode::Auto,
+        )
     });
     hook.wait_until_reached();
 

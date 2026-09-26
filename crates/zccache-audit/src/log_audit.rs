@@ -919,6 +919,9 @@ impl Drop for CacheRootAuditGuard {
 }
 
 #[cfg(test)]
+mod source_fixture_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

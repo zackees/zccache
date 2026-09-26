@@ -11,7 +11,7 @@ use super::file_lock;
 const CACHE_VERSION: u32 = 1;
 
 /// Per-file cached metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEntry {
     /// File modification time as nanoseconds since UNIX epoch.
     pub mtime_ns: u64,
@@ -22,7 +22,7 @@ pub struct FileEntry {
 }
 
 /// On-disk format for `TwoLayerCache`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TwoLayerData {
     pub version: u32,
     pub status: String,
@@ -35,7 +35,7 @@ pub struct TwoLayerData {
 }
 
 /// On-disk format for `HashCache`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HashCacheData {
     pub version: u32,
     pub hash: String,
@@ -147,6 +147,31 @@ pub fn detect_pending_type(cache_path: &Path) -> Option<&'static str> {
     })
     .ok()
     .flatten()
+}
+
+/// Commit one check → mark cycle: write `claimed` (the snapshot that cycle's
+/// `check()` staged), after `finalize` stamps its status, as the cache file.
+///
+/// Several cycles can share one cache file — threads, or separate processes
+/// running `check` and `mark-success` — while there is only one `.pending`.
+/// So under one exclusive lock the on-disk `.pending` is removed only if it
+/// still holds `claimed`: a snapshot a concurrent cycle staged after ours
+/// belongs to that cycle's own commit and must survive this one (#1648).
+pub fn commit_pending<T, F>(cache_path: &Path, mut claimed: T, finalize: F) -> Result<()>
+where
+    T: Serialize + serde::de::DeserializeOwned + PartialEq,
+    F: FnOnce(&mut T),
+{
+    file_lock::with_exclusive_lock(cache_path, || {
+        let pending = pending_path(cache_path);
+        let still_ours = read_json_inner::<T>(&pending)?.as_ref() == Some(&claimed);
+        finalize(&mut claimed);
+        write_atomic_inner(cache_path, &claimed)?;
+        if still_ours {
+            let _ = std::fs::remove_file(&pending);
+        }
+        Ok(())
+    })
 }
 
 /// Promote `.pending` → cache file (atomic rename).

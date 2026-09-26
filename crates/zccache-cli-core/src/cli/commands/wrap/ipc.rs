@@ -11,6 +11,11 @@ use super::super::util::{
 };
 use crate::cli::runtime::{current_daemon_instance, ensure_daemon, stop_wedged_daemon};
 
+mod lost_request;
+#[cfg(test)]
+use lost_request::lost_request_event;
+use lost_request::{record_lost_request, recv_failure_phase, LostRequest};
+
 pub(super) async fn cmd_compile(
     endpoint: &str,
     session_id: &str,
@@ -89,7 +94,7 @@ pub(super) async fn cmd_compile(
         CompileRecvOutcome::Done(recv_result) => {
             // End of the daemon wait; everything after this is output work.
             super::profile::mark_response();
-            report_relay_outcome(relay_compile_response_to_stdio(recv_result))
+            report_relay_outcome(endpoint, relay_compile_response_to_stdio(recv_result))
         }
         CompileRecvOutcome::Wedged => {
             // Daemon went past the wedge budget for *this* request. Pre-#753
@@ -129,7 +134,11 @@ pub(super) async fn cmd_compile(
                          (missed wedge budget + failed probe); killing it and \
                          failing immediately — issue #955"
                     );
-                    stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                    let stopped = stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                    record_lost_request(
+                        endpoint,
+                        LostRequest::after_wedge_stop(stopped, crate::ipc::is_process_alive),
+                    );
                     ExitCode::FAILURE
                 }
             }
@@ -143,6 +152,7 @@ pub(super) async fn cmd_compile(
                 crate::core::lifecycle::CAUSE_COMM_ERROR,
                 &msg.message,
             );
+            record_lost_request(endpoint, msg.lost_request());
             eprintln!("zccache[err][R]: {}", msg.message);
             ExitCode::FAILURE
         }
@@ -185,6 +195,9 @@ enum FailurePhase {
     PreDispatch,
     /// The request may have reached the daemon; direct execution is unsafe.
     DeliveryUnknown,
+    /// The daemon closed the connection after dispatch, mid-response or by
+    /// dying; its tool died with the connection or the daemon.
+    ClosedAfterDispatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,8 +210,9 @@ struct TransportFailure {
 enum RelayOutcome {
     Verdict(ExitCode),
     /// The daemon completed the request without returning a compiler/tool
-    /// verdict. This is intentionally not eligible for local fallback: the
-    /// daemon may have already executed the tool or changed output state.
+    /// verdict. The wrapper never falls back locally: the daemon may have
+    /// already executed the tool or changed output state. Only a closed
+    /// connection is logged as a [`LostRequest`] for the build tool.
     NoVerdict(RelayFailureDiagnostic),
 }
 
@@ -248,7 +262,8 @@ impl RelayFailureDiagnostic {
     }
 }
 
-fn report_relay_outcome(outcome: RelayOutcome) -> ExitCode {
+fn report_relay_outcome(endpoint: &str, outcome: RelayOutcome) -> ExitCode {
+    record_lost_request(endpoint, outcome.lost_request());
     report_relay_outcome_to_writer(outcome, &mut std::io::stderr())
 }
 
@@ -318,7 +333,7 @@ async fn compile_recv_with_wedge_detection<C: ConnRecv>(
             Err(e) => {
                 return CompileRecvOutcome::Failed(TransportFailure {
                     message: format!("broken connection to daemon: {e}"),
-                    phase: FailurePhase::DeliveryUnknown,
+                    phase: recv_failure_phase(&e),
                 });
             }
         }
@@ -573,7 +588,7 @@ async fn cmd_compile_ephemeral_with_stdin(
         CompileRecvOutcome::Done(recv_result) => {
             // End of the daemon wait; everything after this is output work.
             super::profile::mark_response();
-            report_relay_outcome(relay_compile_response_to_stdio(recv_result))
+            report_relay_outcome(endpoint, relay_compile_response_to_stdio(recv_result))
         }
         // #1170 change 2: this arm used to kill unconditionally. A busy
         // daemon under a `-j16` burst looks identical to a hung one from a
@@ -595,7 +610,11 @@ async fn cmd_compile_ephemeral_with_stdin(
                      the wedge budget and failed the follow-up probe; killing it so the \
                      next compile starts fresh — issue #666"
                 );
-                stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                let stopped = stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                record_lost_request(
+                    endpoint,
+                    LostRequest::after_wedge_stop(stopped, crate::ipc::is_process_alive),
+                );
                 ExitCode::FAILURE
             }
         },
@@ -606,7 +625,8 @@ async fn cmd_compile_ephemeral_with_stdin(
             FailurePhase::PreDispatch => {
                 super::unavailable::refuse_uncached_run(endpoint, compiler, &cwd, &msg.message)
             }
-            FailurePhase::DeliveryUnknown => {
+            FailurePhase::DeliveryUnknown | FailurePhase::ClosedAfterDispatch => {
+                record_lost_request(endpoint, msg.lost_request());
                 eprintln!("zccache[err][R]: {}", msg.message);
                 ExitCode::FAILURE
             }
@@ -648,7 +668,7 @@ pub(super) async fn cmd_link_ephemeral(
 
     match outcome {
         CompileRecvOutcome::Done(recv_result) => {
-            report_relay_outcome(relay_link_response_to_stdio(recv_result))
+            report_relay_outcome(endpoint, relay_link_response_to_stdio(recv_result))
         }
         // #1170 change 2: classify before killing, as in `cmd_compile_ephemeral`.
         // Links are the requests most likely to be slow for legitimate reasons,
@@ -668,7 +688,11 @@ pub(super) async fn cmd_link_ephemeral(
                      the wedge budget on a Link and failed the follow-up probe; killing it \
                      so the next request starts fresh — issue #666"
                 );
-                stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                let stopped = stop_wedged_daemon(endpoint, served_by.as_ref()).await;
+                record_lost_request(
+                    endpoint,
+                    LostRequest::after_wedge_stop(stopped, crate::ipc::is_process_alive),
+                );
                 ExitCode::FAILURE
             }
         },
@@ -678,7 +702,8 @@ pub(super) async fn cmd_link_ephemeral(
             FailurePhase::PreDispatch => {
                 super::unavailable::refuse_uncached_run(endpoint, tool, &cwd, &msg.message)
             }
-            FailurePhase::DeliveryUnknown => {
+            FailurePhase::DeliveryUnknown | FailurePhase::ClosedAfterDispatch => {
+                record_lost_request(endpoint, msg.lost_request());
                 eprintln!("zccache[err][R]: {}", msg.message);
                 ExitCode::FAILURE
             }

@@ -31,6 +31,16 @@ use std::time::{Duration, Instant};
 /// the guard alive while it touches the path, since dropping the guard
 /// deletes the tempdir.
 fn run_crash_scenario(mode: &str, expected_label: &str) -> (PathBuf, tempfile::TempDir) {
+    let (dump, tmp, _stderr) = run_crash_scenario_capturing_stderr(mode, expected_label);
+    (dump, tmp)
+}
+
+/// [`run_crash_scenario`], also returning the crashing process's stderr so a
+/// test can prove which fault actually fired.
+fn run_crash_scenario_capturing_stderr(
+    mode: &str,
+    expected_label: &str,
+) -> (PathBuf, tempfile::TempDir, String) {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let cache_dir = tmp.path().join(".zccache");
     // Issue #761 / #762 Phase 0: every persistent daemon/CLI subdir lives
@@ -49,14 +59,14 @@ fn run_crash_scenario(mode: &str, expected_label: &str) -> (PathBuf, tempfile::T
         .env("RUST_BACKTRACE", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn {bin}: {e}"));
 
     // We expect a non-zero exit OR a crash signal — but the panic
     // case may unwind cleanly and exit(0), so don't assert on the
     // exit status. The disk evidence is the real assertion.
-    let _ = output;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
     // A fatal signal is captured by kernal-api into a binary record from
     // signal context, where formatting a report is not safe to do
@@ -84,7 +94,7 @@ fn run_crash_scenario(mode: &str, expected_label: &str) -> (PathBuf, tempfile::T
             crash_dir.display()
         )
     });
-    (path, tmp)
+    (path, tmp, stderr)
 }
 
 /// Poll the directory for a `.txt` whose filename contains `label`.
@@ -178,14 +188,44 @@ fn windows_segfault_writes_dump() {
     assert!(size > MIN_DUMP_BYTES);
 }
 
+/// Label a stack-overflow dump carries. The overflow is a guard-page access
+/// fault: Windows raises its own `STATUS_STACK_OVERFLOW` exception, while Unix
+/// has no distinct signal and delivers it as `SIGSEGV`. kernal-api records the
+/// delivered signal, so that is the label the dump filename carries there.
+#[cfg(windows)]
+const STACK_OVERFLOW_LABEL: &str = "STACK_OVERFLOW";
+#[cfg(unix)]
+const STACK_OVERFLOW_LABEL: &str = "SIGSEGV";
+
 #[test]
-#[ignore = "stack overflow needs sigaltstack (Unix) or specific guard-page \
-            handling (Windows); the handler runs on an already-exhausted \
-            stack and the dump is currently not produced. Tracked separately \
-            from the rest of the crash-handler coverage."]
+#[ignore = "integration: only verified on Linux (the scheduled ignored suite). \
+            The fault handler must run on an alternate stack because the \
+            faulting one is exhausted; Windows guard-page handling and macOS \
+            signal delivery for this mode are unverified."]
 fn stack_overflow_writes_signal_dump() {
-    let (dump, _tmp) = run_crash_scenario("stack-overflow", "STACK_OVERFLOW");
-    assert!(dump.exists());
+    let (dump, _tmp, stderr) =
+        run_crash_scenario_capturing_stderr("stack-overflow", STACK_OVERFLOW_LABEL);
+    let size = std::fs::metadata(&dump).unwrap().len();
+    assert!(
+        size > MIN_DUMP_BYTES,
+        "stack-overflow dump suspiciously small: {size} bytes at {}",
+        dump.display()
+    );
+    let name = dump.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        name.contains(STACK_OVERFLOW_LABEL) && name.contains("zccache-daemon"),
+        "dump filename missing labels: {name}"
+    );
+    // On Unix the label alone cannot tell an overflow from any other invalid
+    // access, so prove the fault that fired was the overflow: the handler
+    // chains to Rust's runtime, which reports it before aborting.
+    #[cfg(unix)]
+    assert!(
+        stderr.contains("has overflowed its stack"),
+        "crash-trigger did not report a stack overflow; stderr:\n{stderr}"
+    );
+    #[cfg(not(unix))]
+    let _ = stderr;
 }
 
 // SIGILL behaviour on macOS goes through Mach exception ports in ways

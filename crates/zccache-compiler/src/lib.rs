@@ -69,7 +69,7 @@ pub use output_policy::{
     OutputClassification, OutputRole,
 };
 #[cfg(feature = "native")]
-pub use parse::parse_invocation;
+pub use parse::{parse_invocation, side_output_compilations};
 #[cfg(feature = "native")]
 pub use parse_rustc::parse_rustc_invocation_with_host;
 pub use parse_rustc::{parse_rustc_plan_with_syntax, RustcHost, RustcOutputPlan, RustcPlan};

@@ -118,6 +118,13 @@ fn test_daemon_status(endpoint: &str) -> zccache_protocol::DaemonStatus {
         watcher_active: true,
         watcher_degradations: 0,
         index_writer_gone: false,
+        materialization: zccache_protocol::MaterializationStatus {
+            mode: "REFLINK".to_string(),
+            reflink: 3,
+            hardlink: 5,
+            copy: 7,
+            reflink_fallbacks: 11,
+        },
     }
 }
 

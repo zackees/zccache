@@ -116,29 +116,51 @@ pub fn is_older_version_dir(name: &str, current: &str) -> bool {
 /// over-counts (#1673). Unknown sharing never counts.
 #[must_use]
 pub fn file_frees_space_on_removal(path: &Path) -> bool {
-    file_link_count(path) == Some(1) && blocks_are_exclusive(path)
+    removal_frees_space(
+        file_link_count(path),
+        || kernal_api::platform::fs::extent_sharing(path),
+        false,
+    )
 }
 
 /// True when removing `path` may free its space, for the disk-pressure
 /// *estimate* (#1659): the last hard link whose blocks are not known to be
 /// shared. Unlike [`file_frees_space_on_removal`], unknown sharing counts:
-/// APFS and ReFS always report it, and treating it as shared would zero the
-/// estimate on every such volume and disable the retired-store pressure
-/// valve there. Only proven sharing (a btrfs/XFS reflink) is excluded.
+/// a volume kernal-api cannot query (network shares, Linux file systems
+/// without `FIEMAP`) always reports it, and treating it as shared would zero
+/// the estimate there and disable the retired-store pressure valve. Only
+/// proven sharing (a btrfs/XFS/APFS/ReFS clone) is excluded.
 #[must_use]
 pub fn file_may_free_space_on_removal(path: &Path) -> bool {
-    file_link_count(path) == Some(1)
-        && !matches!(
-            kernal_api::platform::fs::extent_sharing(path),
-            Ok(kernal_api::platform::fs::ExtentSharing::Shared)
-        )
+    removal_frees_space(
+        file_link_count(path),
+        || kernal_api::platform::fs::extent_sharing(path),
+        true,
+    )
 }
 
-fn blocks_are_exclusive(path: &Path) -> bool {
-    matches!(
-        kernal_api::platform::fs::extent_sharing(path),
-        Ok(kernal_api::platform::fs::ExtentSharing::Exclusive)
-    )
+/// The one rule behind [`file_frees_space_on_removal`] (`estimate == false`)
+/// and [`file_may_free_space_on_removal`] (`estimate == true`), shared by the
+/// retired-store sweep and the live eviction planner so the two cannot drift
+/// (#1687). Only the last hard link can free space; proven block sharing
+/// never does; unknown sharing (or a failed probe) counts only for the
+/// estimate. `sharing` is consulted only for the last link, so multi-linked
+/// files never pay for the extent query.
+#[must_use]
+pub fn removal_frees_space(
+    link_count: Option<u64>,
+    sharing: impl FnOnce() -> std::io::Result<kernal_api::platform::fs::ExtentSharing>,
+    estimate: bool,
+) -> bool {
+    use kernal_api::platform::fs::ExtentSharing;
+    if link_count != Some(1) {
+        return false;
+    }
+    match sharing() {
+        Ok(ExtentSharing::Exclusive) => true,
+        Ok(ExtentSharing::Shared) => false,
+        Ok(ExtentSharing::Unknown) | Err(_) => estimate,
+    }
 }
 
 /// Outcome of a retired-store sweep — either [`sweep_retired_version_store`]
@@ -226,7 +248,7 @@ pub fn file_link_count(path: &Path) -> Option<u64> {
 ///    store directory is removed (lock released first, since an open handle
 ///    to it can block deletion on Windows).
 #[must_use]
-pub fn sweep_retired_version_store(
+pub fn sweep_retired_version_store_with_mode(
     store: &Path,
     max_age: Duration,
     now: SystemTime,
@@ -309,7 +331,7 @@ pub fn sweep_retired_version_store(
 /// every *newer* version are never inspected, in either mode. Missing `top_level` is a
 /// silent no-op, matching [`super::resolve::prune_stale_version_dirs_in`].
 #[must_use]
-pub fn sweep_retired_version_stores_in(
+pub fn sweep_retired_version_stores_in_with_mode(
     top_level: &Path,
     keep: &str,
     max_age: Duration,
@@ -329,7 +351,7 @@ pub fn sweep_retired_version_stores_in(
         if !super::resolve::is_version_dir_name(&name) || !is_older_version_dir(&name, keep) {
             continue;
         }
-        report.merge(&sweep_retired_version_store(
+        report.merge(&sweep_retired_version_store_with_mode(
             &entry.path(),
             max_age,
             now,
@@ -479,7 +501,11 @@ fn sweep_regular_file(
     let len = metadata.len();
     let link_count = file_link_count(path);
     // Observed before removal, while the file still exists.
-    let frees_space = link_count == Some(1) && blocks_are_exclusive(path);
+    let frees_space = removal_frees_space(
+        link_count,
+        || kernal_api::platform::fs::extent_sharing(path),
+        false,
+    );
     let should_delete = match (mode, link_count) {
         (RetiredSweepMode::Pressure, Some(1)) => true,
         _ => is_older_than(&metadata, now, max_age),
@@ -511,3 +537,37 @@ fn is_older_than(metadata: &Metadata, now: SystemTime, max_age: Duration) -> boo
 #[cfg(test)]
 #[path = "retired_store_tests.rs"]
 mod tests;
+
+/// Routine sweep of one retired store, with the signature published before
+/// 1.14.14 (#1601).
+///
+/// #1673 added `mode` to this function in a patch release, which broke every
+/// downstream caller (soldr's embedded-store maintenance) that had not yet
+/// changed. The mode-taking form is [`sweep_retired_version_store_with_mode`];
+/// this keeps the old call compiling with the safe routine behavior.
+#[must_use]
+pub fn sweep_retired_version_store(
+    store: &Path,
+    max_age: Duration,
+    now: SystemTime,
+) -> RetiredStoreSweepReport {
+    sweep_retired_version_store_with_mode(store, max_age, now, RetiredSweepMode::Routine)
+}
+
+/// Routine sweep of every retired sibling store, with the signature published
+/// before 1.14.14 (#1601). See [`sweep_retired_version_store`].
+#[must_use]
+pub fn sweep_retired_version_stores_in(
+    top_level: &Path,
+    keep: &str,
+    max_age: Duration,
+    now: SystemTime,
+) -> RetiredStoreSweepReport {
+    sweep_retired_version_stores_in_with_mode(
+        top_level,
+        keep,
+        max_age,
+        now,
+        RetiredSweepMode::Routine,
+    )
+}

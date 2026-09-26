@@ -12,6 +12,8 @@ use crate::core::NormalizedPath;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+pub mod miss_overhead;
+
 // ─── Tool discovery ─────────────────────────────────────────────────────────
 
 /// Ensure the clang-tool-chain bin directory is on PATH, then find a tool by name.

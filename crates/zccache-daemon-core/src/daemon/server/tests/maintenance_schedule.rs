@@ -185,7 +185,9 @@ async fn embedded_saves_the_depgraph_on_a_tick() {
     .start();
     assert!(started.started.contains(&TASK_DEPGRAPH_SAVE));
 
-    let saved = wait_until(|| depgraph_path.exists()).await;
+    let saved =
+        wait_until(|| depgraph_path.exists() && state.dep_graph_persisted.load(Ordering::Acquire))
+            .await;
     stop(&state);
     assert!(
         saved,
@@ -195,6 +197,216 @@ async fn embedded_saves_the_depgraph_on_a_tick() {
         state.dep_graph_persisted.load(Ordering::Acquire),
         "a periodic save must mark the graph persisted"
     );
+}
+
+/// #1652: `metadata.bin` was written only by flush/shutdown/drop, so a host
+/// that exits without them (fbuild's idle eviction) restarted empty every
+/// time. The periodic save tick must snapshot it too.
+#[tokio::test]
+async fn embedded_snapshots_metadata_on_a_save_tick() {
+    let root = tempfile::tempdir().expect("cache root");
+    let cache_dir = crate::core::NormalizedPath::new(root.path());
+    let state = test_state(&cache_dir);
+    state.metadata_cache_loaded.store(true, Ordering::Release);
+    let source = root.path().join("tracked.c");
+    std::fs::write(&source, "int tracked(void) { return 1; }\n").unwrap();
+    hash_file(
+        &state.cache_system,
+        &source,
+        state.cache_system.current_clock(),
+    )
+    .expect("hash tracked source");
+    std::fs::remove_file(state.metadata_path.as_path()).ok();
+
+    let started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .start();
+
+    let snapshotted = wait_until(|| state.metadata_path.as_path().exists()).await;
+    stop(&state);
+    drop(started);
+    assert!(
+        snapshotted,
+        "the save tick must persist metadata.bin without a host flush()"
+    );
+    let restored = crate::fscache::MetadataCache::load_from_disk(state.metadata_path.as_path())
+        .expect("snapshot decodes");
+    assert!(restored
+        .get_cached_hash(&crate::core::NormalizedPath::new(&source))
+        .is_some());
+}
+
+/// A save tick must not snapshot a metadata cache whose startup load has not
+/// finished: that would overwrite the on-disk snapshot with a partial one.
+#[tokio::test]
+async fn metadata_snapshot_waits_for_the_startup_load() {
+    let root = tempfile::tempdir().expect("cache root");
+    let cache_dir = crate::core::NormalizedPath::new(root.path());
+    let state = test_state(&cache_dir);
+    state.metadata_cache_loaded.store(false, Ordering::Release);
+    let source = root.path().join("tracked.c");
+    std::fs::write(&source, "int tracked(void) { return 1; }\n").unwrap();
+    hash_file(
+        &state.cache_system,
+        &source,
+        state.cache_system.current_clock(),
+    )
+    .expect("hash tracked source");
+    let depgraph_path = depgraph_file_path_for_cache_dir(&cache_dir);
+    std::fs::remove_file(&depgraph_path).ok();
+    std::fs::remove_file(state.metadata_path.as_path()).ok();
+
+    let started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .start();
+    let ticked = wait_until(|| depgraph_path.exists()).await;
+    stop(&state);
+    drop(started);
+    assert!(ticked, "the depgraph tick must still run");
+    assert!(!state.metadata_path.as_path().exists());
+}
+
+#[tokio::test]
+async fn depgraph_saves_are_exclusive_without_blocking_async_progress() {
+    let root = tempfile::tempdir().expect("cache root");
+    let state = test_state(&crate::core::NormalizedPath::new(root.path()));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let first_done = Arc::new(AtomicBool::new(false));
+    let first_flag = Arc::clone(&first_done);
+    let first_state = Arc::clone(&state);
+    let first = tokio::spawn(async move {
+        run_depgraph_save_with(first_state, None, move |_| {
+            entered_tx.send(()).expect("test observes first save");
+            release_rx.recv().expect("test releases first save");
+            first_flag.store(true, Ordering::Release);
+        })
+        .await
+        .expect("first blocking save")
+    });
+    // On this single-threaded runtime, observing the held save at all proves
+    // the save blocks outside the async runtime.
+    entered_rx.await.expect("first save entered");
+    tokio::spawn(async {})
+        .await
+        .expect("the runtime schedules other tasks while a save blocks");
+    assert!(
+        state.depgraph_persistence.try_lock().is_err(),
+        "a running save holds the cache root's persistence guard"
+    );
+
+    let second_state = Arc::clone(&state);
+    let second = tokio::spawn(async move {
+        run_depgraph_save_with(second_state, None, move |_| {
+            first_done.load(Ordering::Acquire)
+        })
+        .await
+        .expect("second blocking save")
+    });
+
+    release_tx.send(()).expect("release first save");
+    first.await.expect("first task");
+    assert!(
+        second.await.expect("second task"),
+        "same-state depgraph saves must not overlap"
+    );
+}
+
+/// #1684: a save queued behind another must write the graph that is current
+/// when it gets the lock. The startup loader replaces the whole graph object
+/// (`DepGraphSetter::install`), so a snapshot taken before the lock could
+/// otherwise publish the graph the loader just replaced.
+#[tokio::test]
+async fn a_queued_depgraph_save_writes_the_graph_current_at_lock_time() {
+    let root = tempfile::tempdir().expect("cache root");
+    let state = test_state(&crate::core::NormalizedPath::new(root.path()));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let first_state = Arc::clone(&state);
+    let first = tokio::spawn(async move {
+        run_depgraph_save_with(first_state, None, move |_| {
+            entered_tx.send(()).expect("test observes first save");
+            release_rx.recv().expect("test releases first save");
+        })
+        .await
+        .expect("first blocking save")
+    });
+    entered_rx.await.expect("first save entered");
+
+    let second_state = Arc::clone(&state);
+    let second = tokio::spawn(async move {
+        run_depgraph_save_with(second_state, None, |graph| {
+            std::ptr::from_ref(graph) as usize
+        })
+        .await
+        .expect("second blocking save")
+    });
+
+    let installed = Arc::new(crate::depgraph::DepGraph::new());
+    let installed_addr = Arc::as_ptr(&installed) as usize;
+    state.dep_graph.store(installed);
+    release_tx.send(()).expect("release first save");
+    first.await.expect("first task");
+    assert_eq!(
+        second.await.expect("second task"),
+        installed_addr,
+        "the queued save must serialize the graph installed while it waited"
+    );
+}
+
+/// #1684: a panic inside the blocking save must reach the supervisor, which
+/// logs its payload, writes the durable `background-task-died` event and
+/// bounds restarts. Swallowing it as a `warn!` lost all three.
+#[tokio::test]
+async fn a_panicking_depgraph_save_is_reraised_for_the_supervisor() {
+    let error = kernal_api::async_engine::launch_blocking(|| panic!("serializer exploded"))
+        .await
+        .expect_err("the blocking save panicked");
+    let reraised = kernal_api::async_engine::launch(async move {
+        reraise_depgraph_save_panic(&error);
+    })
+    .await
+    .expect_err("a save panic must end the loop task");
+    assert_eq!(
+        supervise::panic_message(&reraised).as_deref(),
+        Some("periodic depgraph save panicked: serializer exploded"),
+        "the supervisor must see the original payload"
+    );
+
+    let cancelled = kernal_api::async_engine::launch(std::future::pending::<()>());
+    cancelled.cancel();
+    let cancelled = cancelled.await.expect_err("cancelled");
+    reraise_depgraph_save_panic(&cancelled);
+}
+
+#[tokio::test]
+async fn periodic_depgraph_task_is_owned_and_joins_after_shutdown() {
+    let root = tempfile::tempdir().expect("cache root");
+    let state = test_state(&crate::core::NormalizedPath::new(root.path()));
+    let mut started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .start();
+
+    stop(&state);
+    let handle = started
+        .depgraph_save
+        .take()
+        .expect("periodic depgraph task must remain owned");
+    handle
+        .await
+        .expect("periodic depgraph task joins cleanly after shutdown");
 }
 
 /// #1160(c): the staged-temp sweep was startup-only and standalone-only, so an

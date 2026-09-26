@@ -341,6 +341,7 @@ impl StagedMultiUnitPlan {
 
     pub(in crate::daemon::server) fn materialize(
         &self,
+        mode: MaterializationMode,
     ) -> std::io::Result<StagedMaterializationStats> {
         let mut observed = StagedMaterializationStats::default();
         let requested_outputs = self
@@ -363,9 +364,10 @@ impl StagedMultiUnitPlan {
                 std::fs::create_dir_all(parent)
                     .map_err(|error| materialization_error(error, observed))?;
             }
-            let output_stats = materialize_independent_with_stats(
+            let output_stats = materialize_independent_with_mode(
                 output.staged.as_path(),
                 output.requested.as_path(),
+                mode,
             )
             .map_err(|error| materialization_error(error, observed))?;
             observed.reflink_count = observed

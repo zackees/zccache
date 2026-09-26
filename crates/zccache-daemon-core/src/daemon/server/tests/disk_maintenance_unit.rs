@@ -1194,7 +1194,7 @@ fn issue_1659_retired_store_bytes_are_reclaimed_before_live_entries() {
             .exists());
     }
     // #1673: reclaimed bytes are credited only where the volume proves the
-    // blocks exclusive; APFS/ReFS report unknown sharing and credit none,
+    // blocks exclusive; a volume reporting unknown sharing credits none,
     // though the files are still removed and no live entry is evicted.
     if volume_proves_exclusive(root.path()) {
         assert!(report.retired_bytes_reclaimed > 0);
@@ -1279,4 +1279,42 @@ fn issue_1673_retired_store_bytes_ignore_newer_sibling_stores() {
     std::fs::create_dir_all(&older).unwrap();
     std::fs::write(older.join("old.meta"), vec![0_u8; 4096]).unwrap();
     assert!(retired_store_bytes(&top_level, "v1.0.0") > 0);
+}
+
+/// #1687: a cache file reflinked into a build tree keeps `nlink == 1` while
+/// sharing every block, so evicting it frees (almost) nothing. The live
+/// planner must not credit it as reclaimable; it still counts toward
+/// accounted usage (`allocated_bytes`). Runs wherever the temp volume can
+/// reflink and prove sharing (APFS on macOS CI, btrfs/XFS, ReFS); loud skip
+/// elsewhere.
+#[test]
+fn issue_1687_reflink_shared_cache_file_is_not_reclaimable() {
+    let root = tempfile::tempdir().unwrap();
+    let artifact_dir = root.path().join("owned");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    std::fs::create_dir_all(&target).unwrap();
+    let cached = artifact_dir.join("key_0");
+    std::fs::write(&cached, vec![7_u8; 256 * 1024]).unwrap();
+    let restored = target.join("libkey.rlib");
+    if kernal_api::platform::fs::reflink_file(&cached, &restored).is_err()
+        || !matches!(
+            kernal_api::platform::fs::extent_sharing(&cached),
+            Ok(kernal_api::platform::fs::ExtentSharing::Shared)
+        )
+    {
+        eprintln!(
+            "SKIP issue_1687_reflink_shared_cache_file_is_not_reclaimable: {} cannot prove reflink extent sharing",
+            root.path().display()
+        );
+        return;
+    }
+    let scanned = scan_artifacts(&artifact_dir).unwrap();
+    assert_eq!(scanned.len(), 1);
+    assert!(scanned[0].allocated_bytes > 0);
+    assert_eq!(
+        scanned[0].reclaimable_bytes, 0,
+        "a reflink-shared cache file frees no space when evicted"
+    );
+    assert_eq!(std::fs::read(&restored).unwrap().len(), 256 * 1024);
 }

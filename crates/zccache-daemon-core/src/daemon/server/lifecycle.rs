@@ -259,6 +259,7 @@ pub(super) fn new_shared_state(
             session_staged_profiles: DashMap::new(),
             link_output_locks: DashMap::new(),
             system_includes: Mutex::new(system_includes_loaded),
+            system_include_probes: KeyedLocks::default(),
             system_includes_cache_path,
             dep_graph: arc_swap::ArcSwap::from_pointee(DepGraph::new()),
             artifacts,
@@ -302,6 +303,7 @@ pub(super) fn new_shared_state(
             journal: CompileJournal::new(crate::core::config::log_dir_from_cache_dir(cache_dir)),
             in_flight_bytes: AtomicUsize::new(0),
             disk_maintenance: Mutex::new(()),
+            depgraph_persistence: StdMutex::new(()),
             artifact_publication: Arc::new(kernal_api::async_engine::RwLock::new(())),
             staged_materialization_lock: Arc::new(StdMutex::new(std::sync::Weak::new())),
             persist_semaphore: Arc::new(tokio::sync::Semaphore::new(persist_workers_default())),
@@ -331,6 +333,11 @@ pub(super) fn new_shared_state(
             in_flight_exec: DashMap::new(),
             pending_cache_writes: DashMap::new(),
             exec_store,
+            // Never seeded from this process's environment: a lazily spawned
+            // daemon inherits whichever shell started it, and every client
+            // forwards its own ZCCACHE_MODE per request (#1683). Embedded hosts
+            // seed it from their own environment at start.
+            materialization_mode_default: MaterializationModeDefault::new(None),
         }),
         index_writer_rx,
     ))
@@ -632,5 +639,10 @@ impl ProfileHandle {
     #[must_use]
     pub fn snapshot(&self) -> super::super::stats::ProfileSnapshot {
         self.state.profiler.snapshot()
+    }
+
+    /// Zero the phase profiler, e.g. between benchmark batches.
+    pub fn reset(&self) {
+        self.state.profiler.reset();
     }
 }

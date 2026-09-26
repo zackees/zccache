@@ -15,6 +15,7 @@ manifest helpers, mtime helpers) consumed by every submodule via
 - `restore_errors` — Bundle/key mismatches, corrupt payloads, path-traversal entries, `safe_join`.
 - `summary_tests` — `RustPlanSummary` backend identity, miss classifications, serialization.
 - `tar_threads` — Tar-thread resolver parser and parallel-vs-sequential bundling equivalence.
+- `bundle_mode` — bundle I/O under `ZCCACHE_MODE` (#1683): never hardlinked; COPY never clones.
 - `thin_v2` — soldr#461 thin-v2 wire-format support (cache_profile, drop list, fingerprint split).
 
 Split from a single 1271-LOC `tests.rs` to keep each file under the

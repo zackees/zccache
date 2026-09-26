@@ -123,8 +123,10 @@ DEFAULT_FIXTURE = "medium"
 
 
 if __package__:
+    from . import perf_local_pins
     from . import perf_local_results as _results
 else:
+    import perf_local_pins
     import perf_local_results as _results
 
 
@@ -484,6 +486,10 @@ def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = T
             "[perf-local] soldr registry dependency patched to the local zccache checkout "
             f"(zccache ={version} in {aligned} manifest(s))"
         )
+        for change in perf_local_pins.align_soldr_exact_pins(
+            soldr_src, perf_local_pins.exact_workspace_pins(REPO_ROOT)
+        ):
+            print(f"[perf-local] soldr exact pin aligned with the checkout: {change}")
         return
     zccache_sha = git_head(REPO_ROOT)
     vendored = soldr_src / "_vender" / "zccache"

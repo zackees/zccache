@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ci import benchmark_stats, perf_distribution, perf_watchdog
+from ci import benchmark_stats, perf_distribution, perf_floor, perf_watchdog
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -85,9 +85,23 @@ class ScenarioStatus:
     best_zccache_seconds: float | None = None
     best_baseline_seconds: float | None = None
     samples: list[ScenarioSample] = field(default_factory=list)
+    reference_baseline_seconds: float | None = None
+
+    def floor_for(self, sample: ScenarioSample | None) -> float:
+        """The ratio floor `sample` is held to (see `ci/perf_floor.py`)."""
+        return perf_floor.effective_floor(
+            self.threshold,
+            self.reference_baseline_seconds,
+            None if sample is None else sample.baseline_seconds,
+        )
+
+    def sample_passed(self, sample: ScenarioSample) -> bool:
+        return sample.ratio >= self.floor_for(sample)
 
     @property
     def passed(self) -> bool:
+        if self.reference_baseline_seconds is not None and self.samples:
+            return any(self.sample_passed(sample) for sample in self.samples)
         return self.best_ratio is not None and self.best_ratio >= self.threshold
 
 
@@ -107,7 +121,7 @@ class GuardReport:
         return (
             status.attempts_seen == self.attempt_count
             and len(status.samples) == self.attempt_count
-            and all(sample.ratio >= status.threshold for sample in status.samples)
+            and all(status.sample_passed(sample) for sample in status.samples)
         )
 
     @property
@@ -457,6 +471,9 @@ def evaluate_attempts(
                         baseline=baseline,
                         baseline_label=baseline_label,
                         threshold=ratio_threshold,
+                        reference_baseline_seconds=perf_floor.reference_bare_seconds(
+                            key.benchmark, key.scenario, baseline
+                        ),
                     )
                     statuses[key] = status
                 status.attempts_seen += 1
@@ -530,7 +547,9 @@ def _selected_sample(
     if not status.samples:
         return None
     selector = min if report.require_all_attempts else max
-    return selector(status.samples, key=lambda sample: sample.ratio)
+    return selector(
+        status.samples, key=lambda sample: sample.ratio / status.floor_for(sample)
+    )
 
 
 def format_report(
@@ -562,7 +581,7 @@ def format_report(
             "| "
             f"{state} | {status.language} | {status.benchmark_label} | "
             f"{status.scenario} | {status.baseline_label} | {zc_time} | {bl_time} | {ratio} | "
-            f"{status.threshold:.2f}x | {attempt} | {status.attempts_seen} |"
+            f"{status.floor_for(sample):.2f}x | {attempt} | {status.attempts_seen} |"
         )
 
     if report.missing_requirements:
@@ -583,9 +602,20 @@ def _format_status_check(report: GuardReport, status: ScenarioStatus) -> str:
     actual = "n/a" if sample is None else f"{sample.ratio:.3f}x"
     zc_time = _format_seconds(None if sample is None else sample.zccache_seconds)
     bl_time = _format_seconds(None if sample is None else sample.baseline_seconds)
+    floor = status.floor_for(sample)
+    rebased = ""
+    if floor != status.threshold and status.reference_baseline_seconds is not None:
+        # #1445: say why the floor moved, so a fast-runner pass is not
+        # mistaken for a weaker gate.
+        reference = status.reference_baseline_seconds
+        rebased = (
+            f" ({status.threshold:.2f}x floor re-based: this runner's bare run beat "
+            f"the {_format_seconds(reference)} reference, so zccache keeps the "
+            f"{_format_seconds((1 / status.threshold - 1) * reference)} added-time budget)"
+        )
     return (
         f"{status.language} {status.benchmark_label} / {status.scenario} "
-        f"vs {status.baseline_label}: expected >= {status.threshold:.2f}x, "
+        f"vs {status.baseline_label}: expected >= {floor:.2f}x{rebased}, "
         f"actual {actual} (zccache {zc_time} vs baseline {bl_time})"
     )
 
@@ -605,9 +635,12 @@ def format_floor_margin(status: ScenarioStatus, sample: ScenarioSample | None) -
     substance of #1445. Stating the margin lets a reader judge that without
     picking a resolvability threshold here.
     """
-    if sample is None or status.threshold <= 0 or sample.baseline_seconds is None:
+    if sample is None or sample.baseline_seconds is None:
         return ""
-    required = sample.baseline_seconds / status.threshold
+    floor = status.floor_for(sample)
+    if floor <= 0:
+        return ""
+    required = sample.baseline_seconds / floor
     overshoot = sample.zccache_seconds - required
     if overshoot <= 0:
         return ""
@@ -683,7 +716,8 @@ def format_final_status(report: GuardReport) -> str:
             key=lambda status: (
                 float("inf")
                 if _selected_sample(report, status) is None
-                else _selected_sample(report, status).ratio / status.threshold
+                else _selected_sample(report, status).ratio
+                / status.floor_for(_selected_sample(report, status))
             ),
         )
         return (
@@ -722,7 +756,8 @@ def format_final_status(report: GuardReport) -> str:
             key=lambda status: (
                 -1.0
                 if _selected_sample(report, status) is None
-                else _selected_sample(report, status).ratio / status.threshold
+                else _selected_sample(report, status).ratio
+                / status.floor_for(_selected_sample(report, status))
             ),
         )
         count = len(failed_statuses)
@@ -801,6 +836,7 @@ def format_report_json(
                 "baseline": status.baseline,
                 "baseline_label": status.baseline_label,
                 "threshold": status.threshold,
+                "reference_baseline_seconds": status.reference_baseline_seconds,
                 "best_ratio": status.best_ratio,
                 "best_attempt": status.best_attempt,
                 "attempts_seen": status.attempts_seen,
@@ -808,6 +844,7 @@ def format_report_json(
                     {
                         "attempt": sample.attempt,
                         "ratio": sample.ratio,
+                        "floor": status.floor_for(sample),
                         "zccache_seconds": sample.zccache_seconds,
                         "baseline_seconds": sample.baseline_seconds,
                         "attempt_json": f"attempt-{sample.attempt}.json",

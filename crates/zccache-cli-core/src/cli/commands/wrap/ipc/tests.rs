@@ -284,6 +284,63 @@ fn missing_response_is_a_no_verdict_failure() {
     ));
 }
 
+#[test]
+fn only_a_closed_connection_or_a_confirmed_wedge_kill_is_a_lost_request() {
+    let relayed = |response| relay_compile_response(response, &mut Vec::new(), &mut Vec::new());
+    assert_eq!(
+        relayed(None).lost_request(),
+        Some(LostRequest::ClosedConnection),
+        "the daemon's tool dies with the connection it closed"
+    );
+    assert_eq!(
+        relay_link_response(None, &mut Vec::new(), &mut Vec::new()).lost_request(),
+        Some(LostRequest::ClosedConnection)
+    );
+    let error = relayed(Some(crate::protocol::Response::Error {
+        message: "cache staging failed".to_string(),
+    }));
+    assert_eq!(error.lost_request(), None, "the tool may have run");
+    assert_eq!(
+        relayed(Some(crate::protocol::Response::Pong)).lost_request(),
+        None
+    );
+    for exit_code in [0, 1, 125] {
+        assert_eq!(
+            relayed(Some(compile_result(exit_code))).lost_request(),
+            None
+        );
+    }
+
+    let gone = |_pid: u32| false;
+    assert_eq!(
+        LostRequest::after_wedge_stop(Some(4242), gone),
+        Some(LostRequest::WedgedDaemonKilled)
+    );
+    assert_eq!(
+        LostRequest::after_wedge_stop(None, gone),
+        None,
+        "a refused or unconfirmed kill may leave the tool running"
+    );
+    assert_eq!(
+        LostRequest::after_wedge_stop(Some(4242), |pid| pid == 4242),
+        None,
+        "a daemon still alive after its kill may still hold the tool"
+    );
+}
+
+#[test]
+fn a_lost_request_is_logged_as_the_wrappers_failure_with_its_cause() {
+    let event = lost_request_event("test-endpoint", LostRequest::WedgedDaemonKilled);
+
+    assert_eq!(event["cause"], "wedged-daemon-killed");
+    assert_eq!(event["endpoint"], "test-endpoint");
+    assert_eq!(event["exit_code"], 1, "the wrapper's own exit status");
+    assert_eq!(
+        crate::core::lifecycle::EVENT_WRAPPER_NO_VERDICT,
+        "wrapper-no-verdict"
+    );
+}
+
 // ── Issue #666: wedge-detection helper ──────────────────────────────
 //
 // Verifies that `compile_recv_with_wedge_detection`:
@@ -585,6 +642,67 @@ async fn wedge_detection_does_not_misclassify_broken_pipe_as_wedge() {
     )
     .await;
     assert!(matches!(outcome, CompileRecvOutcome::Failed(_)));
+}
+
+#[tokio::test]
+async fn a_connection_the_daemon_closes_mid_response_is_a_lost_request() {
+    let mut conn = FakeConn {
+        behavior: FakeBehavior::BrokenPipe,
+    };
+    let outcome = compile_recv_with_wedge_detection(
+        &mut conn,
+        TEST_BUDGET,
+        crate::protocol::wire_prost::WireFormat::ProstV16,
+    )
+    .await;
+
+    let CompileRecvOutcome::Failed(failure) = outcome else {
+        panic!("a closed connection is a transport failure");
+    };
+    assert_eq!(failure.lost_request(), Some(LostRequest::ClosedConnection));
+}
+
+#[test]
+fn only_a_closed_or_reset_connection_after_dispatch_is_a_lost_request() {
+    use std::io::{Error, ErrorKind};
+    let lost = |error: crate::ipc::IpcError| {
+        TransportFailure {
+            message: error.to_string(),
+            phase: recv_failure_phase(&error),
+        }
+        .lost_request()
+    };
+    assert_eq!(
+        lost(crate::ipc::IpcError::ConnectionClosed),
+        Some(LostRequest::ClosedConnection)
+    );
+    for kind in [
+        ErrorKind::ConnectionReset,
+        ErrorKind::ConnectionAborted,
+        ErrorKind::BrokenPipe,
+        ErrorKind::UnexpectedEof,
+    ] {
+        assert_eq!(
+            lost(crate::ipc::IpcError::Io(Error::from(kind))),
+            Some(LostRequest::ClosedConnection),
+            "{kind:?}"
+        );
+    }
+    for error in [
+        crate::ipc::IpcError::Io(Error::from(ErrorKind::PermissionDenied)),
+        crate::ipc::IpcError::OpaqueProtocol("bad frame".to_string()),
+        crate::ipc::IpcError::Endpoint("gone".to_string()),
+    ] {
+        assert_eq!(lost(error), None, "the daemon may still hold the tool");
+    }
+    assert_eq!(
+        TransportFailure {
+            message: "failed to send to daemon".to_string(),
+            phase: FailurePhase::DeliveryUnknown,
+        }
+        .lost_request(),
+        None
+    );
 }
 
 // ── Issue #752: link retry on transport failure ────────────────────

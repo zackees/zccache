@@ -33,6 +33,8 @@ pub const NO_SPAWN_ENV: &str = "ZCCACHE_NO_SPAWN";
 const ZCCACHE_PROBE_BYPASS_ENV: &str = "ZCCACHE_PROBE_BYPASS";
 /// Set this to allow caching Rust `--test` harness links.
 pub const CACHE_TEST_BINS_ENV: &str = "ZCCACHE_CACHE_TEST_BINS";
+/// Set this to arm kernal-api's native crash capture in the daemon.
+pub const NATIVE_CRASH_CAPTURE_ENV: &str = "ZCCACHE_NATIVE_CRASH_CAPTURE";
 
 /// The complete registry for the owned-boolean policy family.
 ///
@@ -60,6 +62,11 @@ pub const ENVIRONMENT_VARIABLES: &[EnvironmentVariableDeclaration] = &[
         kind: EnvironmentVariableKind::OwnedBoolean,
         help: "Opt into caching Rust test-harness links.",
     },
+    EnvironmentVariableDeclaration {
+        name: NATIVE_CRASH_CAPTURE_ENV,
+        kind: EnvironmentVariableKind::OwnedBoolean,
+        help: "Arm native crash capture in the daemon (its sampler costs most of a core).",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +75,7 @@ enum OwnedBoolean {
     NoSpawn,
     ProbeBypass,
     CacheTestBinaries,
+    NativeCrashCapture,
 }
 
 impl OwnedBoolean {
@@ -77,6 +85,7 @@ impl OwnedBoolean {
             Self::NoSpawn => NO_SPAWN_ENV,
             Self::ProbeBypass => ZCCACHE_PROBE_BYPASS_ENV,
             Self::CacheTestBinaries => CACHE_TEST_BINS_ENV,
+            Self::NativeCrashCapture => NATIVE_CRASH_CAPTURE_ENV,
         }
     }
 
@@ -137,6 +146,15 @@ pub fn cache_test_binaries_enabled() -> bool {
     OwnedBoolean::CacheTestBinaries.enabled()
 }
 
+/// True when `ZCCACHE_NATIVE_CRASH_CAPTURE` arms native crash capture in the
+/// daemon. Off by default since #1649: kernal-api's pre-crash sampler takes a
+/// resolved all-thread snapshot every 50 ms, so an idle daemon burned most of
+/// a core for its whole life.
+#[must_use]
+pub fn native_crash_capture_enabled() -> bool {
+    OwnedBoolean::NativeCrashCapture.enabled()
+}
+
 /// Testable core of [`daemon_spawn_disabled`] — no environment access.
 #[must_use]
 pub(crate) fn no_spawn_from_env_value(value: Option<&OsStr>) -> bool {
@@ -160,7 +178,7 @@ mod tests {
 
     #[test]
     fn registry_contains_only_owned_boolean_switches() {
-        assert_eq!(ENVIRONMENT_VARIABLES.len(), 4);
+        assert_eq!(ENVIRONMENT_VARIABLES.len(), 5);
         assert!(ENVIRONMENT_VARIABLES
             .iter()
             .all(|declaration| { declaration.kind == EnvironmentVariableKind::OwnedBoolean }));

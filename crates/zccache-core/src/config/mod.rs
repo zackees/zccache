@@ -9,6 +9,7 @@
 
 pub mod cleanup;
 mod env_policy;
+mod materialization_mode;
 pub mod namespace;
 pub mod paths;
 pub mod resolve;
@@ -72,9 +73,15 @@ pub use cleanup::{cleanup_legacy_temp_root_state, cleanup_stale_depfile_dirs};
 #[allow(deprecated)]
 pub use env_policy::owned_env_flag_enabled;
 pub use env_policy::{
-    cache_test_binaries_enabled, daemon_spawn_disabled, no_spawn_error, owned_flag_enabled,
-    probe_bypass_enabled, zccache_disabled, EnvironmentVariableDeclaration,
-    EnvironmentVariableKind, CACHE_TEST_BINS_ENV, ENVIRONMENT_VARIABLES, NO_SPAWN_ENV,
+    cache_test_binaries_enabled, daemon_spawn_disabled, native_crash_capture_enabled,
+    no_spawn_error, owned_flag_enabled, probe_bypass_enabled, zccache_disabled,
+    EnvironmentVariableDeclaration, EnvironmentVariableKind, CACHE_TEST_BINS_ENV,
+    ENVIRONMENT_VARIABLES, NATIVE_CRASH_CAPTURE_ENV, NO_SPAWN_ENV,
+};
+pub use materialization_mode::{
+    materialization_mode_from_client_env, materialization_mode_from_env,
+    parse_materialization_mode, InvalidMaterializationMode, MaterializationMode,
+    MaterializationTiers, MATERIALIZATION_MODE_ENV,
 };
 pub use namespace::{
     daemon_namespace, daemon_namespace_label, sanitize_daemon_namespace, sanitize_ipc_component,
@@ -99,9 +106,10 @@ pub use resolve::{
 };
 pub use retired_store::{
     file_frees_space_on_removal, file_link_count, file_may_free_space_on_removal,
-    is_older_version_dir, sweep_retired_version_store, sweep_retired_version_stores_in,
-    touch_store_activity_marker, RetiredStoreSweepReport, RetiredSweepMode,
-    LAST_ACTIVE_MARKER_FILE,
+    is_older_version_dir, removal_frees_space, sweep_retired_version_store,
+    sweep_retired_version_store_with_mode, sweep_retired_version_stores_in,
+    sweep_retired_version_stores_in_with_mode, touch_store_activity_marker,
+    RetiredStoreSweepReport, RetiredSweepMode, LAST_ACTIVE_MARKER_FILE,
 };
 
 /// Top-level configuration for zccache.

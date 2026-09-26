@@ -159,13 +159,13 @@ struct PersistedCompilerHashes {
 #[derive(Default)]
 pub(super) struct CompilerHashCache {
     pub(super) entries: DashMap<NormalizedPath, CompilerHashEntry>,
+    /// Single-flight gates for the async identity probe (FastLED/fbuild#1466).
+    probes: KeyedLocks,
 }
 
 impl CompilerHashCache {
     pub(super) fn new() -> Self {
-        Self {
-            entries: DashMap::new(),
-        }
+        Self::default()
     }
 
     #[cfg(test)]
@@ -244,6 +244,17 @@ impl CompilerHashCache {
         let size = metadata.len();
         let key = NormalizedPath::new(path);
 
+        let previous = self.entries.get(&key).map(|entry| entry.clone());
+        if let Some(entry) = &previous {
+            if entry.mtime == mtime && entry.size == size {
+                return Some(entry.hash);
+            }
+        }
+
+        // FastLED/fbuild#1466: single-flight the `--version` probe per path
+        // so a cold burst of compiles spawns it once; waiters re-check.
+        let probe_gate = self.probes.get(&key);
+        let _probe_guard = probe_gate.lock_owned().await;
         let previous = self.entries.get(&key).map(|entry| entry.clone());
         if let Some(entry) = &previous {
             if entry.mtime == mtime && entry.size == size {
@@ -497,7 +508,10 @@ impl CompilerHashCache {
             entries = entry_count,
             "compiler hash cache restored from disk"
         );
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            probes: KeyedLocks::default(),
+        })
     }
 }
 

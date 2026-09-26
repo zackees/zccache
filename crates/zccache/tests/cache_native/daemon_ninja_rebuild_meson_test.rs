@@ -34,9 +34,16 @@ fn find_cli_binary() -> NormalizedPath {
 }
 
 async fn start_daemon(endpoint: &str) -> (JoinHandle<()>, Arc<Notify>) {
-    let mut server = DaemonServer::bind(endpoint).unwrap();
+    // Isolated cache root (#1648). Plain `bind` resolves the process-global
+    // default root, which any other live daemon on the host (or an earlier
+    // test that leaked one) may hold as its writer. The spawned task owns the
+    // `TempDir`, so the root lives exactly as long as the server.
+    let cache_root = tempfile::tempdir().expect("daemon cache tempdir");
+    let cache_dir: zccache::core::NormalizedPath = cache_root.path().join("zccache-cache").into();
+    let mut server = DaemonServer::bind_with_cache_dir(endpoint, &cache_dir).unwrap();
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
+        let _cache_root = cache_root;
         server.run(0).await.unwrap();
     });
     (handle, shutdown)

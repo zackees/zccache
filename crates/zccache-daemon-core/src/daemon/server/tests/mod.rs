@@ -16,6 +16,7 @@ mod deferred_cold_path;
 mod depgraph_reset_reachability;
 mod depgraph_save_failure;
 mod disk_maintenance;
+mod embedded_bringup;
 mod embedded_flush;
 mod exec_probe;
 mod fingerprint;
@@ -25,6 +26,7 @@ mod ignored_input_freshness;
 mod index_writer_gone;
 mod link_cache;
 mod metadata_deferred;
+mod miss_overhead_budget;
 mod multi_restart_context_key;
 mod pack;
 mod path_remap;
@@ -38,9 +40,12 @@ mod server_ipc;
 mod session_errors;
 mod session_staged_attribution;
 mod staged_compiler_sets;
+pub(crate) mod staged_env;
+mod store_mode;
 mod system_includes_deferred;
 mod watcher_lifecycle;
 mod write_cached;
+mod write_cached_mode;
 
 /// Bind a daemon server on a fresh endpoint, rooted at a cache directory
 /// under `cache_root` that no other test can reach.

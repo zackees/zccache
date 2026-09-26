@@ -14,7 +14,18 @@ Fails when:
   ``save-cache`` unset or ``auto`` means "no saves on pull_request".  On any
   other ref only ``save-cache: false`` or an expression that is false on
   ``pull_request`` counts.  ``save-cache: true`` must be justified in
-  ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``).
+  ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``);
+* this repository's first-party action (``uses: ./``) cannot save durable
+  caches from pull-request workflows; allow only explicit no-save or a
+  main-ref-only save expression;
+* a cache-enabled setup-soldr step does not set ``cook-delta: false`` on a
+  ref listed in ``COOK_DELTA_REFS``, unless the job is listed in
+  ``JUSTIFIED_COOK_DELTA``.  The cook-delta layer saves one
+  ``cook-delta-v2-*`` generation per commit and nothing prunes it
+  (zackees/setup-soldr#528); cook bases stay on.
+
+The repository-wide cache total is checked separately, online, by
+``ci/check_cache_budget.py``.
 
 Usage: ``uv run --no-project --with pyyaml python ci/check_cache_footprint.py``
 """
@@ -44,8 +55,20 @@ JUSTIFIED_SUFFIXES: dict[str, str] = {
 # with `auto` (the default) skipping durable saves on pull_request
 # (zackees/setup-soldr#527).  Add the new ref on each pin bump.
 SAVE_CACHE_REFS: dict[str, str] = {
+    "4df8db93438594f50505574d9dc8117505d33362": "setup-soldr v0.9.80",
+    "dfbe9627f6cb0226716b61625b99a58949162720": "setup-soldr dfbe962 (#532)",
     "fabebf4ac3867b0008576797d566db0cb18d43c3": "setup-soldr v0.9.78",
 }
+
+# setup-soldr refs whose main action honors `cook-delta: true|false`
+# (zackees/setup-soldr#528).  Add the new ref on each pin bump.
+COOK_DELTA_REFS: dict[str, str] = {
+    "4df8db93438594f50505574d9dc8117505d33362": "setup-soldr v0.9.80",
+}
+
+# `workflow.yml:job` (or `actions/<name>:steps`) -> why that step may keep
+# the per-commit cook-delta layer.  None today.
+JUSTIFIED_COOK_DELTA: dict[str, str] = {}
 
 # `workflow.yml:job` -> why that job must save on pull_request (e.g. it seeds
 # a cache a later job in the same run restores).  None today.
@@ -160,11 +183,41 @@ def _cannot_save_on_pr(step: Step) -> bool:
     return value.lower() == "false" or value in {
         "${{github.event_name!='pull_request'}}",
         "${{github.event_name=='push'}}",
+        "${{github.ref=='refs/heads/main'}}",
     }
+
+
+def _local_action_errors(root: Path) -> list[str]:
+    errors: list[str] = []
+    for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        pr = bool(
+            _triggers(doc) & {"pull_request", "pull_request_target", "workflow_call"}
+        )
+        if not pr:
+            continue
+        for job_name, job in (doc.get("jobs") or {}).items():
+            for index, raw in enumerate(job.get("steps") or []):
+                if str(raw.get("uses", "")).strip() != "./":
+                    continue
+                step = Step(
+                    f"{path.name}:{job_name}#{index}",
+                    "./",
+                    dict(raw.get("with") or {}),
+                    frozenset(),
+                    True,
+                )
+                if not _cannot_save_on_pr(step):
+                    errors.append(
+                        f"{step.where} local action can save caches on pull_request; "
+                        "set save-cache: false or gate saves to refs/heads/main"
+                    )
+    return errors
 
 
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
+    errors.extend(_local_action_errors(root))
     steps = collect(root)
 
     refs = sorted({s.ref for s in steps})
@@ -210,6 +263,24 @@ def check(root: Path = ROOT) -> list[str]:
             f"{s.where} can save caches on pull_request; pin setup-soldr "
             "v0.9.78+ (SAVE_CACHE_REFS) with save-cache: auto"
         )
+    for s in cached:
+        if not s.main_action:
+            continue
+        job = s.where.rsplit("#", 1)[0]
+        if job in JUSTIFIED_COOK_DELTA:
+            continue
+        value = str(s.inputs.get("cook-delta", "")).strip().lower()
+        if value != "false":
+            errors.append(
+                f"{s.where} does not set cook-delta: false; the per-commit "
+                "cook-delta layer is disabled (setup-soldr#528) unless justified "
+                "in JUSTIFIED_COOK_DELTA"
+            )
+        elif s.ref not in COOK_DELTA_REFS:
+            errors.append(
+                f"{s.where} sets cook-delta: false on setup-soldr {s.ref}, which "
+                "does not honor it; pin a ref listed in COOK_DELTA_REFS"
+            )
     return errors
 
 

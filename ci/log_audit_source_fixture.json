@@ -1,0 +1,75 @@
+{
+  "_comment": "Shared contract for #1523. `telemetry` lists every file form `zccache-ci audit-logs` reads; `artifacts` lists cache data it must ignore. The Rust audit test (crates/zccache-audit/src/log_audit/source_fixture_tests.rs) and the Python cleanup test (ci/tests/test_clear_runtime_telemetry.py) both consume this file, so ci/clear_runtime_telemetry.py cannot drift from the audit's source classification. The first two telemetry rows are the exact seeded and wrapper-contract files that turned Integration run 33069341127 red.",
+  "telemetry": [
+    {
+      "path": "history/4837184653321745164/compile_journal.jsonl",
+      "contents": "{\"outcome\":\"miss\",\"miss_reason\":\"unknown\"}\n"
+    },
+    {
+      "path": "daemon-state/embedded-v1/v1.13.11/logs/daemon-lifecycle.log",
+      "contents": "{\"event\":\"miss_reason_unknown\"}\n{\"event\":\"wrapper-daemon-unavailable\"}\n"
+    },
+    {
+      "path": "daemon-state/v1/logs/compile_journal.jsonl",
+      "contents": "{\"outcome\":\"link_miss\",\"miss_reason\":\"unknown\"}\n"
+    },
+    {
+      "path": "logs/compile_journal.jsonl.2026-08-27T00-00-00Z",
+      "contents": "{\"outcome\":\"miss\",\"miss_reason\":\"unknown\"}\n"
+    },
+    {
+      "path": "sessions/session-one.jsonl",
+      "contents": "{\"outcome\":\"miss\",\"miss_reason\":\"unknown\"}\n"
+    },
+    {
+      "path": "logs/audit.jsonl",
+      "contents": "not-json\n"
+    },
+    {
+      "path": "logs/audit.jsonl.1",
+      "contents": "not-json\n"
+    },
+    {
+      "path": "daemon-state/v1/logs/daemon-lifecycle-soldr-dev.log.1",
+      "contents": "{\"event\":\"wrapper-local-fallback\"}\n"
+    },
+    {
+      "path": "daemon-state/v1/logs/daemon.log",
+      "contents": "human event line\n"
+    },
+    {
+      "path": "daemon-state/v1/logs/daemon.log.1",
+      "contents": "human event line\n"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "artifacts/ab/cdef0123",
+      "contents": "{\"outcome\":\"miss\",\"miss_reason\":\"unknown\"}\n"
+    },
+    {
+      "path": "daemon-state/v1/blobs/cached-artifact",
+      "contents": "{\"event\":\"wrapper-daemon-unavailable\"}\n"
+    },
+    {
+      "path": "history/4837184653321745164/compile_journal.json",
+      "contents": "{\"outcome\":\"miss\",\"miss_reason\":\"unknown\"}\n"
+    },
+    {
+      "path": "logs/unrelated.txt",
+      "contents": "{\"event\":\"miss_reason_unknown\"}\n"
+    },
+    {
+      "path": "logs/lifecycle.log",
+      "contents": "{\"event\":\"miss_reason_unknown\"}\n"
+    },
+    {
+      "path": "logs/daemon-lifecycle.txt",
+      "contents": "{\"event\":\"wrapper-daemon-unavailable\"}\n"
+    },
+    {
+      "path": "logs/daemon.logger",
+      "contents": "human event line\n"
+    }
+  ]
+}

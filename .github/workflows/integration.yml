@@ -59,8 +59,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
-      - uses: zackees/setup-soldr@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
+      - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
+          cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: auto
           zccache-seed-strict: true
           toolchain: 1.95.0
@@ -107,7 +108,7 @@ jobs:
           soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
+        uses: zackees/setup-soldr/cleanup@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
       - name: Remove seeded runtime journals before tests
         shell: bash
         env:
@@ -217,6 +218,10 @@ jobs:
           # This repeats the full-workspace compilation shape above.
           CARGO_BUILD_JOBS: "1"
           SOLDR_JOBS: "1"
+          # zccache#1670's `matches_legacy_on_corpus_dir` checks the
+          # single-pass include lexer against the legacy scanner over a real
+          # header tree; the runner's system headers are that tree (#1648).
+          ZCCACHE_SCAN_CORPUS_DIR: /usr/include
         run: |
           set +e
           unset ZCCACHE_CACHE_DIR

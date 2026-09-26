@@ -10,6 +10,7 @@ enum LinkCacheHitOutcome {
     Miss,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn materialize_link_cache_hit(
     state: &SharedState,
     key_hex: &str,
@@ -18,6 +19,7 @@ fn materialize_link_cache_hit(
     secondary_outputs: &[NormalizedPath],
     is_directory: bool,
     warning: Option<String>,
+    mode: MaterializationMode,
 ) -> LinkCacheHitOutcome {
     let Some(entry) = lookup_artifact_with_disk_fallback(state, key_hex) else {
         return LinkCacheHitOutcome::Miss;
@@ -96,7 +98,7 @@ fn materialize_link_cache_hit(
     });
     let materialize_started = std::time::Instant::now();
     payloads.record_staged_pre_materialization(&state.profiler.staged);
-    let observed = write_payloads_par_observed(&targets, &payloads);
+    let observed = write_payloads_par_observed(&targets, &payloads, mode);
     payloads.record_staged_lock_timings(&state.profiler.staged);
     drop(payloads);
     if let Err(failure) = &observed {
@@ -133,6 +135,8 @@ pub(super) async fn handle_link_ephemeral(
     env: Option<Vec<(String, String)>>,
 ) -> Response {
     let _active_request = state.begin_cache_request();
+    // Resolved before `env` moves into the spawned tool (#1683).
+    let link_mode = state.materialization_mode(env.as_deref());
     // Emit hosted cold link/archive phase profiles when requested (#535).
     let profile_enabled = std::env::var_os(CC_MISS_PROFILE_ENV).is_some();
     let link_start = std::time::Instant::now();
@@ -405,6 +409,7 @@ pub(super) async fn handle_link_ephemeral(
     let hit_is_directory =
         parsed_tool.output_kind == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle;
     let hit_warning = nd_warning.clone();
+    let hit_mode = link_mode;
     let hit_outcome = state
         .launch_blocking(move || {
             materialize_link_cache_hit(
@@ -415,6 +420,7 @@ pub(super) async fn handle_link_ephemeral(
                 &hit_secondary,
                 hit_is_directory,
                 hit_warning,
+                hit_mode,
             )
         })
         .await;
@@ -655,7 +661,7 @@ pub(super) async fn handle_link_ephemeral(
     if parsed_tool.is_archive {
         if let Some(plan) = staged_plan.take() {
             let started = std::time::Instant::now();
-            match plan.materialize() {
+            match plan.materialize(link_mode) {
                 Ok(materialized) => {
                     state.profiler.staged.add_count(
                         StagedCounter::MaterializeReflink,
@@ -787,7 +793,7 @@ pub(super) async fn handle_link_ephemeral(
                     staged_count = unexpected_staged.len(),
                     "undeclared linker side effects invalidate staged publication"
                 );
-                if let Err(error) = materialize_link_plan_observed(state, plan, None) {
+                if let Err(error) = materialize_link_plan_observed(state, plan, None, link_mode) {
                     return Response::Error {
                         message: format!("failed to materialize staged link output: {error}"),
                     };
@@ -894,7 +900,8 @@ pub(super) async fn handle_link_ephemeral(
             // Transfer one owned guard through live-map and disk/index publication.
             let Some(guard) = begin_artifact_publication(state).await else {
                 if let Some(plan) = staged_plan.as_ref() {
-                    if let Err(error) = materialize_link_plan_observed(state, plan, None) {
+                    if let Err(error) = materialize_link_plan_observed(state, plan, None, link_mode)
+                    {
                         return Response::Error {
                             message: format!("failed to materialize staged link output: {error}"),
                         };
@@ -939,6 +946,7 @@ pub(super) async fn handle_link_ephemeral(
                         &kh,
                         persist_meta,
                         &source_paths,
+                        link_mode,
                     ) {
                         Ok(cacheable) => cacheable,
                         Err(error) => {

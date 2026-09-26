@@ -117,14 +117,17 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
             let results: Vec<_> = all_paths
                 .par_iter()
                 .map(|(header, label)| {
-                    let hash_path = resolve_pch_source(header, &state.pch_source_map)
-                        .unwrap_or_else(|| (*header).clone());
-                    let result = hash_file(&state.cache_system, &hash_path, snap_clock);
-                    ((*header).clone(), hash_path, result, *label)
+                    let result = hash_dependency(
+                        &state.cache_system,
+                        &state.pch_source_map,
+                        header,
+                        snap_clock,
+                    );
+                    ((*header).clone(), result, *label)
                 })
                 .collect();
 
-            for (header, hash_path, result, label) in results {
+            for (header, result, label) in results {
                 match result {
                     Ok(h) => {
                         hash_map.insert(header, h);
@@ -133,7 +136,7 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
                         write_session_log(
                             &state.sessions,
                             sid,
-                            &format!("[DIAG] {label}: {} error={e}", hash_path.display()),
+                            &format!("[DIAG] {label}: {} error={e}", header.display()),
                         );
                     }
                 }

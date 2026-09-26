@@ -136,3 +136,35 @@ fn ignored_cross_root_inputs_require_hash_validation() {
     let clock = journal.current_clock();
     assert!(!request_cache_inputs_fresh_since(&journal, &[input], clock));
 }
+
+/// #1609: a build-directory PCH (`-include-pch build/pch.h.pch`) is a key
+/// input. `build/` is an ignored watcher path, so a regenerated PCH produces
+/// no journal event; the request-cache tier must still decline and let the
+/// depgraph hash it, or the consumer hits stale.
+#[tokio::test]
+async fn ignored_force_include_requires_validation_for_an_ordinary_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = super::bind_isolated_server(dir.path());
+    let source = dir.path().join("src/main.cpp");
+    let pch = dir.path().join("build/pch.h.pch");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(pch.parent().unwrap()).unwrap();
+    std::fs::write(&source, "int main() { return SUB_VALUE; }\n").unwrap();
+    std::fs::write(&pch, "pch built from SUB_VALUE 42").unwrap();
+    let graph = server.state.dep_graph.load();
+    let key = graph.register(CompileContext {
+        source_file: source.clone().into(),
+        include_search: crate::depgraph::IncludeSearchPaths::default(),
+        defines: Vec::new(),
+        flags: Vec::new(),
+        force_includes: vec![pch.clone().into()],
+        unknown_flags: Vec::new(),
+        compiler_hash: crate::hash::hash_bytes(b"fixture"),
+    });
+    let journal = server.state.cache_system.journal();
+    journal.register(source.clone().into());
+    journal.register(pch.clone().into());
+    let clock = journal.current_clock();
+    std::fs::write(&pch, "pch built from SUB_VALUE 99").unwrap();
+    assert!(!context_files_fresh(&server.state, &key, &source, clock));
+}

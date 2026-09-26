@@ -14,3 +14,4 @@ mod session_warnings;
 mod snapshot;
 mod util;
 mod warm_lockfile;
+mod wrapper_detection;

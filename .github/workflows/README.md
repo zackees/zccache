@@ -12,6 +12,7 @@ this rule applies to all new tests now.
 - **python-tests.yml** - Runs the fast `ci/tests/` pytest suite (CI helper modules plus the doc-link, README-coverage, crate-map, documented-command, and toolchain-consistency guards), plus a Linux-native job that builds/stages all three PyO3 extensions and runs every source Python suite against an isolated pre-started zccache daemon. Separate from `ci.yml` because that workflow ignores `**/*.md`, which would skip the Markdown guards on docs-only PRs.
 - **ci-check.yml** - Reusable check/test workflow used by the OS-specific CI workflows.
 - **integration.yml** - Runs the normal Linux workspace integration suite on pushes and PRs; weekly/manual runs additionally execute every ignored integration/stress test without gating pull requests.
+- **reflink-e2e.yml** - Reusable job called by `ci.yml`: `ZCCACHE_MODE` end to end on a btrfs loop mount (parent/child worktree hits per mode, extent sharing, cross-device fallback).
 - **fs-matrix.yml** - Requires real ReFS/FAT, btrfs/ext4/vfat, and macOS fixtures on PRs; scheduled/manual runs also execute >4 GiB ReFS and btrfs COW acceptance.
 - **clippy.yml** - Runs Clippy on pushes to main for the README status badge.
 - **benchmark-stats.yml** - Manual/scheduled zccache vs bare compiler vs sccache benchmark publisher for the README images and rendered stats page.

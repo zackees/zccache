@@ -762,6 +762,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                                     .iter()
                                     .any(|kind| matches!(kind.as_str(), "lib" | "rlib")),
                             ),
+                            materialization_mode: state.materialization_mode(client_env.as_deref()),
                             phases: CachedHitPhases {
                                 parse_args_ns,
                                 build_context_ns,

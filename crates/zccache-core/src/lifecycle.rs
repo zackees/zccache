@@ -44,6 +44,7 @@
 //! | `wrapper-local-fallback` | CLI wrapper | retired by #1170; kept so historical logs still resolve and the audit rule can assert it never reappears | `reason`, tool fields |
 //! | `daemon_spawn_breaker_open` (#1170) | CLI wrapper | daemon recovery was exhausted; later invocations fail immediately until the cool-down expires | `reason`, `cooldown_ms`, `consecutive_failures` |
 //! | `wrapper-daemon-unavailable` (#1170) | CLI wrapper | the daemon could not be reached before request dispatch and the wrapper refused to run the tool uncached | `tool`, `cwd`, `endpoint`, `reason`, `phase`, `route`, `exit_code` |
+//! | `wrapper-no-verdict` | CLI wrapper | the daemon lost a dispatched request with no tool left running: it closed the connection, or the wrapper confirmed a wedged daemon dead; the wrapper exits 1 | `endpoint`, `cause`, `exit_code` |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
 //! | `index_reconciled` (#1157) | daemon | a corrupt artifact index was rebuilt from surviving staged-v2 generations instead of starting empty | `recovered`, `candidates`, `skipped_multi_output`, `skipped_unverifiable`, `truncated_by_budget`, `budget_ms`, `elapsed_ns` |
@@ -83,6 +84,8 @@
 //! | `watcher_rearmed` | daemon | a degraded daemon re-armed its file watcher | `attempt` |
 //! | `watcher_overflow` | daemon | the watcher event queue saturated; hardlink registry re-verified by stat signature | `links_unchanged`, `links_suspect` |
 //! | `embedded_dropped_without_shutdown` | daemon | a host dropped an embedded service without `shutdown()`; a best-effort checkpoint was written | `persisted`, `pid` |
+//! | `embedded_bringup` (#1652) | daemon | an embedded service became ready; per-phase wall time of its bring-up | `ready_ns`, `phases_ns`, `depgraph_load` |
+//! | `embedded_depgraph_loaded` (#1652) | daemon | the background startup depgraph load finished and compiles stopped waiting on it | `contexts`, `elapsed_ns` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -222,6 +225,11 @@ pub const EVENT_WRAPPER_LOCAL_FALLBACK: &str = "wrapper-local-fallback";
 /// `wrapper-local-fallback` any more; its audit rule stays as the guard that
 /// it does not come back.
 pub const EVENT_WRAPPER_DAEMON_UNAVAILABLE: &str = "wrapper-daemon-unavailable";
+/// The daemon lost a dispatched request with no tool left running for it: it
+/// closed the connection, or it was wedged and the wrapper confirmed it dead.
+/// The wrapper still fails with exit 1; the event, stamped with its pid, lets
+/// the build tool that ran it compile directly instead.
+pub const EVENT_WRAPPER_NO_VERDICT: &str = "wrapper-no-verdict";
 /// The bounded recovery ladder was exhausted and the wrapper opened its
 /// cross-invocation breaker (#1170).
 ///
@@ -286,6 +294,11 @@ pub const EVENT_WATCHER_OVERFLOW: &str = "watcher_overflow";
 /// was salvaged by a best-effort checkpoint, but the host is misusing the API
 /// — this is the signal that says so, and log-audit rules can bound it.
 pub const EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN: &str = "embedded_dropped_without_shutdown";
+/// An embedded service became ready; carries each bring-up phase's wall time
+/// so a slow start is attributable from the log alone (#1652).
+pub const EVENT_EMBEDDED_BRINGUP: &str = "embedded_bringup";
+/// The embedded service's background startup depgraph load finished (#1652).
+pub const EVENT_EMBEDDED_DEPGRAPH_LOADED: &str = "embedded_depgraph_loaded";
 
 /// Complete lifecycle-event catalog. Keep this additive and update the module
 /// schema table with every new event; log-audit and operator docs depend on it.
@@ -311,6 +324,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_CLIENT_CANCELLED,
     EVENT_WRAPPER_LOCAL_FALLBACK,
     EVENT_WRAPPER_DAEMON_UNAVAILABLE,
+    EVENT_WRAPPER_NO_VERDICT,
     EVENT_DAEMON_SPAWN_BREAKER_OPEN,
     EVENT_STAGED_PUBLICATION_CONFLICT,
     EVENT_STAGED_PUBLICATION_REPLACES_INVALID_GENERATION,
@@ -337,6 +351,8 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_WATCHER_REARMED,
     EVENT_WATCHER_OVERFLOW,
     EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN,
+    EVENT_EMBEDDED_BRINGUP,
+    EVENT_EMBEDDED_DEPGRAPH_LOADED,
     EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
     EVENT_DESTINATION_WRITE_FAILED,
     EVENT_MISS_REASON_UNKNOWN,

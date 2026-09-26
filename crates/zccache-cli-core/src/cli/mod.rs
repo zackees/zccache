@@ -236,7 +236,13 @@ fn restore_cached_ino_output(
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::copy(cached_cpp, output)?;
+    // A cache hit follows ZCCACHE_MODE like every other delivery (#1683):
+    // under COPY the restored .cpp owns its blocks.
+    let mode = crate::core::config::materialization_mode_from_env()
+        .map_err(std::io::Error::other)?
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(output);
+    mode.copy_file(cached_cpp, output)?;
     Ok(InoConvertResult {
         cache_hit: true,
         skipped_write: false,

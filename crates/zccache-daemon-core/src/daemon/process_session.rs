@@ -291,6 +291,8 @@ async fn async_builder_compiler_output_with_effective_priority(
     memory_samples.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_progress = std::time::Instant::now();
     let mut last_cpu = session.cpu_time().await.ok().flatten();
+    let mut last_descendant_cpu =
+        crate::platform::process::inspect::descendant_cpu_ticks(session_pid);
     let mut stdout_bytes = 0usize;
     let mut stderr_bytes = 0usize;
     let mut stdout = Vec::new();
@@ -435,8 +437,12 @@ async fn async_builder_compiler_output_with_effective_priority(
             },
             kernal_api::async_engine::FairRace5::Fourth(()) => {
                 let now_cpu = session.cpu_time().await.ok().flatten();
-                let cpu_advanced = session_cpu_time_advanced(last_cpu, now_cpu);
+                let now_descendant_cpu =
+                    crate::platform::process::inspect::descendant_cpu_ticks(session_pid);
+                let cpu_advanced =
+                    stall_cpu_advanced(last_cpu, now_cpu, last_descendant_cpu, now_descendant_cpu);
                 last_cpu = now_cpu;
+                last_descendant_cpu = now_descendant_cpu;
                 let since_progress = last_progress.elapsed();
                 if crate::daemon::child_watchdog::should_kill_stalled(
                     since_progress,
@@ -656,6 +662,23 @@ async fn emit_compiler_session_diagnostics(
         )
         .await;
     }
+}
+
+/// Whether the compiler burned CPU since the last stall sample, counting its
+/// live descendants: a driver that waits on its real compiler is not wedged.
+/// The live descendants' total drops when one exits (cc1plus hands over to
+/// `as`), so any change is progress; a wedged tree's total stays constant.
+pub(super) fn stall_cpu_advanced(
+    previous: Option<std::time::Duration>,
+    current: Option<std::time::Duration>,
+    previous_descendants: Option<u64>,
+    current_descendants: Option<u64>,
+) -> bool {
+    session_cpu_time_advanced(previous, current)
+        || matches!(
+            (previous_descendants, current_descendants),
+            (Some(previous), Some(current)) if current != previous
+        )
 }
 
 /// Match the former watchdog's conservative platform policy: unavailable

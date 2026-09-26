@@ -51,6 +51,39 @@ fn implicit_profile_use_is_non_cacheable() {
     assert!(matches!(result, ParsedInvocation::NonCacheable { .. }));
 }
 
+/// #1648: a side-output compile runs directly; its object layout is still
+/// needed so hardlinked outputs from a prior cached compile can be detached.
+#[test]
+fn side_output_compilations_report_the_object_layout_only_for_side_output_compiles() {
+    use super::super::side_output_compilations;
+
+    let multi = side_output_compilations(
+        "clang",
+        &args(&["-c", "-MMD", "--coverage", "first.c", "second.c"]),
+    )
+    .expect("multi-source coverage compile");
+    let outputs: Vec<_> = multi.iter().map(|c| c.output_file.clone()).collect();
+    assert_eq!(
+        outputs,
+        vec![
+            NormalizedPath::new("first.o"),
+            NormalizedPath::new("second.o")
+        ]
+    );
+
+    let single = side_output_compilations(
+        "gcc",
+        &args(&["-c", "-gsplit-dwarf", "unit.c", "-o", "out/unit.o"]),
+    )
+    .expect("single-source split-dwarf compile");
+    assert_eq!(single[0].output_file, NormalizedPath::new("out/unit.o"));
+
+    // Cacheable compiles and compiles non-cacheable for other reasons are
+    // not side-output compiles.
+    assert!(side_output_compilations("clang", &args(&["-c", "unit.c"])).is_none());
+    assert!(side_output_compilations("clang", &args(&["--coverage", "unit.c"])).is_none());
+}
+
 #[test]
 fn side_output_flags_are_non_cacheable_for_single_file_compiles() {
     for flag in [

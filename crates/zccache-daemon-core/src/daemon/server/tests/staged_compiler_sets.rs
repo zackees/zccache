@@ -144,6 +144,22 @@ async fn assert_staged_multi_source_include_heavy_hit(compiler: NormalizedPath) 
         assert_eq!(std::fs::read(&first_object).unwrap(), expected_first);
         assert_eq!(std::fs::read(&second_object).unwrap(), expected_second);
         let staged = state.profiler.staged.snapshot();
+        if !super::staged_env::native_change_markers() {
+            // #1193: without a native change marker the input snapshot cannot
+            // rule out an edit-and-revert during the compile, so multi-source
+            // publication fails closed. Both multi-source requests (two units
+            // each) stay uncached; the warm one recompiles identical objects.
+            assert_eq!(staged.failures["snapshot_incomplete"], 4);
+            assert_eq!(
+                staged.counters["compiler_staged"],
+                compiler_staged + 2,
+                "an unpublished multi-source set must recompile every unit"
+            );
+            assert_compile(warm_response, false);
+            shutdown.notify_one();
+            server.await.unwrap();
+            return;
+        }
         for reason in [
             "snapshot_incomplete",
             "snapshot_input_set_changed",
@@ -171,6 +187,7 @@ async fn assert_staged_multi_source_include_heavy_hit(compiler: NormalizedPath) 
 #[tokio::test]
 #[ignore = "integration: real clang++ + daemon IPC"]
 async fn staged_multi_source_hits_after_clear_and_include_heavy_cold_compile() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(compiler) = crate::test_support::find_clang() else {
         return;
     };
@@ -181,6 +198,7 @@ async fn staged_multi_source_hits_after_clear_and_include_heavy_cold_compile() {
 #[tokio::test]
 #[ignore = "integration: real em++ + daemon IPC"]
 async fn staged_empp_multi_source_hits_after_include_heavy_cold_compile() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(compiler) = crate::test_support::find_on_path("em++") else {
         return;
     };
@@ -191,6 +209,7 @@ async fn staged_empp_multi_source_hits_after_include_heavy_cold_compile() {
 #[tokio::test]
 #[ignore = "integration: real clang-cl + daemon IPC"]
 async fn staged_multi_source_clang_cl_restores_directory_outputs_from_response_file() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(clang_cl) = crate::test_support::find_clang_cl() else {
         return;
     };
@@ -297,6 +316,7 @@ async fn staged_multi_source_clang_cl_restores_directory_outputs_from_response_f
 #[tokio::test]
 #[ignore = "integration: real clang + daemon IPC"]
 async fn staged_multi_source_publication_failure_salvages_and_retries_one_unit() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(clang) = crate::test_support::find_clang() else {
         return;
     };
@@ -357,6 +377,43 @@ async fn staged_multi_source_publication_failure_salvages_and_retries_one_unit()
         assert!(!std::fs::read_to_string(&second_depfile)
             .unwrap()
             .contains(".multi-"));
+        if !super::staged_env::native_change_markers() {
+            // #1193: without a native change marker multi-source publication
+            // fails closed before it reaches the pointer commit, so there is
+            // nothing to salvage or retry. Every request recompiles both units
+            // and materializes complete, rewritten outputs.
+            drop(fault);
+            for round in 2..=3 {
+                for path in [
+                    &first_object,
+                    &second_object,
+                    &first_depfile,
+                    &second_depfile,
+                ] {
+                    std::fs::remove_file(path).unwrap();
+                }
+                client.send(&request()).await.unwrap();
+                assert_compile(client.recv().await.unwrap(), false);
+                assert!(first_object.is_file() && second_object.is_file());
+                assert!(first_depfile.is_file() && second_depfile.is_file());
+                let staged = state.profiler.staged.snapshot();
+                assert_eq!(staged.counters["compiler_staged"], 2 * round);
+                assert_eq!(staged.failures["snapshot_incomplete"], 2 * round);
+            }
+            let staged = state.profiler.staged.snapshot();
+            assert_eq!(staged.counters["publication_success"], 0);
+            assert_eq!(staged.counters["publication_failure"], 0);
+            assert!(
+                !state.artifact_dir.join(".staged-v2").exists()
+                    || std::fs::read_dir(state.artifact_dir.join(".staged-v2"))
+                        .unwrap()
+                        .flatten()
+                        .all(|entry| entry.path().extension().is_none_or(|ext| ext != "current"))
+            );
+            shutdown.notify_one();
+            server.await.unwrap();
+            return;
+        }
         fault.assert_all_consumed();
         let pointer_count = std::fs::read_dir(state.artifact_dir.join(".staged-v2"))
             .unwrap()
@@ -404,6 +461,7 @@ async fn staged_multi_source_publication_failure_salvages_and_retries_one_unit()
 #[tokio::test]
 #[ignore = "integration: real clang + daemon IPC"]
 async fn staged_multi_source_compiler_failure_publishes_and_materializes_nothing() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(clang) = crate::test_support::find_clang() else {
         return;
     };
@@ -478,6 +536,7 @@ async fn staged_multi_source_compiler_failure_publishes_and_materializes_nothing
 #[tokio::test]
 #[ignore = "integration: real clang + daemon IPC"]
 async fn staged_multi_source_materialization_failure_reports_error_before_index_visibility() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(clang) = crate::test_support::find_clang() else {
         return;
     };
@@ -558,6 +617,7 @@ async fn staged_multi_source_materialization_failure_reports_error_before_index_
 #[tokio::test]
 #[ignore = "integration: real clang + daemon IPC"]
 async fn unsupported_shared_depfile_always_runs_original_batch_and_detaches_outputs() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(clang) = crate::test_support::find_clang() else {
         return;
     };
@@ -665,6 +725,7 @@ async fn unsupported_shared_depfile_always_runs_original_batch_and_detaches_outp
 #[tokio::test]
 #[ignore = "integration: real clang + daemon IPC"]
 async fn unsupported_mode_detaches_default_depfiles_from_prior_staged_outputs() {
+    let _staged = super::staged_env::StagedArtifactsEnvGuard::set("c-cpp");
     let Some(clang) = crate::test_support::find_clang() else {
         return;
     };

@@ -10,10 +10,9 @@
 //!
 //! Throughput is reported as `Throughput::Bytes` over the concatenated corpus.
 //!
-//! Acceptance target (zackees/zccache#1670): the single-pass scanner must be at
-//! least 5x faster than the pre-change scanner. Save a baseline on the pre-change
-//! commit with `-- --save-baseline pre`, then re-run after the impl change
-//! with `-- --baseline pre`.
+//! For the >=5x acceptance check against the legacy scanner on real avr-libc
+//! and ArduinoCore headers, use the release-mode corpus regression test in
+//! `zccache-depgraph`. This synthetic bench tracks ongoing throughput.
 //!
 //! Run with: `soldr cargo bench -p zccache --bench scan_includes`.
 

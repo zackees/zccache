@@ -6,21 +6,28 @@ name: Cache Cleanup
 # dominated by per-commit cook-delta + zccache-test entries,
 # nullifying the warm-run wins from setup-soldr#305 / #310 / #313.
 #
-# Triggered ONLY by workflow_dispatch — invoked manually as part of
-# the setup-soldr release-and-cascade process. No scheduled or
-# per-CI-workflow trigger. Aim: avoid surprise cleanup runs that
-# can race with a workflow's save phase, and keep the CI surface
-# clean from unrelated lifecycle hooks.
+# Runs daily on the default branch and remains manually dispatchable for
+# release-and-cascade work. It runs before cache-budget.yml so stale
+# per-commit generations are retired before the budget check. It does not run
+# from push or pull-request events, where cache saves could race with pruning.
 #
 # Strategy: for each per-commit key family, keep the newest 3,
 # prune the rest unconditionally. After count-based prune, a
 # hard-cap step deletes oldest entries until under 8 GB.
 #
-# Recommended invocation:
-#   gh workflow run cache-cleanup.yml --repo zackees/zccache
+# Manual runs default to a read-only dry run. Inspect the listed cache keys,
+# refs and sizes before dispatching with `dry-run: false` to delete them.
 
 on:
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "List exact cache targets without deleting them"
+        type: boolean
+        required: true
+        default: true
 
 # One live run per workflow per ref: a new push to a branch or PR cancels the
 # superseded run instead of queuing behind it in the shared account-wide runner
@@ -32,6 +39,7 @@ concurrency:
 jobs:
   prune-per-commit-caches:
     name: Prune stale per-commit cache entries
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -63,7 +71,10 @@ jobs:
 
       - name: Prune per-commit cache families (keep newest 3)
         if: steps.gate.outputs.needed == 'true'
+        id: count-prune
         uses: actions/github-script@v7
+        env:
+          DRY_RUN: ${{ inputs['dry-run'] }}
         with:
           script: |
             // setup-soldr#346: per-commit cache families accumulate
@@ -97,17 +108,31 @@ jobs:
 
             let totalPruned = 0;
             let totalBytes = 0;
+            const prunedIds = [];
+            const dryRun = process.env.DRY_RUN === "true";
             for (const prefix of PREFIXES) {
               const matching = caches.filter(c => c.key && c.key.startsWith(prefix));
               const stale = matching.slice(KEEP);
               if (matching.length === 0) continue;
               console.log(`${prefix}: ${matching.length} entries, will prune ${stale.length}`);
               for (const c of stale) {
+                if (dryRun) {
+                  prunedIds.push(c.id);
+                  totalBytes += c.size_in_bytes;
+                  totalPruned += 1;
+                  console.log(
+                    `  Would delete ${c.key} (id ${c.id}, ` +
+                    `${(c.size_in_bytes / 1024 / 1024).toFixed(0)} MB, ` +
+                    `${c.ref}, age ${((Date.now() - new Date(c.created_at).getTime()) / 3600000).toFixed(1)}h)`
+                  );
+                  continue;
+                }
                 try {
                   await github.rest.actions.deleteActionsCacheById({
                     ...repo,
                     cache_id: c.id,
                   });
+                  prunedIds.push(c.id);
                   totalBytes += c.size_in_bytes;
                   totalPruned += 1;
                   console.log(
@@ -128,13 +153,21 @@ jobs:
                 }
               }
             }
+            core.setOutput("pruned-cache-ids", JSON.stringify(prunedIds));
+            core.setOutput("pruned-bytes", String(totalBytes));
             console.log(
-              `Pruned ${totalPruned} per-commit entries (${(totalBytes / 1024 / 1024 / 1024).toFixed(2)} GB recovered)`
+              `${dryRun ? "Would prune" : "Pruned"} ${totalPruned} per-commit entries ` +
+              `(${(totalBytes / 1024 / 1024 / 1024).toFixed(2)} GB)`
             );
 
       - name: Hard cap — prune oldest entries until under 8 GB
         if: steps.gate.outputs.needed == 'true'
+        id: hard-cap
         uses: actions/github-script@v7
+        env:
+          DRY_RUN: ${{ inputs['dry-run'] }}
+          COUNT_PRUNED_IDS: ${{ steps.count-prune.outputs.pruned-cache-ids }}
+          COUNT_PRUNED_BYTES: ${{ steps.count-prune.outputs.pruned-bytes }}
         with:
           script: |
             // setup-soldr#346: even after count-based pruning, the
@@ -144,6 +177,9 @@ jobs:
             // proactively delete the oldest entries from prune-
             // eligible families until usage is under 8 GB.
             const TARGET_GB = 8;
+            const dryRun = process.env.DRY_RUN === "true";
+            const plannedIds = new Set(JSON.parse(process.env.COUNT_PRUNED_IDS || "[]"));
+            const countPrunedBytes = Number(process.env.COUNT_PRUNED_BYTES || "0");
             const ELIGIBLE_PREFIXES = [
               "cook-delta-v2-",
               "zccache-Linux-X64-test-",
@@ -159,10 +195,13 @@ jobs:
             ];
             const repo = context.repo;
             let usage = await github.rest.actions.getActionsCacheUsage(repo);
-            let sizeGb = usage.data.active_caches_size_in_bytes / 1024 / 1024 / 1024;
+            let projectedBytes = usage.data.active_caches_size_in_bytes;
+            if (dryRun) projectedBytes -= countPrunedBytes;
+            let sizeGb = projectedBytes / 1024 / 1024 / 1024;
             console.log(`After count-prune: ${sizeGb.toFixed(2)} GB. Target: ${TARGET_GB} GB.`);
             if (sizeGb <= TARGET_GB) {
               console.log("Already under hard cap — no further pruning needed.");
+              core.setOutput("extra-pruned-bytes", "0");
               return;
             }
 
@@ -180,6 +219,20 @@ jobs:
             let extraBytes = 0;
             const targetBytes = TARGET_GB * 1024 * 1024 * 1024;
             for (const c of eligible) {
+              if (plannedIds.has(c.id)) continue;
+              if (dryRun) {
+                if (projectedBytes <= targetBytes) break;
+                plannedIds.add(c.id);
+                projectedBytes -= c.size_in_bytes;
+                extraBytes += c.size_in_bytes;
+                extraPruned += 1;
+                console.log(
+                  `  Would hard-cap delete ${c.key} (id ${c.id}, ` +
+                  `${(c.size_in_bytes / 1024 / 1024).toFixed(0)} MB, ${c.ref}, age ` +
+                  `${((Date.now() - new Date(c.created_at).getTime()) / 3600000).toFixed(1)}h)`
+                );
+                continue;
+              }
               usage = await github.rest.actions.getActionsCacheUsage(repo);
               if (usage.data.active_caches_size_in_bytes <= targetBytes) break;
               try {
@@ -199,17 +252,34 @@ jobs:
                 throw err;
               }
             }
+            core.setOutput("extra-pruned-bytes", String(extraBytes));
             console.log(
-              `Hard cap: pruned ${extraPruned} additional entries ` +
+              `Hard cap: ${dryRun ? "would prune" : "pruned"} ${extraPruned} additional entries ` +
               `(${(extraBytes / 1024 / 1024 / 1024).toFixed(2)} GB recovered)`
             );
 
       - name: Report repo cache usage
         if: steps.gate.outputs.needed == 'true'
         uses: actions/github-script@v7
+        env:
+          DRY_RUN: ${{ inputs['dry-run'] }}
+          COUNT_PRUNED_BYTES: ${{ steps.count-prune.outputs.pruned-bytes }}
+          HARD_CAP_PRUNED_BYTES: ${{ steps.hard-cap.outputs.extra-pruned-bytes }}
         with:
           script: |
             const usage = await github.rest.actions.getActionsCacheUsage(context.repo);
+            const dryRun = process.env.DRY_RUN === "true";
+            const plannedBytes =
+              Number(process.env.COUNT_PRUNED_BYTES || "0") +
+              Number(process.env.HARD_CAP_PRUNED_BYTES || "0");
+            if (dryRun) {
+              const projected = usage.data.active_caches_size_in_bytes - plannedBytes;
+              console.log(
+                `Dry run: no cache was deleted. Projected repo usage after ` +
+                `the listed targets: ${(projected / 1024 / 1024 / 1024).toFixed(2)} GB.`
+              );
+              return;
+            }
             console.log(
               `Repo cache after cleanup: ${usage.data.active_caches_count} entries, ` +
               `${(usage.data.active_caches_size_in_bytes / 1024 / 1024 / 1024).toFixed(2)} GB`

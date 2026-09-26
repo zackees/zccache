@@ -12,6 +12,7 @@ mod staged;
 mod types;
 
 use args::filter_multi_source_args;
+pub(in crate::daemon::server) use preflight::detach_direct_batch_outputs;
 use preflight::InputSnapshot;
 pub(super) use types::materialize_multi_hit;
 use types::{
@@ -33,6 +34,7 @@ fn check_unit_cache(
         scan_cache,
         cache_now,
         dependency_mode,
+        materialization_mode,
     } = check;
     let t0 = std::time::Instant::now();
     let snap_clock = state.cache_system.current_clock();
@@ -149,7 +151,8 @@ fn check_unit_cache(
                                 })
                                 .collect();
                             payloads.record_staged_pre_materialization(&state.profiler.staged);
-                            let materialization = materialize_multi_hit(&targets, &payloads);
+                            let materialization =
+                                materialize_multi_hit(&targets, &payloads, materialization_mode);
                             payloads.record_staged_lock_timings(&state.profiler.staged);
                             drop(payloads);
                             if let Err(failure) = &materialization {
@@ -324,7 +327,8 @@ fn check_unit_cache(
                         })
                         .collect();
                     payloads.record_staged_pre_materialization(&state.profiler.staged);
-                    let materialization = materialize_multi_hit(&targets, &payloads);
+                    let materialization =
+                        materialize_multi_hit(&targets, &payloads, materialization_mode);
                     payloads.record_staged_lock_timings(&state.profiler.staged);
                     drop(payloads);
                     if let Err(failure) = &materialization {
@@ -520,6 +524,7 @@ pub(super) async fn handle_compile_multi(
         (Arc::new(base), dep_flags)
     };
 
+    let materialization_mode = state.materialization_mode(client_env.as_deref());
     // ── Phase 1: Check cache for each unit (parallel, as-completed) ──
     let mut join_set = tokio::task::JoinSet::new();
     let scan_cache = Arc::clone(&state.include_scan_cache);
@@ -554,6 +559,7 @@ pub(super) async fn handle_compile_multi(
                                     scan_cache: &scan_cache,
                                     cache_now,
                                     dependency_mode,
+                                    materialization_mode,
                                 },
                             ),
                         )
@@ -1019,6 +1025,7 @@ pub(super) async fn handle_compile_multi(
                     state_task.artifact_dir.as_path(),
                     &artifact_key_hex,
                     std::slice::from_ref(&output_path),
+                    materialization_mode,
                 ) {
                     tracing::warn!(
                         key = %artifact_key_hex,

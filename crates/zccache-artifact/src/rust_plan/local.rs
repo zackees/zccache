@@ -614,10 +614,38 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn snapshot_to_bundle(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if kernal_api::platform::fs::reflink_file(src, dst).is_err() {
-        std::fs::copy(src, dst)?;
+/// Whether rust-plan bundle I/O may clone under this process's
+/// `ZCCACHE_MODE` (#1683). Bundles are immutable and never hardlinked (this
+/// crate owns no mediated-write registry), so every mode but COPY clones.
+fn bundle_mode() -> std::io::Result<zccache_core::config::MaterializationMode> {
+    Ok(zccache_core::config::materialization_mode_from_env()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
+        .unwrap_or_default())
+}
+
+pub(super) fn bundle_clone_allowed_for(mode: zccache_core::config::MaterializationMode) -> bool {
+    mode != zccache_core::config::MaterializationMode::Copy
+}
+
+/// Independent bundle copy: a clone unless COPY, else the mode's copy tier
+/// (COPY writes its own bytes so the bundle file owns its blocks).
+pub(super) fn copy_bundle_file(
+    src: &Path,
+    dst: &Path,
+    mode: zccache_core::config::MaterializationMode,
+) -> std::io::Result<()> {
+    if !bundle_clone_allowed_for(mode) || kernal_api::platform::fs::reflink_file(src, dst).is_err()
+    {
+        // Replace, like `std::fs::copy` would: a restore may land on an
+        // existing target file, and a failed clone may leave a partial one.
+        let _ = std::fs::remove_file(dst);
+        mode.copy_file(src, dst)?;
     }
+    Ok(())
+}
+
+fn snapshot_to_bundle(src: &Path, dst: &Path) -> std::io::Result<()> {
+    copy_bundle_file(src, dst, bundle_mode()?)?;
     let mut permissions = std::fs::metadata(dst)?.permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(dst, permissions)
@@ -627,9 +655,7 @@ fn restore_bundle_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     // Rust-plan bundles are immutable. Reflink is ideal; where unavailable we
     // copy instead of hardlinking because this crate does not own the daemon's
     // mediated-write registry and must not create an untracked shared writer.
-    if kernal_api::platform::fs::reflink_file(src, dst).is_err() {
-        std::fs::copy(src, dst)?;
-    }
+    copy_bundle_file(src, dst, bundle_mode()?)?;
     make_bundle_file_writable(dst)
 }
 

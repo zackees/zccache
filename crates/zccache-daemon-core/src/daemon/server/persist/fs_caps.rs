@@ -35,7 +35,7 @@ pub(in crate::daemon::server) struct VolumeCaps {
 }
 
 impl VolumeCaps {
-    fn copy_only() -> Self {
+    pub(in crate::daemon::server) fn copy_only() -> Self {
         Self {
             reflink: false,
             hardlink: false,
@@ -47,11 +47,6 @@ impl VolumeCaps {
             },
             hardlink_limit: 0,
         }
-    }
-
-    fn effective(mut self) -> Self {
-        self = apply_reflink_switch(self, env_flag(DISABLE_REFLINK_ENV, false));
-        self
     }
 }
 
@@ -109,7 +104,16 @@ fn env_flag(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
+/// `ZCCACHE_DISABLE_REFLINK`: the legacy switch that strips the reflink tier.
+/// An explicit `ZCCACHE_MODE=REFLINK` overrides it (#1683 decision D3).
+pub(in crate::daemon::server) fn legacy_reflink_disabled() -> bool {
+    env_flag(DISABLE_REFLINK_ENV, false)
+}
+
+/// Probed capabilities for a volume pair *without* the legacy reflink switch
+/// applied, so an explicitly selected materialization mode can decide
+/// whether that switch applies. One probe per pair, cached.
+pub(in crate::daemon::server) fn fs_caps_raw(src: &Path, dst: &Path) -> VolumeCaps {
     let Some(src_volume) = crate::platform::fs::volume::volume_identity_u128(src) else {
         return VolumeCaps::copy_only();
     };
@@ -124,7 +128,7 @@ pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
     }
     let key = VolumePair(src_volume, dst_volume, dst_probe);
     if let Some(caps) = cache().get(&key) {
-        return (*caps).effective();
+        return *caps;
     }
     let caps = probe_caps(src, dst);
     #[cfg(test)]
@@ -145,7 +149,7 @@ pub(in crate::daemon::server) fn fs_caps(src: &Path, dst: &Path) -> VolumeCaps {
         cache().clear();
     }
     cache().insert(key, caps);
-    caps.effective()
+    caps
 }
 
 /// Per-volume-pair probe tally, for tests only.
@@ -179,6 +183,19 @@ pub(in crate::daemon::server) fn max_probes_for_any_volume_pair() -> u64 {
         .map(|entry| *entry.value())
         .max()
         .unwrap_or(0)
+}
+
+/// Probes recorded for volume pairs whose destination probe path lies under
+/// `root`, for tests that must prove a mode never probed their own tree.
+#[cfg(test)]
+pub(in crate::daemon::server) fn probes_under(root: &Path) -> u64 {
+    let root = NormalizedPath::from(root);
+    PROBES_BY_KEY
+        .get_or_init(dashmap::DashMap::new)
+        .iter()
+        .filter(|entry| entry.key().2.starts_with(&root))
+        .map(|entry| *entry.value())
+        .sum()
 }
 
 fn probe_caps(src: &Path, dst: &Path) -> VolumeCaps {

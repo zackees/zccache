@@ -40,6 +40,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **Daemon-owned bounded disk retention** → [artifact-store.md](architecture/artifact-store.md#daemon-owned-retention-policy)
 - **Transactional directory outputs** → [artifact-store.md](architecture/artifact-store.md#immutable-staged-output-rollout)
 - **Reflink / hardlink COW safety** → [artifact-store.md](architecture/artifact-store.md#capability-driven-cow-materialization)
+- **`ZCCACHE_MODE` delivery modes (AUTO/LINK/COPY/REFLINK)** → [artifact-store.md](architecture/artifact-store.md#materialization-mode-zccache_mode-1683)
 - **soldr target artifact contract** → [rust-artifact-plan.md](architecture/rust-artifact-plan.md)
 - **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
 - **Shared embedded host-work admission** → [embedded-service.md § Shared host-work admission](architecture/embedded-service.md#shared-host-work-admission)

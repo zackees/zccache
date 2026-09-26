@@ -330,7 +330,7 @@ impl InputSnapshot {
 }
 
 #[allow(clippy::result_large_err)] // Response is the established handler control-flow type.
-fn detach_direct_batch_outputs(
+pub(in crate::daemon::server) fn detach_direct_batch_outputs(
     compilations: &[crate::compiler::CacheableCompilation],
     original_args: &[String],
     cwd: &NormalizedPath,

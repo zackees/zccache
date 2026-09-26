@@ -32,6 +32,7 @@ cargo nextest run --test cli -E 'test(/^<file_stem>::/)'
 - `cli_ino_convert`
 - `cli_installers`
 - `cli_kv`
+- `cli_materialization_mode`
 - `cli_meson_configure_cache`
 - `cli_no_spawn_guard`
 - `cli_rust_plan_lifecycle`
@@ -39,5 +40,6 @@ cargo nextest run --test cli -E 'test(/^<file_stem>::/)'
 - `cli_single_daemon_per_session`
 - `cli_wrapper_failure_boundaries`
 - `cli_wrapper_passthrough`
+- `cli_wrapper_startup_budget`
 - `formatter_api`
 - `single_binary_distribution`

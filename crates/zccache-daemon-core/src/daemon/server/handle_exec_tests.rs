@@ -232,7 +232,13 @@ async fn staged_exec_publication_failure_salvages_requested_output() {
             Ok(_) => panic!("publication fault must fail the staged store"),
         };
 
-    materialize_exec_plan_observed(&server.state, &plan, Some(reason.id())).unwrap();
+    materialize_exec_plan_observed(
+        &server.state,
+        &plan,
+        Some(reason.id()),
+        MaterializationMode::Auto,
+    )
+    .unwrap();
     assert_eq!(std::fs::read(&requested).unwrap(), b"complete exact output");
     assert!(!server.state.artifacts.contains_key(&key));
     let staged = server.state.profiler.staged.snapshot();
@@ -276,6 +282,7 @@ async fn staged_exec_disk_hit_reports_physical_materialization_tier() {
         temp.path(),
         &[NormalizedPath::from("result.bin")],
         ExecOutputStreams::default(),
+        MaterializationMode::Auto,
     )
     .await;
     assert!(matches!(
@@ -343,6 +350,7 @@ async fn exec_hit_response_bytes_come_from_the_materialized_destination() {
         temp.path(),
         &[NormalizedPath::from("result.bin")],
         ExecOutputStreams::default(),
+        MaterializationMode::Auto,
     )
     .await;
 

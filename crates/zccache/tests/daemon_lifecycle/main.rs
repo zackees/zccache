@@ -14,6 +14,7 @@ mod daemon_cli_flow_test;
 mod daemon_crash_minidump_test;
 mod daemon_cwd_release;
 mod daemon_exe_overwrite;
+mod daemon_idle_cpu_budget_test;
 mod daemon_integration_test;
 mod daemon_session_stats_test;
 mod daemon_spawn_lockfile_budget_test;

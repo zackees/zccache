@@ -5,8 +5,9 @@ use super::*;
 pub(in crate::daemon::server) fn materialize_multi_hit(
     targets: &[NormalizedPath],
     payloads: &[CachedPayload],
+    mode: MaterializationMode,
 ) -> MaterializationResult<StagedMaterializationStats> {
-    write_payloads_par_observed(targets, payloads)
+    write_payloads_par_observed(targets, payloads, mode)
 }
 
 fn invalidate_graph_after_blob_loss(
@@ -92,6 +93,8 @@ pub(super) struct UnitCacheCheck<'a> {
     pub(super) scan_cache: &'a crate::depgraph::scanner::RecursiveScanCache,
     pub(super) cache_now: Instant,
     pub(super) dependency_mode: DependencyDiscoveryMode,
+    /// This request's resolved `ZCCACHE_MODE` (#1683).
+    pub(super) materialization_mode: MaterializationMode,
 }
 
 pub(super) struct MissOutcome {
@@ -207,6 +210,7 @@ mod tests {
         let failure = materialize_multi_hit(
             &[failed_target],
             &[CachedPayload::File(failed_blob.clone())],
+            MaterializationMode::Auto,
         )
         .unwrap_err();
         assert!(matches!(
@@ -226,6 +230,7 @@ mod tests {
             materialize_multi_hit(
                 &[sibling_target],
                 &[CachedPayload::File(sibling_blob.clone())],
+                MaterializationMode::Auto,
             )
             .is_ok(),
             "the unpoisoned sibling remains a warm hit"
@@ -235,6 +240,7 @@ mod tests {
         let missing = materialize_multi_hit(
             &[dir.path().join("retry.o").into()],
             &[CachedPayload::File(failed_blob)],
+            MaterializationMode::Auto,
         )
         .unwrap_err();
         assert!(matches!(

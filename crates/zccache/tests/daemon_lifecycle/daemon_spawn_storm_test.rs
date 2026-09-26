@@ -21,7 +21,7 @@
 //! `ZCCACHE_CACHE_DIR`, then asserts:
 //!
 //!   1. Exactly **one** `daemon-spawn-*.log` lands in `logs/`.
-//!   2. The `daemon-lifecycle.log` contains exactly **one**
+//!   2. The `daemon-lifecycle-<namespace>.log` contains exactly **one**
 //!      `event:"spawn"` line.
 //!
 //! On main today this test is expected to FAIL — multiple `spawn-attempt`
@@ -74,6 +74,12 @@ const DEFAULT_N: usize = 16;
 const DEFAULT_BUDGET_SECS: u64 = 90;
 const N_ENV: &str = "ZCCACHE_SPAWN_STORM_N";
 const BUDGET_ENV: &str = "ZCCACHE_SPAWN_STORM_BUDGET_SECS";
+/// Pinned daemon namespace for every invocation. Development builds otherwise
+/// synthesize a `<version>-<exe hash>` namespace (#1362 / #1394), which places
+/// daemon logs under `<root>/v<VERSION>/daemon-state/<namespace>/logs/` and
+/// names the lifecycle log `daemon-lifecycle-<namespace>.log`. Pinning it lets
+/// the test derive both paths exactly.
+const TEST_DAEMON_NAMESPACE: &str = "spawn-storm";
 
 fn target_bin_dir() -> PathBuf {
     let mut p = std::env::current_exe().expect("current_exe");
@@ -96,6 +102,7 @@ fn stop_daemon(zccache: &Path, cache_dir: &Path) {
     let _ = Command::new(zccache)
         .arg("stop")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -117,6 +124,7 @@ fn run_one_wrapper(
     cmd.arg(echo_shim)
         .arg("0")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env_remove("ZCCACHE_SESSION_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -147,8 +155,21 @@ fn list_spawn_logs(logs_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The daemon's log directory for [`TEST_DAEMON_NAMESPACE`] under the
+/// caller's top-level cache root.
+fn namespaced_logs_dir(cache_dir: &Path) -> PathBuf {
+    let effective =
+        zccache::core::config::effective_cache_root_from_top_level(&cache_dir.to_path_buf().into());
+    zccache::core::config::daemon_state_dir_from_cache_dir_with_namespace(
+        &effective,
+        Some(TEST_DAEMON_NAMESPACE.to_owned()),
+    )
+    .join("logs")
+    .into_path_buf()
+}
+
 fn parse_lifecycle_events(logs_dir: &Path) -> Vec<serde_json::Value> {
-    let path = logs_dir.join("daemon-lifecycle.log");
+    let path = logs_dir.join(format!("daemon-lifecycle-{TEST_DAEMON_NAMESPACE}.log"));
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
@@ -252,11 +273,9 @@ fn parallel_wrappers_must_share_one_daemon() {
     stop_daemon(&zccache, cache_dir.path());
 
     // Persistent daemon state is version-namespaced below the caller's
-    // top-level cache root (issues #759/#761).
-    let logs_dir = cache_dir
-        .path()
-        .join(format!("v{}", env!("CARGO_PKG_VERSION")))
-        .join("logs");
+    // top-level cache root (issues #759/#761), then daemon-namespaced
+    // (#1362 / #1394).
+    let logs_dir = namespaced_logs_dir(cache_dir.path());
     assert!(
         logs_dir.exists(),
         "logs/ directory must exist after running the wrapper"

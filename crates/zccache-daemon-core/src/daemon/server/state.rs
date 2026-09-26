@@ -330,6 +330,9 @@ pub(super) struct SharedState {
     /// in the same directory. Weak values let idle directory locks disappear.
     pub(super) link_output_locks: DashMap<NormalizedPath, std::sync::Weak<Mutex<()>>>,
     pub(super) system_includes: Mutex<SystemIncludeCache>,
+    /// Single-flight gates for system-include discovery, keyed by compiler
+    /// path (FastLED/fbuild#1466).
+    pub(super) system_include_probes: KeyedLocks,
     /// Dependency graph: tracks include relationships and cache verdicts.
     ///
     /// **Wrapped in `ArcSwap` per #640** so that the on-disk-loaded graph
@@ -465,6 +468,10 @@ pub(super) struct SharedState {
     /// Serializes background and host-requested disk-maintenance passes for
     /// this exact cache root.
     pub(super) disk_maintenance: Mutex<()>,
+    /// Serializes every depgraph snapshot for this exact cache root. The guard
+    /// is acquired only on blocking threads (or the synchronous drop backstop),
+    /// never by an async runtime worker.
+    pub(super) depgraph_persistence: StdMutex<()>,
     /// Shared by publishers and exclusively owned by maintenance/Clear from
     /// cache-file mutation through index/live-map mutation.
     pub(super) artifact_publication: Arc<kernal_api::async_engine::RwLock<()>>,
@@ -637,6 +644,10 @@ pub(super) struct SharedState {
     /// Keys retain the `zccache-exec-probe-v1` derivation contract; values
     /// live in a dedicated namespace under this daemon's normal cache root.
     pub(super) exec_store: KvStore,
+    /// Service-wide `ZCCACHE_MODE` default (#1683): an embedded host's
+    /// environment at start or its setting; always unset for a standalone
+    /// daemon. A request's forwarded `ZCCACHE_MODE` overrides it.
+    pub(super) materialization_mode_default: MaterializationModeDefault,
 }
 
 impl SharedState {
@@ -661,6 +672,21 @@ impl SharedState {
             Some(handle) => handle.launch_blocking(operation),
             None => kernal_api::async_engine::launch_blocking(operation),
         }
+    }
+
+    /// Run `save` on the depgraph as it stands once this cache root's
+    /// persistence guard is held. Loading under the guard means a save queued
+    /// behind another never writes a graph object the startup loader has
+    /// since replaced (#1684).
+    pub(super) fn with_depgraph_snapshot<T>(
+        &self,
+        save: impl FnOnce(&crate::depgraph::DepGraph) -> T,
+    ) -> T {
+        let _guard = self
+            .depgraph_persistence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        save(&self.dep_graph.load_full())
     }
 
     pub(super) fn begin_cache_request(&self) -> ActiveCacheRequest<'_> {

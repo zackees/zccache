@@ -15,7 +15,10 @@ here based on tool family and environment.
 - **`env.rs`** — environment policy: `ZCCACHE_DISABLE`, `ZCCACHE_STRICT_PATHS`,
   client-env filtering applied to every IPC request.
 - **`ipc.rs`** — request builders and response handling for `Compile` and
-  `LinkEphemeral`. Owns the per-request retry policy.
+  `LinkEphemeral`. Owns the per-request retry policy. A request the daemon
+  lost with no tool left running (a closed connection, or a wedged daemon
+  confirmed dead) still exits 1 but logs `wrapper-no-verdict` with the
+  wrapper's pid, so the build tool that ran it can compile directly.
 - **`passthrough.rs`** — direct-exec paths used when the cache is disabled or
   the tool is unsupported. Captures + releases the wrapper's CWD on Windows
   so the build dir is not pinned by a kernel handle (issue #555 / #134).

@@ -1,0 +1,32 @@
+name: Cache Budget
+
+# zccache#1677 / zackees/setup-soldr#528: fail when the repository's total
+# Actions-cache usage passes 9.5 GB, before GitHub's 10 GB LRU eviction
+# starts dropping the warm cook bases. Lists the largest entries by ref.
+# Online (needs GH_TOKEN), so it is not part of the offline lint; the logic
+# is unit-tested in ci/tests/test_check_cache_budget.py.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  budget:
+    name: Repository cache budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Check total cache usage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --no-project python ci/check_cache_budget.py "$GITHUB_REPOSITORY"

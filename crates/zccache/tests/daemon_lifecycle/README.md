@@ -28,6 +28,7 @@ cargo nextest run --test daemon_lifecycle -E 'test(/^<file_stem>::/)'
 - `daemon_crash_minidump_test`
 - `daemon_cwd_release`
 - `daemon_exe_overwrite`
+- `daemon_idle_cpu_budget_test`
 - `daemon_integration_test`
 - `daemon_session_stats_test`
 - `daemon_spawn_lockfile_budget_test`

@@ -14,6 +14,9 @@
 //!
 //! Both use the pending pattern for crash safety: `check()` pre-computes
 //! the fingerprint, then `mark_success()`/`mark_failure()` promotes it.
+//! A cache value promotes the snapshot its own `check()` took, so cycles
+//! interleaved on one cache file each commit their own result; a fresh value
+//! (a separate `mark-*` process) falls back to the on-disk `.pending`.
 //!
 //! - [`mtime_replay`] - Content-verified mtime snapshot/replay (zccache#1595).
 //!   Records each source file's mtime alongside its blake3 hash so a later
