@@ -167,6 +167,9 @@ def test_lint_rejects_a_forbidden_dependency_before_ci(monkeypatch, capsys, argv
 def test_lint_continues_to_cargo_when_the_dependency_guard_is_clean(monkeypatch):
     monkeypatch.setattr(lint, "validate_release_metadata", lambda: None)
     monkeypatch.setattr(lint.check_kernal_api_baseline, "check", lambda: [])
+    # Hermetic: the ci/tests runner has no soldr on PATH, and cargo_command
+    # resolves it before run_cmd would ever see the command.
+    monkeypatch.setattr(lint, "cargo_command", lambda *args: ["cargo", *args])
     ran = []
     monkeypatch.setattr(
         lint, "run_cmd", lambda cmd: ran.append(cmd) or SimpleNamespace(returncode=0)
