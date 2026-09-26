@@ -48,6 +48,9 @@ default token scope, which is far broader than the read-only access nearly all
 of them need.
 
 CI runs this suite via `.github/workflows/python-tests.yml` on every push and
-pull request. It is deliberately not a job in `ci.yml`: that workflow sets
+pull request. `test_ci_tests_wiring.py` keeps it that way (#1474): some workflow
+reached by every pull request, directly or through unconditional reusable
+workflow calls, must run the whole suite with no paths filter, narrowing flag
+(`-k`, `--deselect`, `--ignore`, `-m`), `if:`, or `continue-on-error`. It is deliberately not a job in `ci.yml`: that workflow sets
 `paths-ignore: "**/*.md"`, which would skip the Markdown guards on precisely the
 docs-only PRs they exist to gate.
