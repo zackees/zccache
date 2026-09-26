@@ -6,11 +6,10 @@ name: Cache Cleanup
 # dominated by per-commit cook-delta + zccache-test entries,
 # nullifying the warm-run wins from setup-soldr#305 / #310 / #313.
 #
-# Triggered ONLY by workflow_dispatch — invoked manually as part of
-# the setup-soldr release-and-cascade process. No scheduled or
-# per-CI-workflow trigger. Aim: avoid surprise cleanup runs that
-# can race with a workflow's save phase, and keep the CI surface
-# clean from unrelated lifecycle hooks.
+# Runs daily on the default branch and remains manually dispatchable for
+# release-and-cascade work. It runs before cache-budget.yml so stale
+# per-commit generations are retired before the budget check. It does not run
+# from push or pull-request events, where cache saves could race with pruning.
 #
 # Strategy: for each per-commit key family, keep the newest 3,
 # prune the rest unconditionally. After count-based prune, a
@@ -20,6 +19,8 @@ name: Cache Cleanup
 #   gh workflow run cache-cleanup.yml --repo zackees/zccache
 
 on:
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 # One live run per workflow per ref: a new push to a branch or PR cancels the
@@ -32,6 +33,7 @@ concurrency:
 jobs:
   prune-per-commit-caches:
     name: Prune stale per-commit cache entries
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       actions: write
