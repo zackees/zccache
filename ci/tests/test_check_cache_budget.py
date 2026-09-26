@@ -29,3 +29,17 @@ def test_exact_budget_passes_and_one_byte_over_fails() -> None:
     assert budget.evaluate(usage, []) == []
     usage["active_caches_size_in_bytes"] += 1
     assert budget.evaluate(usage, []) != []
+
+
+def test_listed_cache_inventory_prevents_false_green_when_usage_lags() -> None:
+    usage = {"active_caches_size_in_bytes": budget.BUDGET_BYTES - 1, "active_caches_count": 1}
+    caches = [{"key": "new-cache", "ref": "refs/heads/main", "size_in_bytes": budget.BUDGET_BYTES + 1}]
+    errors = budget.evaluate(usage, caches)
+    assert "exceeds the 9.50 GB budget" in errors[0]
+    assert "across at least 1 entries" in errors[0]
+
+
+def test_usage_endpoint_above_budget_still_fails_when_list_lags() -> None:
+    usage = {"active_caches_size_in_bytes": budget.BUDGET_BYTES + 1}
+    caches = [{"key": "old-cache", "ref": "refs/heads/main", "size_in_bytes": budget.BUDGET_BYTES - 1}]
+    assert budget.evaluate(usage, caches) != []

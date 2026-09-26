@@ -11,9 +11,11 @@ name: Cache Cleanup
 # per-commit generations are retired before the budget check. It does not run
 # from push or pull-request events, where cache saves could race with pruning.
 #
-# Strategy: for each per-commit key family, keep the newest 3,
-# prune the rest unconditionally. After count-based prune, a
-# hard-cap step deletes oldest entries until under 8 GB.
+# Strategy: keep the newest entry for each distinct cache restore shape and
+# retire older generations. Shapes retain platform, architecture, target and
+# feature dimensions; a new generation for one target cannot evict another.
+# The hard-cap step may remove additional stale generations, but never the
+# newest entry for a shape or an unlisted foundation family.
 #
 # Manual runs default to a read-only dry run. Inspect the listed cache keys,
 # refs and sizes before dispatching with `dry-run: false` to delete them.
@@ -43,7 +45,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
+      contents: read
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
       - name: Gate on cache usage (skip when under 8 GB high-water mark)
         id: gate
         uses: actions/github-script@v7
@@ -56,9 +63,21 @@ jobs:
             // without forcing eviction of small long-lived caches.
             const HIGH_WATER_GB = 8;
             const usage = await github.rest.actions.getActionsCacheUsage(context.repo);
-            const sizeGb = usage.data.active_caches_size_in_bytes / 1024 / 1024 / 1024;
+            const caches = await github.paginate(
+              github.rest.actions.getActionsCacheList,
+              { ...context.repo, per_page: 100 }
+            );
+            const listedBytes = caches.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
+            const { effectiveCacheBytes } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`
+            );
+            const sizeBytes = effectiveCacheBytes(
+              usage.data.active_caches_size_in_bytes,
+              listedBytes,
+            );
+            const sizeGb = sizeBytes / 1000 / 1000 / 1000;
             console.log(
-              `Repo cache: ${usage.data.active_caches_count} entries, ` +
+              `Repo cache: ${Math.max(usage.data.active_caches_count, caches.length)} entries, ` +
               `${sizeGb.toFixed(2)} GB (high-water: ${HIGH_WATER_GB} GB)`
             );
             if (sizeGb < HIGH_WATER_GB) {
@@ -69,7 +88,7 @@ jobs:
               core.setOutput("needed", "true");
             }
 
-      - name: Prune per-commit cache families (keep newest 3)
+      - name: Prune stale cache generations (keep newest per shape)
         if: steps.gate.outputs.needed == 'true'
         id: count-prune
         uses: actions/github-script@v7
@@ -77,29 +96,12 @@ jobs:
           DRY_RUN: ${{ inputs['dry-run'] }}
         with:
           script: |
-            // setup-soldr#346: per-commit cache families accumulate
-            // one entry per push and dominate the 10 GB budget. Each
-            // family keeps its 3 newest entries (recent push + retry
-            // + 1 in-flight PR); the rest are pruned unconditionally.
-            //
-            // Was KEEP=5 — observed at 14.6 GB usage which evicted
-            // small build-cache entries (per-platform-job builds got
-            // cold rebuilds, ~50 s wall-clock regression on macOS).
-            // Tightened to 3.
-            const PREFIXES = [
-              "cook-delta-v2-",
-              "zccache-Linux-X64-test-",
-              "zccache-Linux-ARM64-test-",
-              "zccache-Windows-X64-test-",
-              "zccache-macos-arm64-test-",
-              "cargo-target-Linux-X64-bench-",
-              "cargo-target-Windows-X64-bench-",
-              "zccache-Linux-X64-bench-",
-              "zccache-Windows-X64-bench-",
-              "zccache-macos-arm64-bench-",
-              "cargo-target-macos-arm64-bench-",
-            ];
-            const KEEP = 3;
+            // Keep the newest generation of every restore shape. The shared
+            // planner strips only known generation suffixes and favors main
+            // over pull-request copies of an otherwise identical cache.
+            const { planCountPrune } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`
+            );
             const repo = context.repo;
             const caches = await github.paginate(
               github.rest.actions.getActionsCacheList,
@@ -110,12 +112,9 @@ jobs:
             let totalBytes = 0;
             const prunedIds = [];
             const dryRun = process.env.DRY_RUN === "true";
-            for (const prefix of PREFIXES) {
-              const matching = caches.filter(c => c.key && c.key.startsWith(prefix));
-              const stale = matching.slice(KEEP);
-              if (matching.length === 0) continue;
-              console.log(`${prefix}: ${matching.length} entries, will prune ${stale.length}`);
-              for (const c of stale) {
+            const { keep, stale } = planCountPrune(caches);
+            console.log(`${keep.length} current shapes; ${stale.length} stale generations.`);
+            for (const c of stale) {
                 if (dryRun) {
                   prunedIds.push(c.id);
                   totalBytes += c.size_in_bytes;
@@ -151,7 +150,6 @@ jobs:
                     throw err;
                   }
                 }
-              }
             }
             core.setOutput("pruned-cache-ids", JSON.stringify(prunedIds));
             core.setOutput("pruned-bytes", String(totalBytes));
@@ -160,68 +158,49 @@ jobs:
               `(${(totalBytes / 1024 / 1024 / 1024).toFixed(2)} GB)`
             );
 
-      - name: Hard cap — prune oldest entries until under 8 GB
+      - name: Hard cap — prune stale generations while protecting shapes
         if: steps.gate.outputs.needed == 'true'
         id: hard-cap
         uses: actions/github-script@v7
         env:
           DRY_RUN: ${{ inputs['dry-run'] }}
           COUNT_PRUNED_IDS: ${{ steps.count-prune.outputs.pruned-cache-ids }}
-          COUNT_PRUNED_BYTES: ${{ steps.count-prune.outputs.pruned-bytes }}
         with:
           script: |
-            // setup-soldr#346: even after count-based pruning, the
-            // sum of all categories can exceed the 10 GB cap. To
-            // prevent the LRU from evicting *small* long-lived caches
-            // (build-cache, solo-toolchain) that we WANT to keep,
-            // proactively delete the oldest entries from prune-
-            // eligible families until usage is under 8 GB.
-            const TARGET_GB = 8;
+            // Never delete the newest cache for a restore shape or an
+            // unlisted foundation family. If unique protected caches remain
+            // above budget, fail rather than deleting those caches.
+            const TARGET_GB = 9.5;
             const dryRun = process.env.DRY_RUN === "true";
             const plannedIds = new Set(JSON.parse(process.env.COUNT_PRUNED_IDS || "[]"));
-            const countPrunedBytes = Number(process.env.COUNT_PRUNED_BYTES || "0");
-            const ELIGIBLE_PREFIXES = [
-              "cook-delta-v2-",
-              "zccache-Linux-X64-test-",
-              "zccache-Linux-ARM64-test-",
-              "zccache-Windows-X64-test-",
-              "zccache-macos-arm64-test-",
-              "cargo-target-Linux-X64-bench-",
-              "cargo-target-Windows-X64-bench-",
-              "zccache-Linux-X64-bench-",
-              "zccache-Windows-X64-bench-",
-              "zccache-macos-arm64-bench-",
-              "cargo-target-macos-arm64-bench-",
-            ];
+            const { planHardCap } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`
+            );
             const repo = context.repo;
-            let usage = await github.rest.actions.getActionsCacheUsage(repo);
-            let projectedBytes = usage.data.active_caches_size_in_bytes;
-            if (dryRun) projectedBytes -= countPrunedBytes;
-            let sizeGb = projectedBytes / 1024 / 1024 / 1024;
-            console.log(`After count-prune: ${sizeGb.toFixed(2)} GB. Target: ${TARGET_GB} GB.`);
-            if (sizeGb <= TARGET_GB) {
-              console.log("Already under hard cap — no further pruning needed.");
-              core.setOutput("extra-pruned-bytes", "0");
-              return;
-            }
-
-            // Build list of prune-eligible entries, OLDEST FIRST.
-            const caches = await github.paginate(
+            let caches = await github.paginate(
               github.rest.actions.getActionsCacheList,
-              { ...repo, per_page: 100, sort: "created_at", direction: "asc" }
+              { ...repo, per_page: 100, sort: "created_at", direction: "desc" }
             );
-            const eligible = caches.filter(c =>
-              c.key && ELIGIBLE_PREFIXES.some(p => c.key.startsWith(p))
+            let projectedBytes = caches.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
+            if (dryRun) {
+              projectedBytes -= caches
+                .filter(cache => plannedIds.has(cache.id))
+                .reduce((sum, cache) => sum + cache.size_in_bytes, 0);
+            }
+            const targetBytes = TARGET_GB * 1000 * 1000 * 1000;
+            const plan = planHardCap(
+              caches,
+              projectedBytes,
+              targetBytes,
+              Array.from(plannedIds),
             );
-            console.log(`${eligible.length} prune-eligible entries available (oldest first).`);
-
+            const sizeGb = projectedBytes / 1000 / 1000 / 1000;
+            console.log(`After count-prune: ${sizeGb.toFixed(2)} GB. Target: ${TARGET_GB} GB.`);
+            console.log(`${plan.selected.length} additional stale generations eligible.`);
             let extraPruned = 0;
             let extraBytes = 0;
-            const targetBytes = TARGET_GB * 1024 * 1024 * 1024;
-            for (const c of eligible) {
-              if (plannedIds.has(c.id)) continue;
+            for (const c of plan.selected) {
               if (dryRun) {
-                if (projectedBytes <= targetBytes) break;
                 plannedIds.add(c.id);
                 projectedBytes -= c.size_in_bytes;
                 extraBytes += c.size_in_bytes;
@@ -233,13 +212,12 @@ jobs:
                 );
                 continue;
               }
-              usage = await github.rest.actions.getActionsCacheUsage(repo);
-              if (usage.data.active_caches_size_in_bytes <= targetBytes) break;
               try {
                 await github.rest.actions.deleteActionsCacheById({
                   ...repo,
                   cache_id: c.id,
                 });
+                projectedBytes -= c.size_in_bytes;
                 extraBytes += c.size_in_bytes;
                 extraPruned += 1;
                 console.log(
@@ -248,7 +226,10 @@ jobs:
                   `${((Date.now() - new Date(c.created_at).getTime()) / 3600000).toFixed(1)}h)`
                 );
               } catch (err) {
-                if (err.status === 404) continue;
+                if (err.status === 404) {
+                  projectedBytes -= c.size_in_bytes;
+                  continue;
+                }
                 throw err;
               }
             }
@@ -257,6 +238,60 @@ jobs:
               `Hard cap: ${dryRun ? "would prune" : "pruned"} ${extraPruned} additional entries ` +
               `(${(extraBytes / 1024 / 1024 / 1024).toFixed(2)} GB recovered)`
             );
+            const { effectiveCacheBytes } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`
+            );
+            let finalBytes = 0;
+            let withinBudget = false;
+            const maxAttempts = dryRun ? 1 : 6;
+            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+              const [usage, finalCaches] = await Promise.all([
+                github.rest.actions.getActionsCacheUsage(repo),
+                github.paginate(
+                  github.rest.actions.getActionsCacheList,
+                  { ...repo, per_page: 100 }
+                ),
+              ]);
+              const listedBytes = finalCaches.reduce(
+                (sum, cache) => sum + cache.size_in_bytes,
+                0,
+              );
+              if (dryRun) {
+                const plannedBytes = finalCaches
+                  .filter(cache => plannedIds.has(cache.id))
+                  .reduce((sum, cache) => sum + cache.size_in_bytes, 0);
+                const projectedListedBytes = Math.max(0, listedBytes - plannedBytes);
+                const projectedUsageBytes = Math.max(
+                  0,
+                  usage.data.active_caches_size_in_bytes - plannedBytes,
+                );
+                finalBytes = effectiveCacheBytes(projectedUsageBytes, projectedListedBytes);
+              } else {
+                finalBytes = effectiveCacheBytes(
+                  usage.data.active_caches_size_in_bytes,
+                  listedBytes,
+                );
+              }
+              withinBudget = finalBytes <= targetBytes;
+              console.log(
+                `Final cache snapshot ${attempt + 1}/${maxAttempts}: ` +
+                `${(finalBytes / 1000 / 1000 / 1000).toFixed(2)} GB ` +
+                `(usage endpoint ${(usage.data.active_caches_size_in_bytes / 1000 / 1000 / 1000).toFixed(2)} GB, ` +
+                `listed ${(listedBytes / 1000 / 1000 / 1000).toFixed(2)} GB).`
+              );
+              if (withinBudget || dryRun || attempt + 1 === maxAttempts) break;
+              // The usage endpoint may lag cache deletions. Give it time to
+              // converge, but never report green while either source is over.
+              await new Promise(resolve => setTimeout(resolve, 10_000));
+            }
+            if (!withinBudget) {
+              core.setFailed(
+                `Unique protected cache shapes remain above ${TARGET_GB} GB ` +
+                `(${(Math.max(finalBytes, plan.projectedBytes) / 1000 / 1000 / 1000).toFixed(2)} GB after ` +
+                `${maxAttempts} cache-list/usage snapshots); ` +
+                `no current shape or foundation cache was deleted.`
+              );
+            }
 
       - name: Report repo cache usage
         if: steps.gate.outputs.needed == 'true'
@@ -267,13 +302,17 @@ jobs:
           HARD_CAP_PRUNED_BYTES: ${{ steps.hard-cap.outputs.extra-pruned-bytes }}
         with:
           script: |
-            const usage = await github.rest.actions.getActionsCacheUsage(context.repo);
             const dryRun = process.env.DRY_RUN === "true";
             const plannedBytes =
               Number(process.env.COUNT_PRUNED_BYTES || "0") +
               Number(process.env.HARD_CAP_PRUNED_BYTES || "0");
+            const caches = await github.paginate(
+              github.rest.actions.getActionsCacheList,
+              { ...context.repo, per_page: 100 }
+            );
+            const listedBytes = caches.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
             if (dryRun) {
-              const projected = usage.data.active_caches_size_in_bytes - plannedBytes;
+              const projected = listedBytes - plannedBytes;
               console.log(
                 `Dry run: no cache was deleted. Projected repo usage after ` +
                 `the listed targets: ${(projected / 1024 / 1024 / 1024).toFixed(2)} GB.`
@@ -281,6 +320,6 @@ jobs:
               return;
             }
             console.log(
-              `Repo cache after cleanup: ${usage.data.active_caches_count} entries, ` +
-              `${(usage.data.active_caches_size_in_bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+              `Repo cache after cleanup: ${caches.length} entries, ` +
+              `${(listedBytes / 1000 / 1000 / 1000).toFixed(2)} GB`
             );

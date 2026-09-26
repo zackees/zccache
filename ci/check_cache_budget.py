@@ -28,13 +28,14 @@ def _gb(size: int) -> str:
 
 
 def evaluate(usage: dict, caches: list[dict], budget: int = BUDGET_BYTES) -> list[str]:
-    """Return error lines; empty when ``usage`` is within ``budget``."""
-    total = int(usage.get("active_caches_size_in_bytes", 0))
+    """Return error lines; empty when both cache inventory views are in budget."""
+    listed_total = sum(int(cache.get("size_in_bytes", 0)) for cache in caches)
+    total = max(int(usage.get("active_caches_size_in_bytes", 0)), listed_total)
     if total <= budget:
         return []
     errors = [
-        f"repository cache usage {_gb(total)} across "
-        f"{usage.get('active_caches_count', '?')} entries exceeds the "
+        f"repository cache usage {_gb(total)} across at least "
+        f"{max(int(usage.get('active_caches_count', 0)), len(caches))} entries exceeds the "
         f"{_gb(budget)} budget"
     ]
     largest = sorted(caches, key=lambda c: int(c.get("size_in_bytes", 0)), reverse=True)
@@ -68,7 +69,10 @@ def main(argv: list[str]) -> int:
     for line in errors:
         print(f"error: {line}", file=sys.stderr)
     if not errors:
-        total = int(usage.get("active_caches_size_in_bytes", 0))
+        total = max(
+            int(usage.get("active_caches_size_in_bytes", 0)),
+            sum(int(cache.get("size_in_bytes", 0)) for cache in caches),
+        )
         print(f"cache budget: ok ({_gb(total)} of {_gb(BUDGET_BYTES)})")
     return 1 if errors else 0
 
