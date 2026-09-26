@@ -326,15 +326,21 @@ pub(super) fn materialize_cached_compile_hit(
             let targets = (0..payloads.len())
                 .map(|i| {
                     let out: NormalizedPath = if i == 0 {
-                        // The compiler may have materialized a physical name
+                        // Rustc may have materialized a physical name
                         // different from its declared primary path (for
                         // example by appending a suffix). The cold staged
                         // plan records that observed filename in `names`; use
                         // it on a fresh-root hit rather than replaying the
-                        // extensionless declaration.
-                        if output_path
-                            .file_name()
-                            .is_some_and(|name| name == std::ffi::OsStr::new(names[i].as_str()))
+                        // extensionless declaration (#1522). A C/C++ compiler
+                        // writes exactly its `-o` path, and the cache key
+                        // excludes that path, so `names[0]` is only the cold
+                        // miss's name: always honour the current request
+                        // (#1648). `Some` here identifies a rustc request.
+                        let is_rustc = rustc_archive_hardlink_eligible.is_some();
+                        if !is_rustc
+                            || output_path
+                                .file_name()
+                                .is_some_and(|name| name == std::ffi::OsStr::new(names[i].as_str()))
                         {
                             output_path.clone()
                         } else {
@@ -581,6 +587,10 @@ fn rustc_output_kind(path: &std::path::Path) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "cached_hit_output_path_tests.rs"]
+mod output_path_tests;
 
 #[cfg(test)]
 mod tests {
