@@ -11,6 +11,19 @@ fn write_file(path: &Path, contents: &[u8]) {
     std::fs::write(path, contents).unwrap();
 }
 
+/// Whether a fresh file in `dir` is reported `Exclusive`, i.e. whether this
+/// volume can prove that removing an `nlink == 1` file frees its space.
+fn volume_proves_exclusive(dir: &Path) -> bool {
+    let probe = dir.join("exclusive-probe.bin");
+    std::fs::write(&probe, b"probe").unwrap();
+    let exclusive = matches!(
+        kernal_api::platform::fs::extent_sharing(&probe),
+        Ok(kernal_api::platform::fs::ExtentSharing::Exclusive)
+    );
+    std::fs::remove_file(&probe).unwrap();
+    exclusive
+}
+
 fn age_file(path: &Path, age: Duration) {
     let stamp = SystemTime::now() - age;
     let file = std::fs::File::options().write(true).open(path).unwrap();
@@ -65,10 +78,14 @@ fn removes_fresh_unlinked_artifacts_eagerly_only_under_pressure_and_spares_linke
 
     assert_eq!(report.stores_scanned, 1);
     assert_eq!(report.files_removed, 1000);
-    assert_eq!(
-        report.bytes_reclaimed,
+    // Bytes are credited only where the volume proves the blocks exclusive
+    // (#1673); APFS/ReFS report unknown sharing and credit nothing.
+    let expected = if volume_proves_exclusive(tmp.path()) {
         1000 * "unlinked-artifact".len() as u64
-    );
+    } else {
+        0
+    };
+    assert_eq!(report.bytes_reclaimed, expected);
     assert_eq!(report.stores_removed, 0, "50 linked artifacts remain");
     assert_eq!(report.stores_live, 0);
     assert_eq!(report.failed, 0);
@@ -576,4 +593,25 @@ fn issue_1673_reflinked_entry_credits_no_reclaimed_bytes() {
     assert_eq!(report.files_removed, 1);
     assert_eq!(report.bytes_reclaimed, 0);
     assert_eq!(std::fs::read(&restored).unwrap().len(), 256 * 1024);
+}
+
+/// #1673/#1659: the pressure estimate counts an `nlink == 1` file on every
+/// volume (unknown sharing still counts, or APFS/ReFS would never see
+/// retired bytes), but excludes one proven to share blocks via reflink.
+#[test]
+fn issue_1673_pressure_estimate_counts_unknown_but_not_proven_shared() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cached = tmp.path().join("store/a.bin");
+    write_file(&cached, &[5_u8; 256 * 1024]);
+    assert!(file_may_free_space_on_removal(&cached));
+
+    let restored = tmp.path().join("target/a.bin");
+    std::fs::create_dir_all(restored.parent().unwrap()).unwrap();
+    if kernal_api::platform::fs::reflink_file(&cached, &restored).is_ok()
+        && kernal_api::platform::fs::extent_sharing(&cached)
+            .is_ok_and(|s| s == kernal_api::platform::fs::ExtentSharing::Shared)
+    {
+        assert!(!file_may_free_space_on_removal(&cached));
+        assert!(!file_frees_space_on_removal(&cached));
+    }
 }

@@ -119,6 +119,21 @@ pub fn file_frees_space_on_removal(path: &Path) -> bool {
     file_link_count(path) == Some(1) && blocks_are_exclusive(path)
 }
 
+/// True when removing `path` may free its space, for the disk-pressure
+/// *estimate* (#1659): the last hard link whose blocks are not known to be
+/// shared. Unlike [`file_frees_space_on_removal`], unknown sharing counts:
+/// APFS and ReFS always report it, and treating it as shared would zero the
+/// estimate on every such volume and disable the retired-store pressure
+/// valve there. Only proven sharing (a btrfs/XFS reflink) is excluded.
+#[must_use]
+pub fn file_may_free_space_on_removal(path: &Path) -> bool {
+    file_link_count(path) == Some(1)
+        && !matches!(
+            kernal_api::platform::fs::extent_sharing(path),
+            Ok(kernal_api::platform::fs::ExtentSharing::Shared)
+        )
+}
+
 fn blocks_are_exclusive(path: &Path) -> bool {
     matches!(
         kernal_api::platform::fs::extent_sharing(path),
