@@ -20,12 +20,14 @@ pub const UNKNOWN_MISS_WARNING_PREFIX: &str = "zccache[warn][M]:";
 /// Prost daemon wire version.
 ///
 /// The direct prost body lane uses this value.
-pub const PROST_PROTOCOL_VERSION: u32 = 24;
+pub const PROST_PROTOCOL_VERSION: u32 = 26;
 
 /// Protocol version number. Bump this when the wire format changes:
 /// new/removed/reordered enum variants or struct field changes.
 /// Patch releases that don't change the protocol keep the same version.
 ///
+/// v26: `DaemonStatus` gained `materialization` (`ZCCACHE_MODE`, issue #1683).
+/// v25 is never used: it was the retired bincode wire version (#840).
 /// v24: `DaemonStatus` gained `index_writer_gone` (issue #1177).
 /// v22: `DaemonStatus` gained watcher state (issue #1156).
 /// v21: added `Response::CompileProgress` (issue #1216).

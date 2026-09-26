@@ -202,6 +202,7 @@ fn materialize_verified_cached_file_tiers(
     let staged = is_staged_artifact_path(cache_file);
     let observe = force_observation || staged;
     let observed = |reflink_count, hardlink_count, copy_count, copy_bytes| {
+        record_delivery(reflink_count, hardlink_count, copy_count);
         if observe {
             StagedMaterializationStats {
                 reflink_count,

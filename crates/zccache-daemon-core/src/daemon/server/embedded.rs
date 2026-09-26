@@ -513,6 +513,7 @@ async fn status_snapshot(state: &SharedState) -> crate::protocol::DaemonStatus {
         watcher_active: state.watcher_active.load(Ordering::Acquire),
         watcher_degradations: state.watcher_degradations.load(Ordering::Relaxed),
         index_writer_gone: state.index_writer_gone.load(Ordering::Relaxed),
+        materialization: materialization_status(state.materialization_mode_default.get()),
     }
 }
 
