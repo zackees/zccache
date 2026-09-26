@@ -80,6 +80,23 @@ pub fn parse_depfile_path(
     parse_depfile(&content, source, cwd)
 }
 
+/// Every path a depfile names, unescaped and in file order: the targets and
+/// prerequisites of every rule, including `-MP` phony rules. Relative paths
+/// stay relative. The rule separator (a token's trailing `:`, or a lone `:`)
+/// is dropped; a drive-letter colon inside a path is kept.
+#[must_use]
+pub fn depfile_path_tokens(content: &str) -> Vec<String> {
+    split_and_unescape(&join_continuations(content))
+        .into_iter()
+        .filter_map(|mut token| {
+            if token.ends_with(':') {
+                token.pop();
+            }
+            (!token.is_empty()).then_some(token)
+        })
+        .collect()
+}
+
 /// Join backslash-continued lines: replace `\<newline>` sequences with a
 /// single space so that the entire depfile becomes one logical line.
 pub(super) fn join_continuations(content: &str) -> String {

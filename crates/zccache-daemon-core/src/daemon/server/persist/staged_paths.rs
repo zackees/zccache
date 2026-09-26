@@ -95,7 +95,10 @@ pub(in crate::daemon::server) fn rehydrate_staged_output_bytes(
     )
 }
 
-fn rehydrate_logical_depfile_bytes(bytes: &[u8], requested_outputs: &[NormalizedPath]) -> Vec<u8> {
+pub(in crate::daemon::server) fn rehydrate_logical_depfile_bytes(
+    bytes: &[u8],
+    requested_outputs: &[NormalizedPath],
+) -> Vec<u8> {
     let mut rewritten = bytes.to_vec();
     let mut requested_outputs = requested_outputs.iter().collect::<Vec<_>>();
     requested_outputs
@@ -189,6 +192,14 @@ pub(in crate::daemon::server) fn rehydrate_logical_depfile(
         atomic_replace_bytes(path, &rewritten)?;
     }
     Ok(())
+}
+
+/// Atomically replace a delivered depfile without touching a shared blob.
+pub(in crate::daemon::server) fn replace_depfile_bytes(
+    path: &Path,
+    bytes: &[u8],
+) -> io::Result<()> {
+    atomic_replace_bytes(path, bytes)
 }
 
 fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {

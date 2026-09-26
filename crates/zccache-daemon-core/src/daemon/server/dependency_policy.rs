@@ -72,10 +72,17 @@ impl DependencyDiscoveryMode {
         }
     }
 
+    /// Salt the key with the argv that shapes a user depfile's bytes.
+    ///
+    /// `key_root` is the root the context registers under. Passing it makes
+    /// whole-root prefixes logical, which is sound only when the caller also
+    /// stores the depfile through `canonicalize_depfile_root` and rehydrates
+    /// it on every hit; callers that cannot must pass `None`.
     pub(super) fn apply_user_depfile_content_to_cc_context(
         ctx: &mut CompileContext,
         dep_flags: &UserDepFlags,
         args: &[String],
+        key_root: Option<&Path>,
     ) {
         if !dep_flags.has_md {
             return;
@@ -98,6 +105,7 @@ impl DependencyDiscoveryMode {
                     .push("zccache:user-depfile-output=stdout".to_string());
                 content_index += 1;
             } else if !arg.starts_with("-MF") {
+                let arg = salt_depfile_arg(arg, key_root);
                 ctx.unknown_flags.push(format!(
                     "zccache:user-depfile-argv={content_index}:{}:{arg}",
                     arg.len()
@@ -320,6 +328,7 @@ mod tests {
                 &mut context,
                 &dep_flags,
                 &args,
+                Some(Path::new("/work")),
             );
             context.context_key()
         };
@@ -343,5 +352,57 @@ mod tests {
         assert_ne!(output_a, target);
         assert_eq!(output_a, moved_depfile);
         assert_ne!(output_a, stdout_depfile);
+    }
+
+    #[test]
+    fn depfile_content_salt_is_shared_only_across_whole_key_roots() {
+        let context_for = |root: &str, args: &[String], key_root: Option<&str>| {
+            let parsed = crate::depgraph::args::parse_gnu_args(args, Path::new(root));
+            let dep_flags = parsed.dep_flags.clone();
+            let mut context =
+                CompileContext::from_parsed_args(parsed, crate::hash::hash_bytes(b"test-fixture"));
+            DependencyDiscoveryMode::apply_user_depfile_content_to_cc_context(
+                &mut context,
+                &dep_flags,
+                args,
+                key_root.map(Path::new),
+            );
+            context
+                .unknown_flags
+                .iter()
+                .filter(|flag| flag.starts_with("zccache:user-depfile"))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let ninja = |root: &str| -> Vec<String> {
+            [
+                format!("-I{root}/include"),
+                "-MD".to_string(),
+                "-MT".to_string(),
+                "obj/a.o".to_string(),
+                "-MF".to_string(),
+                "obj/a.o.d".to_string(),
+                "-o".to_string(),
+                "obj/a.o".to_string(),
+                "-c".to_string(),
+                format!("{root}/src/a.c"),
+            ]
+            .to_vec()
+        };
+
+        assert_eq!(
+            context_for("/wt/a", &ninja("/wt/a"), Some("/wt/a")),
+            context_for("/wt/b", &ninja("/wt/b"), Some("/wt/b")),
+        );
+        assert_ne!(
+            context_for("/wt/a", &ninja("/wt/a"), None),
+            context_for("/wt/b", &ninja("/wt/b"), None),
+            "without a rehydrating key root the raw spelling stays in the key"
+        );
+        assert_ne!(
+            context_for("/wt/a", &ninja("/wt/a"), Some("/wt/a")),
+            context_for("/wt/b", &ninja("/wt/a"), Some("/wt/b")),
+            "a path outside the requesting root keeps its own spelling"
+        );
     }
 }

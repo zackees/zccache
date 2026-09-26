@@ -714,3 +714,20 @@ fn canonicalize_path_cache_distinguishes_inputs() {
         "different inputs of the same file resolve identically"
     );
 }
+
+#[test]
+fn depfile_path_tokens_names_every_rule_path() {
+    let content = "obj/a.o: /w/src/a.c /w/my\\ dir/b.h \\\n C:/sdk/c.h $$d.h\n\n/w/src/b.h:\n";
+    assert_eq!(
+        super::depfile_path_tokens(content),
+        [
+            "obj/a.o",
+            "/w/src/a.c",
+            "/w/my dir/b.h",
+            "C:/sdk/c.h",
+            "$d.h",
+            "/w/src/b.h"
+        ]
+    );
+    assert_eq!(super::depfile_path_tokens("a.o : b.h\n"), ["a.o", "b.h"]);
+}

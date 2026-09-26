@@ -46,6 +46,9 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     /// this fix landed (legacy single-output entries are honoured even
     /// when `Some(_)` is passed).
     pub(super) current_depfile_dest: Option<NormalizedPath>,
+    /// The requesting compile's key root, which replaces the logical root
+    /// in a delivered C/C++ user depfile. `None` for rustc.
+    pub(super) depfile_key_root: Option<NormalizedPath>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -69,6 +72,7 @@ pub(super) struct OwnedCachedHitMaterializeRequest {
     pub(super) output_path: NormalizedPath,
     pub(super) secondary_output_dir: NormalizedPath,
     pub(super) current_depfile_dest: Option<NormalizedPath>,
+    pub(super) depfile_key_root: Option<NormalizedPath>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -95,6 +99,7 @@ pub(super) async fn materialize_cached_compile_hit_offloaded(
                 output_path: &request.output_path,
                 secondary_output_dir: request.secondary_output_dir,
                 current_depfile_dest: request.current_depfile_dest,
+                depfile_key_root: request.depfile_key_root,
                 compile_start: request.compile_start,
                 hit_label: request.hit_label,
                 cached_error_label: request.cached_error_label,
@@ -149,6 +154,7 @@ pub(super) fn materialize_cached_compile_hit(
         output_path,
         secondary_output_dir,
         current_depfile_dest,
+        depfile_key_root,
         compile_start,
         hit_label,
         cached_error_label,
@@ -424,7 +430,9 @@ pub(super) fn materialize_cached_compile_hit(
     let rehydrate_stderr = contains_staged_output_marker(stderr.as_slice());
     if !depfile_targets.is_empty() || rehydrate_stdout || rehydrate_stderr {
         for target in depfile_targets {
-            if let Err(error) = rehydrate_logical_depfile(target.as_path(), &targets) {
+            if let Err(error) =
+                rehydrate_delivered_depfile(target, &targets, depfile_key_root.as_ref())
+            {
                 write_session_log(
                     &state.sessions,
                     sid,
@@ -648,6 +656,7 @@ mod tests {
                 output_path: &output_path,
                 secondary_output_dir: dir.path().into(),
                 current_depfile_dest: None,
+                depfile_key_root: None,
                 compile_start: Instant::now(),
                 hit_label: "HIT_TEST",
                 cached_error_label: "CACHED_ERROR_TEST",
@@ -781,6 +790,7 @@ mod tests {
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
             current_depfile_dest: None,
+            depfile_key_root: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -897,6 +907,7 @@ mod tests {
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
             current_depfile_dest: Some(depfile_dest.clone()),
+            depfile_key_root: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -998,6 +1009,7 @@ mod tests {
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
             current_depfile_dest: Some(depfile_dest.clone()),
+            depfile_key_root: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -1083,6 +1095,7 @@ mod tests {
                     output_path: &output_path,
                     secondary_output_dir: dir.path().into(),
                     current_depfile_dest: None,
+                    depfile_key_root: None,
                     compile_start: Instant::now(),
                     hit_label: "HIT_TEST",
                     cached_error_label: "CACHED_ERROR_TEST",

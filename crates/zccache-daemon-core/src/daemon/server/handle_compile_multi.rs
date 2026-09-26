@@ -73,6 +73,9 @@ fn check_unit_cache(
         &mut ctx,
         &dep_flags,
         &compilation.original_args,
+        // Multi-source hits do not rehydrate a logical worktree root in
+        // their depfiles, so their salt keeps the raw spelling.
+        None,
     );
     let t_ctx = t0.elapsed();
     let source_mode_for_key = if matches!(

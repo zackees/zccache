@@ -243,6 +243,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 &mut ctx,
                 &dep_flags,
                 &compilation.original_args,
+                Some(default_key_root.as_path()),
             );
             let registration = state.dep_graph.load().register_with_root_and_salt_result(
                 ctx.clone(),
@@ -744,6 +745,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                             current_depfile_dest: crate::daemon::server::rustc_depfile_output_path(
                                 rustc_args, cwd,
                             ),
+                            depfile_key_root: None,
                             compile_start,
                             hit_label: "HIT_RUSTC_EMIT_COMPAT",
                             cached_error_label: "CACHED_ERROR_RUSTC_EMIT_COMPAT",
@@ -933,6 +935,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             staged_plan,
             synchronous_persist,
             cwd_path: &cwd_path,
+            depfile_key_root: &default_key_root,
             ctx: &ctx,
             compilation: &compilation,
             dependency_mode,
