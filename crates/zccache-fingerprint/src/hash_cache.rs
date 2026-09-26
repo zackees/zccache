@@ -764,6 +764,14 @@ pub(crate) mod tests {
     fn mark_success_certifies_only_its_own_snapshot() {
         let (src, cache_dir) = setup();
         create_file(src.path(), "a.rs", "v1");
+        // #1714: the v2 edit below must carry a strictly newer mtime, or on a
+        // coarse file clock (Windows) both writes share one tick and the mtime
+        // fast path legitimately reports the tree unchanged.
+        set_file_mtime(
+            &src.path().join("a.rs"),
+            FileTime::from_unix_time(1_000_000_000, 0),
+        )
+        .unwrap();
         let cache_file = cache_dir.path().join("fp.json");
         let a = HashCache::new(cache_file.clone());
         let b = HashCache::new(cache_file.clone());
