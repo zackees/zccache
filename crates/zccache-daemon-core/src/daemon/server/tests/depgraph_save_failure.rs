@@ -115,13 +115,17 @@ async fn a_failed_periodic_save_keeps_the_loop_running_and_retries() {
 
     // Restart backoff is 1 s; with a 20 ms tick the three failures and the
     // retry land well inside it, so a save here is the *same* loop retrying
-    // rather than a supervisor-restarted replacement.
-    let saved = wait_until(|| depgraph_path.exists()).await;
+    // rather than a supervisor-restarted replacement. The save publishes the
+    // file on a blocking thread and the loop sets the flag after it returns,
+    // so wait for both rather than asserting the flag the instant the file
+    // appears.
+    let saved =
+        wait_until(|| depgraph_path.exists() && state.dep_graph_persisted.load(Ordering::Acquire))
+            .await;
     assert!(
         saved,
         "the tick after the injected failures must retry and persist"
     );
-    assert!(state.dep_graph_persisted.load(Ordering::Acquire));
 
     // Still ticking: remove the snapshot and the same loop writes it again.
     std::fs::remove_file(&depgraph_path).unwrap();
