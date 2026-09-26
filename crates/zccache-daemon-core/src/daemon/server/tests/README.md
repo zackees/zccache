@@ -13,6 +13,10 @@ cache inode only for eligible outputs, and switching modes migrates outputs.
 
 `mod.rs` declares the per-domain submodules and owns the crate-wide canonical
 test guard for process-global cache-dir mutations (`CacheDirEnvGuard`).
+`staged_env.rs` lets C/C++ staged-lane tests opt into
+`ZCCACHE_STAGED_ARTIFACTS=c-cpp` under that same lock, settle deferred
+publication, and detect native change markers (multi-source publication
+fails closed without them, #1193).
 Per-domain helpers (fixture builders,
 `start_daemon`, jobserver-env constructors, `write_fake_linker`, etc.) live
 next to the tests that use them — no `common.rs` indirection.

@@ -12,13 +12,20 @@
 //! one shared `ZCCACHE_CACHE_DIR`) and asserts the post-conditions
 //! that would have caught the bug:
 //!
-//!   1. `<cache_dir>/logs/` contains exactly **one** file matching
-//!      `daemon-spawn-*.log`.
-//!   2. `<cache_dir>/logs/daemon-lifecycle.log` contains exactly **one**
-//!      `event:"spawn"` line.
+//!   1. The daemon's `logs/` directory contains exactly **one** file
+//!      matching `daemon-spawn-*.log`.
+//!   2. The namespaced `daemon-lifecycle-<namespace>.log` contains exactly
+//!      **one** `event:"spawn"` line.
 //!   3. The `spawn-attempt` line emitted by the *first* wrapper call
 //!      carries `reason:"initial-start"` — every subsequent wrapper
 //!      call must reuse the live daemon (NO further spawn-attempts).
+//!
+//! Every invocation pins `ZCCACHE_DAEMON_NAMESPACE`. Development builds
+//! otherwise synthesize a `<version>-<exe hash>` namespace (#1362 / #1394),
+//! which places daemon logs under
+//! `<root>/v<VERSION>/daemon-state/<namespace>/logs/` and names the lifecycle
+//! log `daemon-lifecycle-<namespace>.log`. Pinning the namespace lets the test
+//! derive both paths exactly.
 //!
 //! Marked `#[ignore]` so the unit-test pass stays sub-second; runs
 //! under `./test --integration` and `./test --full`.
@@ -33,6 +40,8 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+
+const TEST_DAEMON_NAMESPACE: &str = "single-daemon-per-session";
 
 fn target_bin_dir() -> std::path::PathBuf {
     let mut p = std::env::current_exe().expect("current_exe");
@@ -55,6 +64,7 @@ fn stop_daemon(zccache: &std::path::Path, cache_dir: &std::path::Path) {
     let _ = Command::new(zccache)
         .arg("stop")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -73,6 +83,7 @@ fn run_one_wrapper(
     cmd.arg(echo_shim)
         .arg("0")
         .env("ZCCACHE_CACHE_DIR", cache_dir)
+        .env("ZCCACHE_DAEMON_NAMESPACE", TEST_DAEMON_NAMESPACE)
         .env_remove("ZCCACHE_SESSION_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -101,8 +112,21 @@ fn list_spawn_logs(logs_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// The daemon's log directory for [`TEST_DAEMON_NAMESPACE`] under the
+/// caller's top-level cache root.
+fn namespaced_logs_dir(cache_dir: &std::path::Path) -> std::path::PathBuf {
+    let effective =
+        zccache::core::config::effective_cache_root_from_top_level(&cache_dir.to_path_buf().into());
+    zccache::core::config::daemon_state_dir_from_cache_dir_with_namespace(
+        &effective,
+        Some(TEST_DAEMON_NAMESPACE.to_owned()),
+    )
+    .join("logs")
+    .into_path_buf()
+}
+
 fn parse_lifecycle_events(logs_dir: &std::path::Path) -> Vec<serde_json::Value> {
-    let path = logs_dir.join("daemon-lifecycle.log");
+    let path = logs_dir.join(format!("daemon-lifecycle-{TEST_DAEMON_NAMESPACE}.log"));
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
@@ -154,9 +178,7 @@ fn n_serial_wrappers_share_one_daemon() {
     // gets its `died-shutdown` line and we know the file is quiesced.
     stop_daemon(&zccache, cache_dir.path());
 
-    let effective_cache_dir =
-        zccache::core::config::effective_cache_root_from_top_level(&cache_dir.path().into());
-    let logs_dir = zccache::core::config::log_dir_from_cache_dir(&effective_cache_dir);
+    let logs_dir = namespaced_logs_dir(cache_dir.path());
     assert!(
         logs_dir.exists(),
         "logs/ directory must exist after running the wrapper"

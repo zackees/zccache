@@ -387,6 +387,16 @@ async fn adversarial_output_path_does_not_affect_cache_key() {
     server_handle.await.unwrap();
 }
 
+/// A renamed workspace (no `.git`, header included through an absolute `-I`)
+/// shares the cache once path remapping proves the object is root-independent.
+///
+/// Since 5fd69b8a ("key host and profile-dependent inputs") an ordinary
+/// clang/GCC compile is shared across roots only when file, macro and debug
+/// prefix maps all cover the root; otherwise the root salts the key so an
+/// absolute checkout path can never replay into another clone. This test
+/// therefore opts into the sanctioned sharing path, `ZCCACHE_PATH_REMAP=auto`,
+/// which injects those maps (falling back to the cwd as the root when there is
+/// no `.git` ancestor).
 #[tokio::test]
 #[ignore] // integration: spawns clang twice, run with --full
 async fn adversarial_workspace_rename_hits_cache() {
@@ -418,6 +428,7 @@ async fn adversarial_workspace_rename_hits_cache() {
     let log = tmp.path().join("workspace-rename.log");
 
     let (endpoint, server_handle, shutdown) = start_daemon().await;
+    let env = client_env_with_path_remap_auto();
     let mut client_a = zccache::ipc::connect(&endpoint).await.unwrap();
     let cwd_a = ws_a.to_string_lossy().into_owned();
     let (sid_a, comp_a) =
@@ -426,7 +437,7 @@ async fn adversarial_workspace_rename_hits_cache() {
     let obj_a = ws_a.join(&obj_rel);
     let include_a = ws_a.join("include");
 
-    let (ec, cached) = compile(
+    let (ec, cached) = compile_with_env(
         &mut client_a,
         &sid_a,
         &comp_a,
@@ -439,6 +450,7 @@ async fn adversarial_workspace_rename_hits_cache() {
             &obj_a.to_string_lossy(),
         ],
         &cwd_a,
+        Some(env.clone()),
     )
     .await;
     assert_eq!(ec, 0);
@@ -452,7 +464,7 @@ async fn adversarial_workspace_rename_hits_cache() {
     let obj_b = ws_b.join(&obj_rel);
     let include_b = ws_b.join("include");
 
-    let (ec, cached) = compile(
+    let (ec, cached) = compile_with_env(
         &mut client_b,
         &sid_b,
         &comp_b,
@@ -465,6 +477,7 @@ async fn adversarial_workspace_rename_hits_cache() {
             &obj_b.to_string_lossy(),
         ],
         &cwd_b,
+        Some(env),
     )
     .await;
     assert_eq!(ec, 0);
