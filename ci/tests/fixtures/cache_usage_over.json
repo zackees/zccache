@@ -1,0 +1,6 @@
+{"usage": {"full_name": "zackees/zccache", "active_caches_size_in_bytes": 12602842838, "active_caches_count": 3},
+ "caches": [
+  {"key": "cook-base-v2-a", "ref": "refs/heads/main", "size_in_bytes": 6390000000},
+  {"key": "cook-delta-v2-a-gdeadbeef", "ref": "refs/heads/main", "size_in_bytes": 3230000000},
+  {"key": "setup-soldr-buildcache-a", "ref": "refs/pull/9/merge", "size_in_bytes": 1400000000}
+ ]}

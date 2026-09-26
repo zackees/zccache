@@ -14,7 +14,15 @@ Fails when:
   ``save-cache`` unset or ``auto`` means "no saves on pull_request".  On any
   other ref only ``save-cache: false`` or an expression that is false on
   ``pull_request`` counts.  ``save-cache: true`` must be justified in
-  ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``).
+  ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``);
+* a cache-enabled setup-soldr step does not set ``cook-delta: false`` on a
+  ref listed in ``COOK_DELTA_REFS``, unless the job is listed in
+  ``JUSTIFIED_COOK_DELTA``.  The cook-delta layer saves one
+  ``cook-delta-v2-*`` generation per commit and nothing prunes it
+  (zackees/setup-soldr#528); cook bases stay on.
+
+The repository-wide cache total is checked separately, online, by
+``ci/check_cache_budget.py``.
 
 Usage: ``uv run --no-project --with pyyaml python ci/check_cache_footprint.py``
 """
@@ -44,9 +52,20 @@ JUSTIFIED_SUFFIXES: dict[str, str] = {
 # with `auto` (the default) skipping durable saves on pull_request
 # (zackees/setup-soldr#527).  Add the new ref on each pin bump.
 SAVE_CACHE_REFS: dict[str, str] = {
-    "dfbe9627f6cb0226716b61625b99a58949162720": "setup-soldr v0.9.79",
+    "4df8db93438594f50505574d9dc8117505d33362": "setup-soldr v0.9.80",
+    "dfbe9627f6cb0226716b61625b99a58949162720": "setup-soldr dfbe962 (#532)",
     "fabebf4ac3867b0008576797d566db0cb18d43c3": "setup-soldr v0.9.78",
 }
+
+# setup-soldr refs whose main action honors `cook-delta: true|false`
+# (zackees/setup-soldr#528).  Add the new ref on each pin bump.
+COOK_DELTA_REFS: dict[str, str] = {
+    "4df8db93438594f50505574d9dc8117505d33362": "setup-soldr v0.9.80",
+}
+
+# `workflow.yml:job` (or `actions/<name>:steps`) -> why that step may keep
+# the per-commit cook-delta layer.  None today.
+JUSTIFIED_COOK_DELTA: dict[str, str] = {}
 
 # `workflow.yml:job` -> why that job must save on pull_request (e.g. it seeds
 # a cache a later job in the same run restores).  None today.
@@ -211,6 +230,24 @@ def check(root: Path = ROOT) -> list[str]:
             f"{s.where} can save caches on pull_request; pin setup-soldr "
             "v0.9.78+ (SAVE_CACHE_REFS) with save-cache: auto"
         )
+    for s in cached:
+        if not s.main_action:
+            continue
+        job = s.where.rsplit("#", 1)[0]
+        if job in JUSTIFIED_COOK_DELTA:
+            continue
+        value = str(s.inputs.get("cook-delta", "")).strip().lower()
+        if value != "false":
+            errors.append(
+                f"{s.where} does not set cook-delta: false; the per-commit "
+                "cook-delta layer is disabled (setup-soldr#528) unless justified "
+                "in JUSTIFIED_COOK_DELTA"
+            )
+        elif s.ref not in COOK_DELTA_REFS:
+            errors.append(
+                f"{s.where} sets cook-delta: false on setup-soldr {s.ref}, which "
+                "does not honor it; pin a ref listed in COOK_DELTA_REFS"
+            )
     return errors
 
 

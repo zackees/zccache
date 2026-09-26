@@ -1,0 +1,2 @@
+{"usage": {"full_name": "zackees/zccache", "active_caches_size_in_bytes": 7400000000, "active_caches_count": 1},
+ "caches": [{"key": "cook-base-v2-a", "ref": "refs/heads/main", "size_in_bytes": 7400000000}]}
