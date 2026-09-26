@@ -669,6 +669,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     let total_ns = compile_start.elapsed().as_nanos() as u64;
     state.profiler.record_miss(&MissPhases {
         compiler_exec_ns,
+        compiler_process_ns,
         include_scan_ns,
         hash_all_ns,
         artifact_store_ns,

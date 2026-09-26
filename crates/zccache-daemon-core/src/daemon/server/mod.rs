@@ -234,6 +234,8 @@ use handle_link::handle_link_ephemeral;
 use handle_release_worktree_handles::handle_release_worktree_handles;
 use in_flight::*;
 use keys::*;
+#[doc(hidden)]
+pub use lifecycle::ProfileHandle;
 use lifecycle::*;
 use link_helpers::*;
 #[cfg(test)]

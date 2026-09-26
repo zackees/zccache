@@ -25,6 +25,7 @@ mod ignored_input_freshness;
 mod index_writer_gone;
 mod link_cache;
 mod metadata_deferred;
+mod miss_overhead_budget;
 mod multi_restart_context_key;
 mod pack;
 mod path_remap;

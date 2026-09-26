@@ -4080,6 +4080,7 @@ dependencies = [
  "bincode",
  "dashmap",
  "kernal-api",
+ "memchr",
  "rayon",
  "serde",
  "serde_json",

@@ -60,6 +60,7 @@ arc-swap = "1"
 clang = { version = "2", features = ["runtime"] }
 tempfile = "3"
 rayon = "1"
+memchr = "2"
 bytes = "1"
 prost = "0.14"
 prost-build = "0.14"
