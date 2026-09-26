@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from shutil import which
 
+from ci import check_kernal_api_baseline
 from ci.env import clean_env
 from ci.release_checks import ReleaseCheckError, validate_release_metadata
 from ci.soldr import cargo_command, rust_tool_command, self_build_env
@@ -339,6 +340,16 @@ def main():
         validate_release_metadata()
     except ReleaseCheckError as e:
         print(str(e), file=sys.stderr)
+        return 1
+
+    # The kernal-api inventory guard (CI's "Check kernal-api migration
+    # inventory" step) only parses TOML, so run it here too: a direct
+    # running-process dependency (#1518) then fails `./lint` and the Stop
+    # hook's `ci.lint --fix` before it ever reaches CI.
+    inventory_errors = check_kernal_api_baseline.check()
+    if inventory_errors:
+        print("kernal-api migration inventory errors:", file=sys.stderr)
+        print("\n".join(f"- {error}" for error in inventory_errors), file=sys.stderr)
         return 1
 
     args = sys.argv[1:]

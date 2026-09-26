@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from ci import lint
 
 
@@ -139,3 +141,37 @@ def test_ensure_dylint_aliases_honors_configured_target_dir(tmp_path, monkeypatc
     library.write_bytes(b"updated dylint")
     assert lint.ensure_dylint_aliases()
     assert alias.read_bytes() == b"updated dylint"
+
+
+def _fail_if_cargo_runs(*_args, **_kwargs):
+    raise AssertionError("the dependency guard must fail before any cargo command")
+
+
+@pytest.mark.parametrize("argv", [[], ["--fix"]], ids=["lint", "stop-hook-fix"])
+def test_lint_rejects_a_forbidden_dependency_before_ci(monkeypatch, capsys, argv):
+    # #1518: a direct running-process dependency must fail locally (./lint and
+    # the Stop hook's `ci.lint --fix`), not first in CI.
+    violation = (
+        "forbidden direct dependency: crates/x/Cargo.toml: [dependencies] "
+        "running-process -> running-process (reach it only through kernal-api, #1518)"
+    )
+    monkeypatch.setattr(lint, "validate_release_metadata", lambda: None)
+    monkeypatch.setattr(lint.check_kernal_api_baseline, "check", lambda: [violation])
+    monkeypatch.setattr(lint, "run_cmd", _fail_if_cargo_runs)
+    monkeypatch.setattr(lint.sys, "argv", ["lint", *argv])
+
+    assert lint.main() == 1
+    assert violation in capsys.readouterr().err
+
+
+def test_lint_continues_to_cargo_when_the_dependency_guard_is_clean(monkeypatch):
+    monkeypatch.setattr(lint, "validate_release_metadata", lambda: None)
+    monkeypatch.setattr(lint.check_kernal_api_baseline, "check", lambda: [])
+    ran = []
+    monkeypatch.setattr(
+        lint, "run_cmd", lambda cmd: ran.append(cmd) or SimpleNamespace(returncode=0)
+    )
+    monkeypatch.setattr(lint.sys, "argv", ["lint", "--fix"])
+
+    assert lint.main() == 0
+    assert ran, "a clean guard must fall through to fmt and clippy"
