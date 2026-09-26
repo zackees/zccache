@@ -1016,3 +1016,7 @@ mod tests;
 #[cfg(test)]
 #[path = "embedded/admission_tests.rs"]
 mod admission_tests;
+
+#[cfg(test)]
+#[path = "embedded/metadata_persist_tests.rs"]
+mod metadata_persist_tests;

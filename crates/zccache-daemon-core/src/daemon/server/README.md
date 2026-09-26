@@ -8,6 +8,7 @@ Topic-focused submodules:
 
 - `lifecycle.rs` — `DaemonServer::{bind, bind_with_cache_dir}`, `new_shared_state`, accessors, test seams
 - `embedded.rs` — `EmbeddedDaemon` (in-process host integration): construction, background cache loads, compile entrypoint, flush/shutdown
+- `embedded_bringup.rs` — timed embedded bring-up phases, the `embedded_bringup` lifecycle record, and the post-readiness depgraph load (#1652)
 - `loaders.rs` — deferred cache-load handles (`DepGraphSetter`, the four `*Loader`s) + the `DaemonServer` factory methods that hand them out (bind-first / load-in-background, #640/#784)
 - `index_reconcile.rs` — startup rebuild of an unreadable `index.bin` from surviving staged-v2 payloads, under a wall-clock budget (#1157); emits `index_reconciled`
 - `run.rs` — `DaemonServer::run` main loop + watcher pipeline initializer

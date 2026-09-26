@@ -156,7 +156,11 @@ impl MetadataCache {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "metadata.bin".into());
-        let tmp = path.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
+        // A periodic snapshot can overlap a flush in the same process
+        // (#1652), so the temp name must be unique per write, not per pid.
+        static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_file_name(format!(".{name}.tmp-{}-{seq}", std::process::id()));
 
         let result = write_atomic_durable(&tmp, path, &bytes);
         if result.is_err() {

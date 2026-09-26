@@ -492,6 +492,22 @@ Embedded service lifecycle is explicit:
 7. zccache joins maintenance tasks, drains queued writes, and reports every
    failed or timed-out phase through the detailed shutdown report.
 
+### Bring-up and warm state (#1652)
+
+`ZccacheService::start` restores the artifact index, `metadata.bin`, the
+compiler-hash cache and the system-include cache, then returns. Each phase
+logs `phase` + `elapsed_ns`, and one `embedded_bringup` lifecycle event
+carries `ready_ns` and `phases_ns`, so a slow start is attributable from the
+log alone. The depgraph, which grows with every context the host ever
+compiled, loads after readiness: status and ping answer at once, compiles wait
+for it (up to 60 s, then proceed as misses), and `embedded_depgraph_loaded`
+records its duration. A `flush()` issued before it installs waits for it rather
+than overwriting the on-disk graph with the empty default; shutdown joins it.
+
+`metadata.bin` is snapshotted on the depgraph save cadence (a batch of new
+contexts, or the save interval), not only by flush/shutdown/drop, so a host
+that exits without shutting the service down still restarts warm.
+
 Cancellation must be cooperative and observable. A cancelled build should
 produce a terminal audit event with enough detail to distinguish:
 

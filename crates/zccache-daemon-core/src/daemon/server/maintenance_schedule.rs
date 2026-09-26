@@ -428,6 +428,11 @@ impl MaintenanceSchedule {
                             return;
                         }
                         waited += tick;
+                        // #1652: never persist the empty default graph over the
+                        // on-disk one while the startup load is still running.
+                        if !state.dep_graph_load_complete.load(Ordering::Acquire) {
+                            continue;
+                        }
                         let contexts = state.dep_graph.load().stats().context_count;
                         let decision =
                             depgraph_save_due(waited, interval, contexts, last_saved_contexts);
@@ -453,6 +458,7 @@ impl MaintenanceSchedule {
                                 state.dep_graph_persisted.store(true, Ordering::Release);
                                 last_saved_contexts = saved;
                                 tracing::info!(contexts = saved, reason, "depgraph save");
+                                snapshot_metadata(&state, runtime_handle.as_ref()).await;
                             }
                             // zccache#1661: a failed save is logged and the
                             // loop keeps ticking. The next due tick retries;
@@ -577,6 +583,40 @@ where
     F: FnOnce(&crate::depgraph::DepGraph) -> T + Send + 'static,
 {
     launch_maintenance_blocking(runtime_handle, move || state.with_depgraph_snapshot(save))
+}
+
+/// Snapshot `metadata.bin` on the depgraph save cadence (#1652).
+///
+/// Flush, shutdown and drop were the only writers, so a host that exits
+/// without them restarted with an empty metadata cache every time. Gated on
+/// the startup load like the shutdown save, so a partial in-memory cache never
+/// replaces a complete on-disk snapshot. A failure only costs warm-up speed,
+/// so it is logged and the next tick retries.
+async fn snapshot_metadata(
+    state: &Arc<SharedState>,
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+) {
+    if !state.metadata_cache_loaded.load(Ordering::Acquire) {
+        return;
+    }
+    let snapshot_state = Arc::clone(state);
+    let saved = launch_maintenance_blocking(runtime_handle, move || {
+        let started = std::time::Instant::now();
+        snapshot_state
+            .cache_system
+            .metadata()
+            .save_to_disk(snapshot_state.metadata_path.as_path())
+            .map(|()| started.elapsed().as_nanos() as u64)
+    })
+    .await;
+    match saved {
+        Ok(Ok(elapsed_ns)) => tracing::debug!(elapsed_ns, "periodic metadata snapshot"),
+        Ok(Err(error)) => tracing::warn!(
+            path = %state.metadata_path.display(),
+            "periodic metadata snapshot failed; will retry next tick: {error}"
+        ),
+        Err(error) => tracing::warn!("periodic metadata snapshot task was cancelled: {error}"),
+    }
 }
 
 /// Re-raise a panic from the blocking periodic save inside the loop task, so
