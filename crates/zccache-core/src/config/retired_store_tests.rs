@@ -55,7 +55,7 @@ fn removes_fresh_unlinked_artifacts_eagerly_only_under_pressure_and_spares_linke
         std::fs::hard_link(&cached, target.join(format!("linked-{i}.bin"))).unwrap();
     }
 
-    let routine = sweep_retired_version_store(
+    let routine = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -69,7 +69,7 @@ fn removes_fresh_unlinked_artifacts_eagerly_only_under_pressure_and_spares_linke
         assert!(store.join(format!("unlinked-{i}.bin")).exists());
     }
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -121,7 +121,7 @@ fn expires_aged_linked_artifacts_then_removes_the_empty_store() {
         linked_bytes += contents.len() as u64;
     }
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -165,7 +165,7 @@ fn a_held_writer_lock_protects_the_whole_store_until_released() {
         .unwrap();
     let held = kernal_api::platform::fs::try_lock_exclusive_owned(lock_file).unwrap();
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -177,7 +177,7 @@ fn a_held_writer_lock_protects_the_whole_store_until_released() {
 
     drop(held);
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -210,7 +210,7 @@ fn a_fresh_sibling_write_does_not_protect_an_unrelated_aged_file() {
     std::fs::hard_link(&cached, target.join("linked.bin")).unwrap();
     age_file(&cached, 10 * DAY);
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -238,7 +238,7 @@ fn sweep_in_skips_keep_and_non_version_siblings() {
         write_file(&top.join(name).join("artifact.bin"), b"artifact");
     }
 
-    let report = sweep_retired_version_stores_in(
+    let report = sweep_retired_version_stores_in_with_mode(
         top,
         "v1.1.0",
         MAX_AGE,
@@ -287,7 +287,7 @@ fn a_symlink_inside_the_store_is_unlinked_but_never_followed() {
     std::os::unix::fs::symlink(&outside_file, &file_link).unwrap();
     std::os::unix::fs::symlink(&outside_dir, &dir_link).unwrap();
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -332,7 +332,7 @@ fn sweep_in_accepts_a_bare_current_version() {
     write_file(&top.join("v2.0.0/artifact.bin"), b"current");
     write_file(&top.join("v1.0.0/artifact.bin"), b"retired");
 
-    let report = sweep_retired_version_stores_in(
+    let report = sweep_retired_version_stores_in_with_mode(
         top,
         "2.0.0",
         MAX_AGE,
@@ -349,7 +349,7 @@ fn sweep_in_accepts_a_bare_current_version() {
 fn sweep_in_is_noop_on_missing_top_level() {
     let tmp = tempfile::tempdir().unwrap();
     let missing = tmp.path().join("does-not-exist");
-    let report = sweep_retired_version_stores_in(
+    let report = sweep_retired_version_stores_in_with_mode(
         &missing,
         "v1.0.0",
         MAX_AGE,
@@ -364,7 +364,7 @@ fn refuses_a_non_directory_store() {
     let tmp = tempfile::tempdir().unwrap();
     let not_a_dir = tmp.path().join("v1.0.0");
     write_file(&not_a_dir, b"not a directory");
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &not_a_dir,
         MAX_AGE,
         SystemTime::now(),
@@ -386,7 +386,7 @@ fn refuses_a_symlinked_store() {
     #[cfg(windows)]
     std::os::windows::fs::symlink_dir(&real, &store).unwrap();
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -444,7 +444,7 @@ fn eager_removal_ignores_freshness_only_under_pressure() {
     // filesystem's write-then-read mtime granularity.
     age_file(&fresh_unlinked, HOUR);
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -453,7 +453,7 @@ fn eager_removal_ignores_freshness_only_under_pressure() {
     assert_eq!(report.files_removed, 0);
     assert!(fresh_unlinked.exists());
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -475,7 +475,7 @@ fn a_to_b_to_a_within_grace_keeps_store_intact() {
     write_file(&aged, b"payload");
     age_file(&aged, 10 * DAY);
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -499,8 +499,13 @@ fn newer_store_is_never_swept_by_older_daemon() {
     age_file(&file, 10 * DAY);
 
     for mode in [RetiredSweepMode::Routine, RetiredSweepMode::Pressure] {
-        let report =
-            sweep_retired_version_stores_in(top, "v1.0.0", MAX_AGE, SystemTime::now(), mode);
+        let report = sweep_retired_version_stores_in_with_mode(
+            top,
+            "v1.0.0",
+            MAX_AGE,
+            SystemTime::now(),
+            mode,
+        );
         assert_eq!(report.stores_scanned, 0, "{mode:?}");
         assert!(file.exists(), "{mode:?}");
     }
@@ -515,7 +520,7 @@ fn recently_used_unlinked_entry_survives_routine_sweep() {
     let fresh = store.join("entry.bin");
     write_file(&fresh, b"payload");
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -539,7 +544,7 @@ fn aged_store_without_marker_is_reclaimed() {
     touch_store_activity_marker(&store).unwrap();
     age_file(&store.join(LAST_ACTIVE_MARKER_FILE), 10 * DAY);
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -584,7 +589,7 @@ fn issue_1673_reflinked_entry_credits_no_reclaimed_bytes() {
     }
     age_file(&cached, 30 * DAY);
 
-    let report = sweep_retired_version_store(
+    let report = sweep_retired_version_store_with_mode(
         &store,
         MAX_AGE,
         SystemTime::now(),
@@ -677,5 +682,38 @@ fn issue_1687_removal_frees_space_truth_table() {
     assert!(
         !probed,
         "the sharing probe must not run for a multi-linked file"
+    );
+}
+
+/// #1601: the pre-1.14.14 signatures stay callable (soldr uses them) and
+/// behave as a routine sweep.
+#[test]
+fn legacy_signatures_run_a_routine_sweep() {
+    let legacy: fn(&Path, Duration, SystemTime) -> RetiredStoreSweepReport =
+        sweep_retired_version_store;
+    let legacy_in: fn(&Path, &str, Duration, SystemTime) -> RetiredStoreSweepReport =
+        sweep_retired_version_stores_in;
+    let top = tempfile::tempdir().unwrap();
+    let store = top.path().join("v0.0.1");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("fresh.bin"), b"fresh").unwrap();
+    let now = SystemTime::now();
+    assert_eq!(
+        legacy(&store, MAX_AGE, now),
+        sweep_retired_version_store_with_mode(&store, MAX_AGE, now, RetiredSweepMode::Routine)
+    );
+    assert_eq!(
+        legacy_in(top.path(), "v1.0.0", MAX_AGE, now),
+        sweep_retired_version_stores_in_with_mode(
+            top.path(),
+            "v1.0.0",
+            MAX_AGE,
+            now,
+            RetiredSweepMode::Routine
+        )
+    );
+    assert!(
+        store.join("fresh.bin").exists(),
+        "a routine sweep keeps fresh files"
     );
 }
