@@ -28,6 +28,9 @@ re-exports `*` from each submodule.
   (`break_output_hardlink_before_compile`, `hard_link_count`,
   `same_file`, Windows `get_file_id`).
 - **[`fs_caps.rs`](fs_caps.rs)** — Cached per-volume capability probes.
+- **[`delivery_mode.rs`](delivery_mode.rs)** — `ZCCACHE_MODE` (#1683): the pure
+  `plan_tiers` decision, per-request mode resolution, the service-wide default,
+  and the embedded setter; tests in `delivery_mode_tests.rs`.
 - **[`link_registry.rs`](link_registry.rs)** — Hardlink ledger and suspect verification.
 - **[`mtime.rs`](mtime.rs)** — Mtime preservation + sibling-floor refinement
   (`touch_mtime`, `floor_materialized_outputs_to_input_max`,

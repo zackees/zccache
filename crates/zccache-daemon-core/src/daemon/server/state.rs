@@ -641,6 +641,10 @@ pub(super) struct SharedState {
     /// Keys retain the `zccache-exec-probe-v1` derivation contract; values
     /// live in a dedicated namespace under this daemon's normal cache root.
     pub(super) exec_store: KvStore,
+    /// Service-wide `ZCCACHE_MODE` default (#1683): an embedded host's
+    /// environment at start or its setting; always unset for a standalone
+    /// daemon. A request's forwarded `ZCCACHE_MODE` overrides it.
+    pub(super) materialization_mode_default: MaterializationModeDefault,
 }
 
 impl SharedState {

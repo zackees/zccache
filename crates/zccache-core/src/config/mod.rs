@@ -9,6 +9,7 @@
 
 pub mod cleanup;
 mod env_policy;
+mod materialization_mode;
 pub mod namespace;
 pub mod paths;
 pub mod resolve;
@@ -75,6 +76,11 @@ pub use env_policy::{
     cache_test_binaries_enabled, daemon_spawn_disabled, no_spawn_error, owned_flag_enabled,
     probe_bypass_enabled, zccache_disabled, EnvironmentVariableDeclaration,
     EnvironmentVariableKind, CACHE_TEST_BINS_ENV, ENVIRONMENT_VARIABLES, NO_SPAWN_ENV,
+};
+pub use materialization_mode::{
+    materialization_mode_from_client_env, materialization_mode_from_env,
+    parse_materialization_mode, InvalidMaterializationMode, MaterializationMode,
+    MATERIALIZATION_MODE_ENV,
 };
 pub use namespace::{
     daemon_namespace, daemon_namespace_label, sanitize_daemon_namespace, sanitize_ipc_component,

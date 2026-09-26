@@ -138,6 +138,7 @@ async fn perf_staged_rust_hit_uses_provisional_payload_before_durable_publicatio
             // alternate rustc context hit branch while publication is blocked.
             rustc_metadata_compat_outputs: Some(requested_outputs),
             rustc_archive_hardlink_eligible: Some(false),
+            materialization_mode: MaterializationMode::Auto,
             phases: super::super::cached_hit::CachedHitPhases::request_cache(0, 0),
         },
     )

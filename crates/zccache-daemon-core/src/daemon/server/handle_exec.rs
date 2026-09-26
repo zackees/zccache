@@ -297,6 +297,7 @@ pub(super) async fn handle_generic_tool_exec(
     };
     let full_hex = full_key.to_hex();
 
+    let materialization_mode = state.materialization_mode(Some(&env));
     let bypass = non_deterministic || matches!(cache_policy, ExecCachePolicy::Bypass);
     let lookup_allowed = !bypass
         && matches!(
@@ -307,8 +308,15 @@ pub(super) async fn handle_generic_tool_exec(
 
     // 7. Cache lookup (Normal + ReadOnly) under the full key.
     if lookup_allowed {
-        if let Some(resp) =
-            try_exec_cache_hit(state, &full_hex, cwd, output_files, output_streams).await
+        if let Some(resp) = try_exec_cache_hit(
+            state,
+            &full_hex,
+            cwd,
+            output_files,
+            output_streams,
+            materialization_mode,
+        )
+        .await
         {
             return resp;
         }
@@ -323,8 +331,15 @@ pub(super) async fn handle_generic_tool_exec(
         None
     };
     if let Some(InFlight::WokenByPeer) = coalesce_guard.as_ref().map(|g| g.outcome()) {
-        if let Some(resp) =
-            try_exec_cache_hit(state, &full_hex, cwd, output_files, output_streams).await
+        if let Some(resp) = try_exec_cache_hit(
+            state,
+            &full_hex,
+            cwd,
+            output_files,
+            output_streams,
+            materialization_mode,
+        )
+        .await
         {
             return resp;
         }
@@ -764,6 +779,7 @@ async fn try_exec_cache_hit(
     cwd: &Path,
     output_files: &[NormalizedPath],
     output_streams: ExecOutputStreams,
+    mode: MaterializationMode,
 ) -> Option<Response> {
     let work_state = Arc::clone(state);
     let key_hex = key_hex.to_owned();
@@ -771,7 +787,14 @@ async fn try_exec_cache_hit(
     let output_files = output_files.to_vec();
     match state
         .launch_blocking(move || {
-            try_exec_cache_hit_blocking(&work_state, &key_hex, &cwd, &output_files, output_streams)
+            try_exec_cache_hit_blocking(
+                &work_state,
+                &key_hex,
+                &cwd,
+                &output_files,
+                output_streams,
+                mode,
+            )
         })
         .await
     {
@@ -789,6 +812,7 @@ fn try_exec_cache_hit_blocking(
     cwd: &Path,
     output_files: &[NormalizedPath],
     output_streams: ExecOutputStreams,
+    mode: MaterializationMode,
 ) -> Option<Response> {
     let entry = lookup_artifact_with_disk_fallback(state, key_hex)?;
 
@@ -828,7 +852,7 @@ fn try_exec_cache_hit_blocking(
     });
     let materialize_started = std::time::Instant::now();
     payloads.record_staged_pre_materialization(&state.profiler.staged);
-    let observed = write_payloads_par_observed(&targets, &payloads_for_write);
+    let observed = write_payloads_par_observed(&targets, &payloads_for_write, mode);
     payloads.record_staged_lock_timings(&state.profiler.staged);
     drop(payloads);
     if let Err(failure) = &observed {

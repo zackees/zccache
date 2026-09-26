@@ -14,6 +14,7 @@ use super::fingerprint::FingerprintManager;
 use super::process::CompilePriority;
 use super::stats::{HitPhases, MissPhases, PhaseProfiler, StatsCollector};
 use crate::artifact::{ArtifactIndex, ArtifactStore, ArtifactVerdict, KvError, KvStore};
+use crate::core::config::MaterializationMode;
 use crate::core::NormalizedPath;
 use crate::depgraph::{
     CompileContext, ContextKey, DepGraph, DepfileStrategy, SessionId, SessionManager,

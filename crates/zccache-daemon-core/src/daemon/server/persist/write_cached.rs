@@ -136,14 +136,39 @@ fn materialize_cached_file_observed(
     delivery: crate::compiler::DeliveryPolicy,
     force_observation: bool,
 ) -> std::io::Result<StagedMaterializationStats> {
+    materialize_cached_file_with_mode(
+        out_path,
+        cache_file,
+        delivery,
+        MaterializationMode::Auto,
+        force_observation,
+    )
+}
+
+/// Test entry: deliver one verified cache file under an explicit mode.
+#[cfg(test)]
+pub(in crate::daemon::server) fn materialize_cached_file_with_mode(
+    out_path: &Path,
+    cache_file: &Path,
+    delivery: crate::compiler::DeliveryPolicy,
+    mode: MaterializationMode,
+    force_observation: bool,
+) -> std::io::Result<StagedMaterializationStats> {
     verify_registered_blob(cache_file)?;
-    materialize_verified_cached_file_observed(out_path, cache_file, delivery, force_observation)
+    materialize_verified_cached_file_observed(
+        out_path,
+        cache_file,
+        delivery,
+        mode,
+        force_observation,
+    )
 }
 
 fn materialize_verified_cached_file_observed(
     out_path: &Path,
     cache_file: &Path,
     delivery: crate::compiler::DeliveryPolicy,
+    mode: MaterializationMode,
     force_observation: bool,
 ) -> std::io::Result<StagedMaterializationStats> {
     // A legacy cache-file hit can restore a Cargo build-script executable. Hold
@@ -153,7 +178,13 @@ fn materialize_verified_cached_file_observed(
     // that lock is waited out once the guard is released (soldr#3350).
     let result = {
         let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
-        materialize_verified_cached_file_tiers(out_path, cache_file, delivery, force_observation)
+        materialize_verified_cached_file_tiers(
+            out_path,
+            cache_file,
+            delivery,
+            mode,
+            force_observation,
+        )
     };
     if result.is_ok() {
         crate::daemon::spawn_exclusion::await_publishable(out_path);
@@ -165,6 +196,7 @@ fn materialize_verified_cached_file_tiers(
     out_path: &Path,
     cache_file: &Path,
     delivery: crate::compiler::DeliveryPolicy,
+    mode: MaterializationMode,
     force_observation: bool,
 ) -> std::io::Result<StagedMaterializationStats> {
     let staged = is_staged_artifact_path(cache_file);
@@ -181,8 +213,12 @@ fn materialize_verified_cached_file_tiers(
             StagedMaterializationStats::default()
         }
     };
-    let hardlink_allowed =
+    let hardlink_eligible =
         !staged || matches!(delivery, crate::compiler::DeliveryPolicy::HardlinkEligible);
+    // The mode can only demote: a same-inode output left by an earlier LINK
+    // or AUTO delivery is detached below when this mode forbids sharing, so
+    // switching modes migrates existing outputs on their next hit (#1683).
+    let hardlink_allowed = hardlink_permitted(mode, hardlink_eligible);
     if crate::platform::fs::identity::same_file(out_path, cache_file).unwrap_or(false) {
         if !hardlink_allowed {
             let bytes = std::fs::metadata(cache_file)?.len();
@@ -190,6 +226,10 @@ fn materialize_verified_cached_file_tiers(
                 &std::fs::metadata(cache_file)?,
             );
             detach_with_floored_mtime(out_path, cache_file, floor)?;
+            // The detached output is a new inode: apply the sibling floor
+            // exactly like the copy tier, or a mode switch (LINK -> COPY)
+            // could leave it older than its siblings (#466/#467).
+            touch_mtime(out_path);
             return Ok(observed(0, 0, 1, bytes));
         }
         crate::platform::fs::permissions::set_readonly(cache_file, readonly_enabled())?;
@@ -204,7 +244,10 @@ fn materialize_verified_cached_file_tiers(
         return Ok(observed(0, 1, 0, 0));
     }
     remove_materialized_output(out_path)?;
-    let caps = fs_caps(cache_file, out_path);
+    let caps = delivery_caps(mode, cache_file, out_path);
+    // The reflink decision never depends on the link count, so a successful
+    // clone costs no link-count stat.
+    let try_reflink = plan_tiers(mode, hardlink_eligible, caps, 0).reflink;
     let reflink_allowed = {
         #[cfg(test)]
         {
@@ -216,13 +259,16 @@ fn materialize_verified_cached_file_tiers(
         }
     };
     if reflink_allowed
-        && caps.reflink
+        && try_reflink
         && kernal_api::platform::fs::reflink_file(cache_file, out_path).is_ok()
     {
         crate::platform::fs::permissions::make_writable(out_path)?;
         restore_cache_mtime(cache_file, out_path)?;
         touch_mtime(out_path);
         return Ok(observed(1, 0, 0, 0));
+    }
+    if mode == MaterializationMode::Reflink {
+        note_reflink_fallback(cache_file, out_path);
     }
     // A failed link-count query must not be read as "at capacity" — that
     // silently defeats the hardlink tier (falls through to a full copy)
@@ -231,11 +277,12 @@ fn materialize_verified_cached_file_tiers(
     // call sites in this module; a genuinely-too-many-links file still
     // fails the real `std::fs::hard_link` call below, which already has
     // a graceful copy fallback.
-    let hardlink_candidate = hardlink_allowed
-        && hardlink_below_limit(
-            caps,
-            crate::platform::fs::links::hard_link_count(cache_file).unwrap_or_default(),
-        );
+    let link_count = if hardlink_allowed && caps.hardlink {
+        crate::platform::fs::links::hard_link_count(cache_file).unwrap_or_default()
+    } else {
+        0
+    };
+    let hardlink_candidate = plan_tiers(mode, hardlink_eligible, caps, link_count).hardlink;
     #[cfg(test)]
     let hardlink_candidate = hardlink_candidate
         && inject_staged_fault(out_path, StagedFaultPoint::MaterializeHardlink).is_ok();
@@ -426,6 +473,7 @@ pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
     out_path: &Path,
     payload: &CachedPayload,
     delivery: crate::compiler::DeliveryPolicy,
+    mode: MaterializationMode,
 ) -> MaterializationResult<StagedMaterializationStats> {
     match payload {
         CachedPayload::Bytes(data) => {
@@ -440,7 +488,7 @@ pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
         }
         CachedPayload::File(path) => {
             verify_registered_blob(path).map_err(|error| classify_cache_read_error(path, error))?;
-            materialize_verified_cached_file_observed(out_path, path, delivery, false)
+            materialize_verified_cached_file_observed(out_path, path, delivery, mode, false)
                 .map_err(|error| classify_file_materialization_error(out_path, path, error))
         }
     }
@@ -451,6 +499,7 @@ pub(in crate::daemon::server) const PAR_WRITE_THRESHOLD: usize = 4;
 pub(in crate::daemon::server) fn write_payloads_par_observed<P>(
     targets: &[P],
     payloads: &[CachedPayload],
+    mode: MaterializationMode,
 ) -> MaterializationResult<StagedMaterializationStats>
 where
     P: AsRef<Path> + Sync,
@@ -469,6 +518,7 @@ where
             out,
             payload,
             crate::compiler::DeliveryPolicy::IndependentOnly,
+            mode,
         )
     };
     if targets.len() < PAR_WRITE_THRESHOLD {
@@ -519,6 +569,7 @@ where
         payloads,
         floor_paths,
         policies,
+        MaterializationMode::Auto,
     )
     .is_ok()
 }
@@ -528,6 +579,7 @@ pub(in crate::daemon::server) fn write_payloads_par_with_mtime_floor_and_policie
     payloads: &[CachedPayload],
     floor_paths: &[R],
     policies: &[crate::compiler::DeliveryPolicy],
+    mode: MaterializationMode,
 ) -> MaterializationResult<StagedMaterializationStats>
 where
     P: AsRef<Path> + Sync,
@@ -538,6 +590,7 @@ where
         payloads,
         floor_paths,
         policies,
+        mode,
         false,
     )
 }
@@ -551,6 +604,7 @@ pub(in crate::daemon::server) fn write_provisional_payloads_par_with_mtime_floor
     payloads: &[CachedPayload],
     floor_paths: &[R],
     policies: &[crate::compiler::DeliveryPolicy],
+    mode: MaterializationMode,
 ) -> MaterializationResult<StagedMaterializationStats>
 where
     P: AsRef<Path> + Sync,
@@ -561,6 +615,7 @@ where
         payloads,
         floor_paths,
         policies,
+        mode,
         true,
     )
 }
@@ -570,6 +625,7 @@ fn write_payloads_par_with_mtime_floor_and_policies_observed_impl<P, R>(
     payloads: &[CachedPayload],
     floor_paths: &[R],
     policies: &[crate::compiler::DeliveryPolicy],
+    mode: MaterializationMode,
     provisional_staged: bool,
 ) -> MaterializationResult<StagedMaterializationStats>
 where
@@ -603,18 +659,19 @@ where
         if provisional_staged {
             match payload {
                 CachedPayload::File(path) => {
-                    crate::daemon::server::persist::materialize_independent_with_stats(
+                    crate::daemon::server::persist::materialize_independent_with_mode(
                         path.as_path(),
                         out,
+                        mode,
                     )
                     .map_err(|error| classify_file_materialization_error(out, path, error))
                 }
                 CachedPayload::Bytes(_) => {
-                    write_cached_payload_with_policy_stats(out, payload, policy)
+                    write_cached_payload_with_policy_stats(out, payload, policy, mode)
                 }
             }
         } else {
-            write_cached_payload_with_policy_stats(out, payload, policy)
+            write_cached_payload_with_policy_stats(out, payload, policy, mode)
         }
     };
     let observed = if targets.len() < PAR_WRITE_THRESHOLD {

@@ -19,8 +19,8 @@ pub(crate) use maintenance::{
 };
 mod materialize;
 pub(in crate::daemon::server) use materialize::{
-    materialization_error, materialization_error_progress, materialize_independent_with_stats,
-    StagedMaterializationStats,
+    materialization_error, materialization_error_progress, materialize_independent_with_mode,
+    materialize_independent_with_stats, StagedMaterializationStats,
 };
 mod read_guard;
 use read_guard::validate_key;
@@ -347,8 +347,12 @@ fn remove_uncommitted_generation(pointer: &Path, generation_hex: &str, generatio
     }
 }
 
-fn copy_independent(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
-    let reflink_allowed = {
+fn copy_independent(
+    source: &Path,
+    destination: &Path,
+    try_reflink: bool,
+) -> io::Result<(bool, u64)> {
+    let reflink_allowed = try_reflink && {
         #[cfg(test)]
         {
             fault::inject(destination, StagedFaultPoint::MaterializeReflink).is_ok()
@@ -374,11 +378,21 @@ fn copy_independent(source: &Path, destination: &Path) -> io::Result<(bool, u64)
 }
 
 fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
+    copy_output_with(source, destination, true)
+}
+
+/// Independent delivery: reflink (when `try_reflink`) else a byte copy, then
+/// writable with the source's mtime. `COPY` mode passes `false` (#1683).
+fn copy_output_with(
+    source: &Path,
+    destination: &Path,
+    try_reflink: bool,
+) -> io::Result<(bool, u64)> {
     let source_metadata = fs::metadata(source)?;
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    let result = copy_independent(source, destination);
+    let result = copy_independent(source, destination, try_reflink);
     if result.is_err() {
         let _ = fs::remove_file(destination);
         return result;

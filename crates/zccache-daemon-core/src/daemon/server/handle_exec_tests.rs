@@ -276,6 +276,7 @@ async fn staged_exec_disk_hit_reports_physical_materialization_tier() {
         temp.path(),
         &[NormalizedPath::from("result.bin")],
         ExecOutputStreams::default(),
+        MaterializationMode::Auto,
     )
     .await;
     assert!(matches!(
@@ -343,6 +344,7 @@ async fn exec_hit_response_bytes_come_from_the_materialized_destination() {
         temp.path(),
         &[NormalizedPath::from("result.bin")],
         ExecOutputStreams::default(),
+        MaterializationMode::Auto,
     )
     .await;
 

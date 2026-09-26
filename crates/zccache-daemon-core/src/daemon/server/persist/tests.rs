@@ -228,10 +228,10 @@ fn fs_caps_stays_correct_across_many_distinct_destination_dirs() {
         std::fs::create_dir_all(&dst_dir).unwrap();
         let dst = dst_dir.join("out.rlib");
 
-        let caps = fs_caps(&src, &dst);
+        let caps = fs_caps_raw(&src, &dst);
         // Calling again for the same destination must be idempotent
         // (cache hit or a fresh, consistent re-probe after an eviction).
-        let caps_again = fs_caps(&src, &dst);
+        let caps_again = fs_caps_raw(&src, &dst);
         assert_eq!(
             caps, caps_again,
             "fs_caps must return consistent capabilities for the same destination on repeat calls"

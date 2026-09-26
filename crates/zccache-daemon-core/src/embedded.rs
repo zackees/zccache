@@ -16,6 +16,7 @@ use crate::daemon::server::{
 };
 
 pub use crate::audit::{AuditConfig, AuditContext, AuditEvent};
+pub use crate::core::config::{InvalidMaterializationMode, MaterializationMode};
 pub use crate::daemon::compile_journal::ChildMemory;
 pub use crate::daemon::server::compile_resource_gate::{
     HostAdmissionClassifier, HostAdmissionError, HostAdmissionPermit, HostCompilerRequest,

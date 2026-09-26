@@ -848,7 +848,12 @@ mod tests {
         );
 
         let destination: NormalizedPath = dir.path().join("restored.rlib").into();
-        write_payloads_par_observed(std::slice::from_ref(&destination), &payloads).unwrap();
+        write_payloads_par_observed(
+            std::slice::from_ref(&destination),
+            &payloads,
+            MaterializationMode::Auto,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), bytes);
 
         drop(payloads);
@@ -906,7 +911,12 @@ mod tests {
         );
 
         let destination: NormalizedPath = dir.path().join("restored.rmeta").into();
-        write_payloads_par_observed(std::slice::from_ref(&destination), &payloads).unwrap();
+        write_payloads_par_observed(
+            std::slice::from_ref(&destination),
+            &payloads,
+            MaterializationMode::Auto,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), bytes);
         drop(payloads);
 
