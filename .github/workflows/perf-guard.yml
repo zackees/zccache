@@ -206,6 +206,8 @@ jobs:
           # settled at 0.806x-0.844x while warm hits stayed above 22x. The
           # stable local Docker matrix remains the authoritative timing gate;
           # retain a 0.80x hosted smoke floor for gross cold regressions.
+          # On a runner whose bare run beats the calibration runner's, the
+          # floor keeps its added-time budget (ci/perf_floor.py, #1445).
           uv run --no-project python -m ci.perf_guard --run-benchmarks --language c --test perf_c_zccache_vs_bare \
             --attempts 3 --cold-bare-threshold 0.80 \
             --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
@@ -267,6 +269,8 @@ jobs:
           # Hosted cold-check samples repeatedly settle near 0.80x while warm
           # cache checks remain strongly green. Keep enough headroom for
           # runner variance without masking the 0.335x gross-regression case.
+          # Faster-than-calibration runners keep the added-time budget
+          # (ci/perf_floor.py, #1445).
           uv run --no-project python -m ci.perf_guard --run-benchmarks --language rust --test perf_rustc_zccache_vs_sccache \
             --attempts 3 --cold-bare-threshold 0.75 \
             --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
