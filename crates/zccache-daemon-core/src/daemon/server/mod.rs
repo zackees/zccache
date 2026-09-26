@@ -90,6 +90,7 @@ pub(crate) struct EmbeddedDaemon {
     index_writer_rx: Option<kernal_api::async_engine::UnboundedReceiver<IndexWriterCommand>>,
     index_writer_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     maintenance_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
+    depgraph_maintenance_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     /// Periodic tasks this service started, as reported by
     /// [`maintenance_schedule::MaintenanceSchedule::start`] (#1160). Retained
     /// so the parity guard can assert against a real embedded service rather
@@ -124,6 +125,22 @@ pub(crate) enum FlushStepOutcome {
     Completed,
     Failed(String),
     TimedOut,
+}
+
+impl FlushStepOutcome {
+    /// Merges two outcomes of one step: a timeout dominates, and failures join.
+    pub(crate) fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::TimedOut, _) | (_, Self::TimedOut) => Self::TimedOut,
+            (Self::Completed, Self::Completed) => Self::Completed,
+            (Self::Failed(error), Self::Completed) | (Self::Completed, Self::Failed(error)) => {
+                Self::Failed(error)
+            }
+            (Self::Failed(first), Self::Failed(second)) => {
+                Self::Failed(format!("{first}; {second}"))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

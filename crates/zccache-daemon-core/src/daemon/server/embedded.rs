@@ -125,6 +125,7 @@ impl EmbeddedDaemon {
             index_writer_rx: Some(index_writer_rx),
             index_writer_handle: Mutex::new(None),
             maintenance_handle: Mutex::new(None),
+            depgraph_maintenance_handle: Mutex::new(None),
             maintenance_tasks: Vec::new(),
         };
         daemon
@@ -288,6 +289,7 @@ impl EmbeddedDaemon {
             "embedded maintenance schedule started"
         );
         *self.maintenance_handle.lock().await = started.disk_maintenance;
+        *self.depgraph_maintenance_handle.lock().await = started.depgraph_save;
         self.maintenance_tasks = started.started;
     }
 
@@ -467,10 +469,16 @@ impl EmbeddedDaemon {
         // condition.
         self.state.shutdown.notify_one();
         let handle = self.maintenance_handle.lock().await.take();
-        let outcome = match handle {
+        let disk_outcome = match handle {
             Some(handle) => join_task(handle, "embedded maintenance").await,
             None => FlushStepOutcome::Completed,
         };
+        let depgraph_handle = self.depgraph_maintenance_handle.lock().await.take();
+        let depgraph_outcome = match depgraph_handle {
+            Some(handle) => join_task(handle, "embedded depgraph maintenance").await,
+            None => FlushStepOutcome::Completed,
+        };
+        let outcome = disk_outcome.combine(depgraph_outcome);
         EmbeddedFlushStepReport {
             step: "maintenance_shutdown".to_owned(),
             outcome,
@@ -632,7 +640,9 @@ fn drop_time_checkpoint(state: &SharedState) {
         }
         // zccache#1661: a failed save is logged and the drop carries on to the
         // metadata snapshot; it must never abort the rest of the recovery.
-        match crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path) {
+        match state.with_depgraph_persistence(|| {
+            crate::depgraph::save_to_file(&state.dep_graph.load_full(), &depgraph_path)
+        }) {
             Ok(()) => persisted.push("depgraph"),
             Err(error) => tracing::warn!(
                 path = %depgraph_path.display(),
@@ -754,7 +764,7 @@ async fn flush_embedded_state(
     let depgraph_state = Arc::clone(state);
     steps.push(
         flush_step("depgraph", async move {
-            launch_embedded_blocking(runtime_handle, move || {
+            run_depgraph_save_with(Arc::clone(&depgraph_state), runtime_handle, move || {
                 if let Some(parent) = depgraph_path.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                 }
@@ -902,7 +912,7 @@ mod flush_ownership_tests {
     }
 
     #[tokio::test]
-    async fn host_owned_maintenance_does_not_start_a_duplicate_scheduler() {
+    async fn host_owned_disk_maintenance_still_owns_depgraph_scheduler() {
         let temp = tempfile::tempdir().expect("temp cache");
         let daemon = EmbeddedDaemon::start_with_maintenance(
             crate::ipc::unique_test_endpoint(),
@@ -918,7 +928,11 @@ mod flush_ownership_tests {
 
         assert!(
             daemon.maintenance_handle.lock().await.is_none(),
-            "host ownership must suppress the embedded periodic scheduler"
+            "host ownership must suppress only the disk scheduler"
+        );
+        assert!(
+            daemon.depgraph_maintenance_handle.lock().await.is_some(),
+            "depgraph persistence remains service-owned"
         );
         let report = daemon.shutdown().await;
         assert!(report.is_complete());

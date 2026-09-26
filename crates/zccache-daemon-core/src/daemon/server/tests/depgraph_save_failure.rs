@@ -151,7 +151,8 @@ async fn a_save_after_failures_persists_later_registrations() {
         .register(context(root.path(), "first.c"));
 
     crate::depgraph::inject_save_failures_for_tests(root.path(), 4);
-    MaintenanceSchedule::new(
+    // Held: dropping the started schedule cancels the save loop it owns.
+    let _started = MaintenanceSchedule::new(
         Arc::clone(&state),
         MaintenancePolicy::default(),
         ServiceMode::Embedded,

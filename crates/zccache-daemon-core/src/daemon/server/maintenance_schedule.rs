@@ -44,6 +44,10 @@ pub(super) const TASK_DEPGRAPH_SAVE: &str = "depgraph-save";
 pub(super) const DEPGRAPH_SAVE_BATCH: usize = 32;
 /// How often the batch condition is polled between interval saves.
 pub(super) const DEPGRAPH_SAVE_BATCH_POLL: Duration = Duration::from_secs(5);
+/// How often the save loop checks the latched shutdown flag between ticks.
+/// It polls the flag rather than the shared `Notify` for the reasons on
+/// `wait_for_next_pass_or_shutdown`.
+const DEPGRAPH_SHUTDOWN_POLL: Duration = Duration::from_secs(1);
 
 /// Pure decision core for the save loop: `Some(reason)` when a save is due.
 pub(super) fn depgraph_save_due(
@@ -170,10 +174,14 @@ impl Default for MaintenanceIntervals {
 /// `started` is built by pushing at each spawn site — never derived from
 /// [`MAINTENANCE_TASKS`] — so the parity test compares real behaviour against
 /// the declaration rather than the declaration against itself.
+#[must_use = "dropping it cancels the owned disk-maintenance and depgraph-save loops"]
 pub(super) struct StartedMaintenance {
     pub(super) started: Vec<&'static str>,
     /// The disk-maintenance loop, which both shutdown paths join.
     pub(super) disk_maintenance: Option<kernal_api::async_engine::Task<()>>,
+    /// The supervised depgraph loop, retained so shutdown can await any active
+    /// blocking snapshot before starting the final post-drain save.
+    pub(super) depgraph_save: Option<kernal_api::async_engine::Task<()>>,
 }
 
 pub(super) struct MaintenanceSchedule {
@@ -264,7 +272,8 @@ impl MaintenanceSchedule {
         } else {
             None
         };
-        started.push(self.start_depgraph_save());
+        let depgraph_save = self.start_depgraph_save();
+        started.push(TASK_DEPGRAPH_SAVE);
 
         if self.mode == ServiceMode::Standalone {
             started.push(self.start_legacy_temp_root_cleanup());
@@ -298,6 +307,7 @@ impl MaintenanceSchedule {
         StartedMaintenance {
             started,
             disk_maintenance,
+            depgraph_save: Some(depgraph_save),
         }
     }
 
@@ -383,8 +393,9 @@ impl MaintenanceSchedule {
     /// nothing recording why. #1160b: embedded persisted only inside a
     /// host-driven `flush()`, so a host crash lost the entire delta rather than
     /// one interval of it.
-    fn start_depgraph_save(&self) -> &'static str {
+    fn start_depgraph_save(&self) -> kernal_api::async_engine::Task<()> {
         let state = Arc::clone(&self.state);
+        let runtime_handle = self.runtime_handle.clone();
         let interval = self.intervals.depgraph_save;
         supervise::spawn_supervised(
             TASK_DEPGRAPH_SAVE,
@@ -393,6 +404,7 @@ impl MaintenanceSchedule {
             self.runtime_handle.as_ref(),
             move || {
                 let state = Arc::clone(&state);
+                let runtime_handle = runtime_handle.clone();
                 async move {
                     let path = depgraph_file_path_for_cache_dir(&state.cache_dir);
                     // zackees/soldr#2436 D5: the interval alone left up to a
@@ -406,9 +418,17 @@ impl MaintenanceSchedule {
                     let mut last_saved_contexts = 0usize;
                     let mut waited = Duration::ZERO;
                     loop {
-                        kernal_api::async_engine::sleep(tick).await;
+                        if wait_for_next_pass_or_shutdown(
+                            &state.shutdown_requested,
+                            tick,
+                            DEPGRAPH_SHUTDOWN_POLL,
+                        )
+                        .await
+                        {
+                            return;
+                        }
                         waited += tick;
-                        let dg = state.dep_graph.load();
+                        let dg = state.dep_graph.load_full();
                         let contexts = dg.stats().context_count;
                         let decision =
                             depgraph_save_due(waited, interval, contexts, last_saved_contexts);
@@ -419,8 +439,16 @@ impl MaintenanceSchedule {
                         if let Some(parent) = path.parent() {
                             std::fs::create_dir_all(parent).ok();
                         }
-                        match crate::depgraph::save_to_file(&dg, &path) {
-                            Ok(()) => {
+                        let save_state = Arc::clone(&state);
+                        let save_path = path.clone();
+                        match run_depgraph_save_with(
+                            save_state,
+                            runtime_handle.as_ref(),
+                            move || crate::depgraph::save_to_file(&dg, &save_path),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {
                                 state.dep_graph_persisted.store(true, Ordering::Release);
                                 last_saved_contexts = contexts;
                                 tracing::info!(contexts, reason, "depgraph save");
@@ -429,19 +457,18 @@ impl MaintenanceSchedule {
                             // loop keeps ticking. The next due tick retries;
                             // propagating or panicking would end the task and
                             // hand it to the supervisor for no benefit.
-                            Err(e) => tracing::warn!(
+                            Ok(Err(e)) => tracing::warn!(
                                 path = %path.display(),
                                 contexts,
                                 reason,
                                 "periodic depgraph save failed; will retry next tick: {e}"
                             ),
+                            Err(e) => tracing::warn!("periodic depgraph save task failed: {e}"),
                         }
                     }
                 }
             },
         )
-        .detach();
-        TASK_DEPGRAPH_SAVE
     }
 
     fn start_legacy_temp_root_cleanup(&self) -> &'static str {
@@ -534,6 +561,20 @@ impl MaintenanceSchedule {
         .detach();
         TASK_PRIVATE_DAEMON_OWNERS
     }
+}
+
+pub(super) fn run_depgraph_save_with<T, F>(
+    state: Arc<SharedState>,
+    runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
+    save: F,
+) -> kernal_api::async_engine::Task<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    launch_maintenance_blocking(runtime_handle, move || {
+        state.with_depgraph_persistence(save)
+    })
 }
 
 #[cfg(test)]

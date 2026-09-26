@@ -195,6 +195,7 @@ impl DaemonServer {
         .start();
         tracing::debug!(tasks = ?started.started, "maintenance schedule started");
         let mut maintenance_handle = started.disk_maintenance;
+        let mut depgraph_save_handle = started.depgraph_save;
 
         loop {
             // Keep one accept future alive across watchdog ticks. On Windows,
@@ -235,6 +236,9 @@ impl DaemonServer {
                     // edge first wakes the rest of the shutdown path.
                     self.state.shutdown.notify_waiters();
                     if let Some(handle) = maintenance_handle.take() {
+                        let _ = handle.await;
+                    }
+                    if let Some(handle) = depgraph_save_handle.take() {
                         let _ = handle.await;
                     }
                     tracing::info!("daemon server shutting down");
@@ -278,7 +282,8 @@ impl DaemonServer {
                     let start = std::time::Instant::now();
                     let path = depgraph_file_path_for_cache_dir(&self.state.cache_dir);
                     let dg = self.state.dep_graph.load_full();
-                    let depgraph_save = kernal_api::async_engine::launch_blocking(move || {
+                    let save_state = Arc::clone(&self.state);
+                    let depgraph_save = run_depgraph_save_with(save_state, None, move || {
                         if let Some(parent) = path.parent() {
                             std::fs::create_dir_all(parent).ok();
                         }
