@@ -73,9 +73,10 @@ pub use cleanup::{cleanup_legacy_temp_root_state, cleanup_stale_depfile_dirs};
 #[allow(deprecated)]
 pub use env_policy::owned_env_flag_enabled;
 pub use env_policy::{
-    cache_test_binaries_enabled, daemon_spawn_disabled, no_spawn_error, owned_flag_enabled,
-    probe_bypass_enabled, zccache_disabled, EnvironmentVariableDeclaration,
-    EnvironmentVariableKind, CACHE_TEST_BINS_ENV, ENVIRONMENT_VARIABLES, NO_SPAWN_ENV,
+    cache_test_binaries_enabled, daemon_spawn_disabled, native_crash_capture_enabled,
+    no_spawn_error, owned_flag_enabled, probe_bypass_enabled, zccache_disabled,
+    EnvironmentVariableDeclaration, EnvironmentVariableKind, CACHE_TEST_BINS_ENV,
+    ENVIRONMENT_VARIABLES, NATIVE_CRASH_CAPTURE_ENV, NO_SPAWN_ENV,
 };
 pub use materialization_mode::{
     materialization_mode_from_client_env, materialization_mode_from_env,
