@@ -59,20 +59,9 @@ pub(in crate::daemon::server) fn materialization_error_progress(
         .map_or_else(StagedMaterializationStats::default, |error| error.progress)
 }
 
-pub(in crate::daemon::server) fn materialize_independent_with_stats(
-    source: &Path,
-    destination: &Path,
-) -> io::Result<StagedMaterializationStats> {
-    materialize_independent_with_mode(
-        source,
-        destination,
-        crate::core::config::MaterializationMode::Auto,
-    )
-}
-
-/// [`materialize_independent_with_stats`] under an explicit `ZCCACHE_MODE`:
-/// every mode delivers an independent file here; `COPY` skips the reflink
-/// attempt (#1683).
+/// Deliver a private staged output to its requested path under an explicit
+/// `ZCCACHE_MODE`: every mode delivers an independent file here; `COPY`
+/// skips the reflink attempt (#1683).
 pub(in crate::daemon::server) fn materialize_independent_with_mode(
     source: &Path,
     destination: &Path,
@@ -107,11 +96,7 @@ pub(in crate::daemon::server) fn materialize_independent_with_mode(
     let temporary = super::temporary_path(destination, "materialize");
     let result = (|| {
         let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
-        let (reflink, copy_bytes) = copy_output_with(
-            source,
-            &temporary,
-            mode != crate::core::config::MaterializationMode::Copy,
-        )?;
+        let (reflink, copy_bytes) = copy_output_with(source, &temporary, mode)?;
         #[cfg(test)]
         {
             // Test seam: keep a write descriptor on the temporary open while

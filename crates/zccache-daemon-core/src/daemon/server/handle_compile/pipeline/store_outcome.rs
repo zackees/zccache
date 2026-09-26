@@ -504,7 +504,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             StagedBytes, StagedCounter, StagedFailure, StagedTiming,
         };
         let started = std::time::Instant::now();
-        match plan.materialize() {
+        match plan.materialize(state_arc.materialization_mode(client_env)) {
             Ok(materialized) => {
                 staged_materialization_ns = started.elapsed().as_nanos() as u64;
                 state.profiler.staged.add_count(
@@ -557,7 +557,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
                 StagedBytes, StagedCounter, StagedFailure, StagedTiming,
             };
             let started = std::time::Instant::now();
-            match plan.materialize_without_cleanup() {
+            match plan.materialize_without_cleanup(state_arc.materialization_mode(client_env)) {
                 Ok(materialized) => {
                     staged_materialization_ns = started.elapsed().as_nanos() as u64;
                     state.profiler.staged.add_count(
@@ -620,6 +620,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             store_miss_artifact(MissArtifactStoreRequest {
                 state_arc,
                 sid,
+                materialization_mode: state_arc.materialization_mode(client_env),
                 context_key,
                 source_path,
                 output_path: &compiler_output_path,

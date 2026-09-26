@@ -80,7 +80,7 @@ pub use env_policy::{
 pub use materialization_mode::{
     materialization_mode_from_client_env, materialization_mode_from_env,
     parse_materialization_mode, InvalidMaterializationMode, MaterializationMode,
-    MATERIALIZATION_MODE_ENV,
+    MaterializationTiers, MATERIALIZATION_MODE_ENV,
 };
 pub use namespace::{
     daemon_namespace, daemon_namespace_label, sanitize_daemon_namespace, sanitize_ipc_component,
