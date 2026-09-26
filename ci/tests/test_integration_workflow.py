@@ -119,3 +119,16 @@ def test_every_telemetry_producer_is_followed_by_cleanup_before_the_audit() -> N
     assert all(name in names for name in ordered), set(ordered) - set(names)
     positions = [names.index(name) for name in ordered]
     assert positions == sorted(positions), list(zip(ordered, positions))
+
+
+def test_ignored_suite_gives_env_driven_ignored_tests_their_inputs() -> None:
+    """#1648: every `#[ignore]`d test the scheduled suite runs must be runnable.
+
+    `matches_legacy_on_corpus_dir` (#1670) panics without a header tree.
+    """
+    ignored_suite = _step_block(
+        WORKFLOW.read_text(encoding="utf-8"),
+        "Test ignored integration and stress suite",
+        "Remove ignored-suite harness journals before strict audit",
+    )
+    assert "ZCCACHE_SCAN_CORPUS_DIR: /usr/include" in ignored_suite

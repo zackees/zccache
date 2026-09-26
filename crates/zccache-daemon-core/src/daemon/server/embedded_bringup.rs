@@ -158,8 +158,32 @@ pub(super) async fn load_persisted_caches(
         .await;
 }
 
+/// Cache roots whose background depgraph load must not start yet (tests only).
+///
+/// A load whose snapshot path lies under a held root waits until the test
+/// releases it, so a test can observe "ready, load still pending" without
+/// racing a wall-clock delay (the earlier fixed 1.5 s sleep flaked on a loaded
+/// arm runner whose bring-up alone took 2.3 s). Keyed by root so parallel
+/// tests never hold each other's loads. The wait is capped so a test that
+/// forgets to release cannot hang the suite.
 #[cfg(test)]
-pub(super) static TEST_DEPGRAPH_LOAD_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+pub(super) static TEST_DEPGRAPH_LOAD_HOLDS: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn wait_while_test_holds_load(depgraph_path: &Path) {
+    let held = || {
+        TEST_DEPGRAPH_LOAD_HOLDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|root| depgraph_path.starts_with(root))
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while held() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
 
 /// Load `depgraph.bin` off the readiness path.
 ///
@@ -176,12 +200,7 @@ pub(super) fn spawn_depgraph_load(
     let load = move || {
         let started = std::time::Instant::now();
         #[cfg(test)]
-        {
-            let delay = TEST_DEPGRAPH_LOAD_DELAY_MS.load(Ordering::Acquire);
-            if delay > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(delay));
-            }
-        }
+        wait_while_test_holds_load(depgraph_path.as_path());
         let contexts = state.with_depgraph_snapshot(|_| {
             let outcome = crate::depgraph::classify_load(depgraph_path.as_path());
             let warning = outcome.warning(depgraph_path.as_path());
