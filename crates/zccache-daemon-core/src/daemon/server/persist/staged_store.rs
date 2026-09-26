@@ -20,7 +20,7 @@ pub(crate) use maintenance::{
 mod materialize;
 pub(in crate::daemon::server) use materialize::{
     materialization_error, materialization_error_progress, materialize_independent_with_mode,
-    materialize_independent_with_stats, StagedMaterializationStats,
+    StagedMaterializationStats,
 };
 mod read_guard;
 use read_guard::validate_key;

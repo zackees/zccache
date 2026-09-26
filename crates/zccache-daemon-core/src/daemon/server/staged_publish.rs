@@ -8,10 +8,11 @@ pub(super) fn publish_and_materialize_staged_link(
     key: &str,
     metadata: ArtifactIndex,
     sources: &[NormalizedPath],
+    mode: MaterializationMode,
 ) -> std::io::Result<bool> {
     let publication = publish_artifact_paths_observed(state, key, metadata, sources);
     let salvage_reason = publication.as_ref().err().map(|reason| reason.id());
-    materialize_link_plan_observed(state, plan, salvage_reason)?;
+    materialize_link_plan_observed(state, plan, salvage_reason, mode)?;
     Ok(publication.is_ok())
 }
 
@@ -124,7 +125,16 @@ pub(super) fn publish_artifact_paths_observed(
     sources: &[NormalizedPath],
 ) -> Result<PersistArtifactFileStats, StagedPublishFailure> {
     let persisted =
-        persist_artifact_paths_with_stats(&state.artifact_dir, key, sources).map_err(|error| {
+        // Staged producers publish through the staged store, which never
+        // hardlinks; the mode only reaches the legacy fallback, so the
+        // service default applies (#1683).
+        persist_artifact_paths_with_stats(
+            &state.artifact_dir,
+            key,
+            sources,
+            state.materialization_mode(None),
+        )
+        .map_err(|error| {
             staged_publish_failure(&error).unwrap_or(StagedPublishFailure::StoreSetup)
         });
     let persisted = match persisted {

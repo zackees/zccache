@@ -8,6 +8,7 @@
 use super::*;
 use std::path::Path;
 
+mod bundle_mode;
 mod classes_and_packages;
 mod delta;
 mod ownership;

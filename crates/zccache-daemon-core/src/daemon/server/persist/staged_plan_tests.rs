@@ -124,7 +124,7 @@ fn rust_staging_paths_do_not_change_published_output_bytes() {
             .unwrap()
             .requested
             .clone();
-        plan.materialize().unwrap();
+        plan.materialize(MaterializationMode::Auto).unwrap();
         let depfile_text = std::fs::read_to_string(&depfile).unwrap();
         assert!(!depfile_text.contains(STAGED_OUTPUT_REMAP_ROOT));
         let requested_parent = depfile.parent().unwrap().to_string_lossy();
@@ -213,7 +213,8 @@ fn deferred_materialization_keeps_staged_source_for_durable_publication() {
         }],
     );
 
-    plan.materialize_without_cleanup().unwrap();
+    plan.materialize_without_cleanup(MaterializationMode::Auto)
+        .unwrap();
 
     assert_eq!(
         std::fs::read(requested.as_path()).unwrap(),
@@ -844,7 +845,7 @@ fn output_fault_stops_partial_salvage_before_completion() {
         std::fs::write(staged, format!("complete output {index}")).unwrap();
     }
     let fault = StagedFaultGuard::arm(temp.path(), [StagedFaultPoint::MaterializeOutput(1)]);
-    let error = plan.materialize().unwrap_err();
+    let error = plan.materialize(MaterializationMode::Auto).unwrap_err();
     let progress = materialization_error_progress(&error);
     assert_eq!(progress.reflink_count + progress.copy_count, 1);
     assert!(progress.copy_bytes == 0 || progress.copy_bytes == 17);

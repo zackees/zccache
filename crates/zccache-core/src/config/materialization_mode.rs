@@ -69,6 +69,28 @@ impl MaterializationMode {
     }
 }
 
+/// Which sharing tiers a delivery may try, in the fixed order reflink ->
+/// hardlink; an independent byte copy always follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterializationTiers {
+    pub reflink: bool,
+    pub hardlink: bool,
+}
+
+impl MaterializationMode {
+    /// Tiers for a delivery with no per-output policy restriction (the
+    /// cache store, `zccache warm`, rust-plan bundles), before volume
+    /// capabilities are known. LINK never clones; COPY neither clones nor
+    /// links; REFLINK never links.
+    #[must_use]
+    pub const fn tiers_for_shareable(self) -> MaterializationTiers {
+        MaterializationTiers {
+            reflink: matches!(self, Self::Auto | Self::Reflink),
+            hardlink: matches!(self, Self::Auto | Self::Link),
+        }
+    }
+}
+
 impl fmt::Display for MaterializationMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
