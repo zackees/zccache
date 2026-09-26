@@ -83,9 +83,9 @@ sevenz-rust = { package = "sevenz-rust2", version = "0.22.2" }
 # slice adds only the feature it needs.
 #
 # Exact pin: kernal-api is below 1.0, so every consumer pins the same published
-# release (kernal-api COMPATIBILITY.md). 0.1.21 adds `fs::extent_sharing`
-# (#1673); no local path or patch override remains.
-kernal-api = { version = "=0.1.21", default-features = false }
+# release (kernal-api COMPATIBILITY.md). 0.1.22 measures `fs::extent_sharing`
+# on APFS and ReFS (#1673); no local path or patch override remains.
+kernal-api = { version = "=0.1.22", default-features = false }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }

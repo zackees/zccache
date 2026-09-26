@@ -1194,7 +1194,7 @@ fn issue_1659_retired_store_bytes_are_reclaimed_before_live_entries() {
             .exists());
     }
     // #1673: reclaimed bytes are credited only where the volume proves the
-    // blocks exclusive; APFS/ReFS report unknown sharing and credit none,
+    // blocks exclusive; a volume reporting unknown sharing credits none,
     // though the files are still removed and no live entry is evicted.
     if volume_proves_exclusive(root.path()) {
         assert!(report.retired_bytes_reclaimed > 0);

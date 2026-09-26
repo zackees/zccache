@@ -28,7 +28,7 @@ pub(super) fn versioned_top_level(cache_dir: &Path) -> Option<(NormalizedPath, S
 /// Bytes that removing the retired sibling stores of `top_level` would
 /// free: allocated bytes of `nlink == 1` regular files whose blocks are not
 /// known to be reflink/snapshot shared (#1673). This is an estimate for the
-/// pressure decision, so unknown sharing (APFS, ReFS) still counts; see
+/// pressure decision, so unknown sharing still counts; see
 /// `file_may_free_space_on_removal`. Symlinks/reparse points are never
 /// followed; a file whose link count is unknown is treated as shared.
 pub(super) fn retired_store_bytes(top_level: &Path, current: &str) -> u64 {

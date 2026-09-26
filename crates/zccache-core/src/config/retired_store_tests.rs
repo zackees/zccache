@@ -79,7 +79,7 @@ fn removes_fresh_unlinked_artifacts_eagerly_only_under_pressure_and_spares_linke
     assert_eq!(report.stores_scanned, 1);
     assert_eq!(report.files_removed, 1000);
     // Bytes are credited only where the volume proves the blocks exclusive
-    // (#1673); APFS/ReFS report unknown sharing and credit nothing.
+    // (#1673); a volume reporting unknown sharing credits nothing.
     let expected = if volume_proves_exclusive(tmp.path()) {
         1000 * "unlinked-artifact".len() as u64
     } else {
@@ -596,8 +596,8 @@ fn issue_1673_reflinked_entry_credits_no_reclaimed_bytes() {
 }
 
 /// #1673/#1659: the pressure estimate counts an `nlink == 1` file on every
-/// volume (unknown sharing still counts, or APFS/ReFS would never see
-/// retired bytes), but excludes one proven to share blocks via reflink.
+/// volume (unknown sharing still counts, or an unqueryable volume would
+/// never see retired bytes), but excludes one proven to share blocks.
 #[test]
 fn issue_1673_pressure_estimate_counts_unknown_but_not_proven_shared() {
     let tmp = tempfile::tempdir().unwrap();
