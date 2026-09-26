@@ -15,8 +15,8 @@ fn only_copy_mode_forbids_cloning_bundles() {
     }
 }
 
-/// With cloning off the bundle file owns its blocks even on a
-/// reflink-capable volume; with it on, a capable volume shares them.
+/// COPY bundles own their blocks even on a reflink-capable volume (no clone,
+/// and no `copy_file_range` clone either); AUTO may share them.
 #[test]
 fn copy_bundle_file_clones_only_when_asked() {
     use kernal_api::platform::fs::{extent_sharing, ExtentSharing};
@@ -25,7 +25,7 @@ fn copy_bundle_file_clones_only_when_asked() {
     std::fs::write(&src, vec![3_u8; 128 * 1024]).unwrap();
 
     let copied = dir.path().join("copied.rlib");
-    copy_bundle_file(&src, &copied, false).unwrap();
+    copy_bundle_file(&src, &copied, MaterializationMode::Copy).unwrap();
     assert_eq!(
         std::fs::read(&copied).unwrap(),
         std::fs::read(&src).unwrap()
@@ -37,7 +37,7 @@ fn copy_bundle_file_clones_only_when_asked() {
     );
 
     let cloned = dir.path().join("cloned.rlib");
-    copy_bundle_file(&src, &cloned, true).unwrap();
+    copy_bundle_file(&src, &cloned, MaterializationMode::Auto).unwrap();
     assert_eq!(
         std::fs::read(&cloned).unwrap(),
         std::fs::read(&src).unwrap()

@@ -37,7 +37,7 @@ pub(crate) fn deliver_warm_file(
     };
     if !cloned && !linked {
         let _ = std::fs::remove_file(dst);
-        std::fs::copy(src, dst)?;
+        mode.copy_file(src, dst)?;
     }
     let stamp = kernal_api::platform::fs::FileTime::from_system_time(now);
     if !linked {

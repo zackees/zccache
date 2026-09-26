@@ -96,11 +96,7 @@ pub(in crate::daemon::server) fn materialize_independent_with_mode(
     let temporary = super::temporary_path(destination, "materialize");
     let result = (|| {
         let _materialize_guard = crate::daemon::spawn_exclusion::materialize_exclusive();
-        let (reflink, copy_bytes) = copy_output_with(
-            source,
-            &temporary,
-            mode != crate::core::config::MaterializationMode::Copy,
-        )?;
+        let (reflink, copy_bytes) = copy_output_with(source, &temporary, mode)?;
         #[cfg(test)]
         {
             // Test seam: keep a write descriptor on the temporary open while
