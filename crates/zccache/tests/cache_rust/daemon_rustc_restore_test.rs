@@ -16,7 +16,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 
 use zccache::core::NormalizedPath;
@@ -30,8 +30,7 @@ type ClientConn = zccache::ipc::IpcConnection;
 type ClientConn = zccache::ipc::IpcClientConnection;
 
 fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    crate::cache_env_lock()
 }
 
 struct CacheEnvGuard {

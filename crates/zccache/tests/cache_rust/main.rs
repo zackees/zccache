@@ -22,3 +22,18 @@ mod daemon_rustc_cache_worktree_test;
 mod daemon_rustc_issue_210_async_populate_test;
 mod daemon_rustc_restore_test;
 mod daemon_workspace_pin_747;
+
+/// The one lock serializing every test in this binary that points the
+/// process-global `ZCCACHE_CACHE_DIR` at its own root.
+///
+/// Each module used to own a private lock, so `daemon_rustc_restore_test` and
+/// `daemon_rustc_issue_210_async_populate_test` serialized only against
+/// themselves: one module's guard swapped the variable mid-test under the
+/// other, and a daemon bound or wrote into the wrong root ("another live
+/// daemon already holds this cache root", or 30 artifact keys in a cache that
+/// should hold one). A single lock makes the guards mutually exclusive across
+/// the whole binary (#1648).
+pub(crate) fn cache_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &LOCK
+}
