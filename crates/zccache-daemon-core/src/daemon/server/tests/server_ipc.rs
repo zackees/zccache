@@ -26,6 +26,20 @@ pub(super) async fn start_daemon() -> (
     (endpoint, handle, shutdown, cache_root)
 }
 
+/// Start a daemon serving `cache_dir`, for tests whose request must name the
+/// daemon's own root (private sessions). The caller owns `cache_dir`.
+async fn start_daemon_at(
+    cache_dir: &crate::core::NormalizedPath,
+) -> (String, tokio::task::JoinHandle<()>, Arc<Notify>) {
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let mut server = DaemonServer::bind_with_cache_dir(&endpoint, cache_dir).unwrap();
+    let shutdown = server.shutdown_handle();
+    let handle = tokio::spawn(async move {
+        server.run(0).await.unwrap();
+    });
+    (endpoint, handle, shutdown)
+}
+
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_ping_pong() {
@@ -151,7 +165,10 @@ async fn private_session_start_registers_redacted_status_and_owner_refs() {
     crate::test_support::test_timeout(async {
         let tmp = tempfile::tempdir().unwrap();
         let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev");
-        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
+        // A private session must name the root this daemon serves (#1648): bind
+        // to the env-resolved default, not the isolated fixture root.
+        let (endpoint, server_task, shutdown) =
+            start_daemon_at(&crate::core::config::default_cache_dir()).await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client
@@ -219,7 +236,10 @@ async fn private_session_start_accepts_top_level_cache_root() {
     crate::test_support::test_timeout(async {
         let tmp = tempfile::tempdir().unwrap();
         let _env = CacheDirEnvGuard::set_with_namespace(tmp.path(), "soldr-dev-parent-root");
-        let (endpoint, server_task, shutdown, _cache_root) = start_daemon().await;
+        // The daemon serves the versioned default root; the session names its
+        // top-level parent, which must resolve to the same effective root.
+        let (endpoint, server_task, shutdown) =
+            start_daemon_at(&crate::core::config::default_cache_dir()).await;
 
         let mut client = crate::ipc::connect(&endpoint).await.unwrap();
         client

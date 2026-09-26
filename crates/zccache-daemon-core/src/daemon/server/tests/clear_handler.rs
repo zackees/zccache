@@ -72,7 +72,15 @@ async fn handle_clear_preserves_system_includes() {
         let endpoint = crate::ipc::unique_test_endpoint();
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = crate::core::NormalizedPath::new(tmp.path());
-        let server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &cache_dir).unwrap();
+        // `handle_clear` waits for the index writer to acknowledge its durable
+        // Clear command; outside `DaemonServer::run` nothing drains that queue,
+        // so without this worker the call never returns (#1648).
+        let index_writer = tokio::spawn(run_index_writer(
+            server.index_writer_rx.take().unwrap(),
+            Arc::clone(&server.state.artifact_store),
+            Arc::clone(&server.state.index_writer_shutdown),
+        ));
 
         let fake_compiler = tmp.path().join("fake-clang");
         std::fs::write(&fake_compiler, b"fake compiler bytes").unwrap();
@@ -105,6 +113,8 @@ async fn handle_clear_preserves_system_includes() {
             "issue #558: handle_clear must preserve system_includes entries — \
              they self-verify via stat-verify and re-discovery is expensive"
         );
+        server.state.index_writer_shutdown.notify_waiters();
+        index_writer.await.unwrap();
     })
     .await;
 }
