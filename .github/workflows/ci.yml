@@ -250,7 +250,6 @@ jobs:
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cache: false
-          version: 0.9.23
           toolchain: 1.95.0
           prebuild-deps: none
       - name: Restore existing Dylint tools (restore-only)
@@ -270,7 +269,6 @@ jobs:
           target-dir: target
           flags: --release
           rustc-release: 1.95.0
-          soldr-version: 0.9.23
           save-cache: false
       - name: Install Dylint nightly toolchain and fallback tools
         run: |
