@@ -231,6 +231,89 @@ jobs:
           export ZCCACHE_DISABLE=1
           uv run python -m ci.lint --dylint-only
 
+  dylint-shared-cook-probe:
+    name: Dylint shared cook base (restore-only probe)
+    if: github.event_name == 'pull_request' && github.head_ref == 'probe/dylint-cook-shared-20260926'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CARGO_HOME: /home/runner/.cargo
+      CARGO_TERM_COLOR: always
+      CARGO_ENV_RUSTUP_TOOLCHAIN: nightly-2026-05-26
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+      - name: Set up stable toolchain without cache layers
+        uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        with:
+          cache: false
+          version: 0.9.23
+          toolchain: 1.95.0
+          prebuild-deps: none
+      - name: Restore existing Dylint tools (restore-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            /home/runner/.cargo/bin/cargo-dylint*
+            /home/runner/.cargo/bin/dylint-link*
+            /home/runner/.cargo/.crates.toml
+            /home/runner/.cargo/.crates2.json
+            /home/runner/work/_temp/dylint-drivers
+          key: setup-soldr-dylint-v1-linux-x64-x86_64-unknown-linux-gnu-bfb7dde76ff4f61f-dylint
+      - name: Restore generic main cook base and run cook without saving
+        uses: zackees/setup-soldr/cook@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        with:
+          workspace: .
+          target-dir: target
+          flags: --release
+          rustc-release: 1.95.0
+          soldr-version: 0.9.23
+          save-cache: false
+      - name: Install Dylint nightly toolchain and fallback tools
+        run: |
+          soldr rustup toolchain install nightly-2026-05-26 --component llvm-tools-preview --component rust-src --component rustc-dev --target x86_64-unknown-linux-gnu --profile minimal
+          if ! command -v cargo-dylint >/dev/null 2>&1; then
+            soldr cargo install cargo-dylint --version 6.0.1 --locked
+          fi
+          if ! command -v dylint-link >/dev/null 2>&1; then
+            soldr cargo install dylint-link --version 6.0.1 --locked
+          fi
+      - name: Configure Dylint driver Cargo shim
+        run: |
+          shim_dir="${RUNNER_TEMP}/dylint-cargo-shim"
+          mkdir -p "${shim_dir}"
+          nightly_bin="$(dirname "$(soldr rustup which --toolchain nightly-2026-05-26 rustc)")"
+          nightly_toolchain="$(basename "$(dirname "${nightly_bin}")")"
+          printf '#!/usr/bin/env bash\nsubcommand="ru""stup"\nunset IN_SOLDR_PID\nexport RUSTUP_TOOLCHAIN="%s"\nexec soldr "${subcommand}" run "%s" cargo "$@"\n' "${nightly_toolchain}" "${nightly_toolchain}" > "${shim_dir}/cargo"
+          chmod +x "${shim_dir}/cargo"
+          echo "${shim_dir}" >> "${GITHUB_PATH}"
+      - name: Test Dylint libraries on nightly
+        shell: bash
+        run: |
+          for manifest in \
+            dylints/ban_std_pathbuf/Cargo.toml \
+            dylints/ban_unrooted_tempdir/Cargo.toml \
+            dylints/ban_tmp_literal/Cargo.toml \
+            dylints/ban_raw_subprocess_in_daemon/Cargo.toml \
+            dylints/ban_legacy_artifact_path/Cargo.toml \
+            dylints/ban_normalized_path_deref_containment/Cargo.toml \
+            dylints/ban_dashmap_guard_across_blocking/Cargo.toml \
+            dylints/ban_discarded_write_result/Cargo.toml \
+            dylints/enforce_platform_boundary/Cargo.toml \
+            dylints/ban_registered_env_read/Cargo.toml; do
+            RUSTC="$(soldr rustup which --toolchain nightly-2026-05-26 rustc)" \
+              RUSTUP_TOOLCHAIN=nightly-2026-05-26 \
+              soldr rustup run nightly-2026-05-26 cargo test --manifest-path "$manifest"
+          done
+      - name: Run Dylint checks
+        run: |
+          export PATH="${CARGO_HOME}/bin:${PATH}"
+          export ZCCACHE_DISABLE=1
+          uv run --no-project python -m ci.lint --dylint-only
+
   msrv:
     name: MSRV (1.95.0)
     runs-on: ubuntu-latest
