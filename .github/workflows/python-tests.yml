@@ -102,7 +102,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: ".github/workflows/python-tests.yml"
 
-      - uses: zackees/setup-soldr@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
+      - uses: zackees/setup-soldr@dfbe9627f6cb0226716b61625b99a58949162720 # v0.9.79
         with:
           save-cache: auto
           zccache-seed-strict: true

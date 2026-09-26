@@ -44,6 +44,7 @@ JUSTIFIED_SUFFIXES: dict[str, str] = {
 # with `auto` (the default) skipping durable saves on pull_request
 # (zackees/setup-soldr#527).  Add the new ref on each pin bump.
 SAVE_CACHE_REFS: dict[str, str] = {
+    "dfbe9627f6cb0226716b61625b99a58949162720": "setup-soldr v0.9.79",
     "fabebf4ac3867b0008576797d566db0cb18d43c3": "setup-soldr v0.9.78",
 }
 

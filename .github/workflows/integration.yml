@@ -59,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
-      - uses: zackees/setup-soldr@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
+      - uses: zackees/setup-soldr@dfbe9627f6cb0226716b61625b99a58949162720 # v0.9.79
         with:
           save-cache: auto
           zccache-seed-strict: true
@@ -107,7 +107,7 @@ jobs:
           soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
+        uses: zackees/setup-soldr/cleanup@dfbe9627f6cb0226716b61625b99a58949162720 # v0.9.79
       - name: Remove seeded runtime journals before tests
         shell: bash
         env:
