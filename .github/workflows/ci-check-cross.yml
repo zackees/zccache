@@ -45,11 +45,13 @@ jobs:
       # The newer action revision regresses native ARM-musl compiler selection
       # (GNU std paired with a musl linker). Keep this unrelated cross-only
       # lane on its last known-good action while ci-test consumers use v0.
-      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
+      - uses: zackees/setup-soldr@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
         with:
+          save-cache: auto
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
+          # Cross-target closure: justified in ci/check_cache_footprint.py.
           cache-key-suffix: check-${{ inputs.label }}
           linker: fast
           cross-targets: ${{ inputs.target }}
