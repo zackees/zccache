@@ -531,6 +531,35 @@ Auto-surfacing: every successful `install()` refreshes `<cache>/last_run_<bin>.t
 
 The dumper is intentionally text-only for v1 — minidumps via `MiniDumpWriteDump` / `minidump-writer` are out of scope (see issue #313).
 
+**Compiler-wrapper processes skip native capture (#1649).** kernal-api's
+native capture runs an all-thread pre-crash sampler that takes a resolved
+snapshot every 50 ms (about 300 ms of CPU each) for the life of the process
+and joins an in-flight capture on exit. A wrapper process lives for its whole
+compile, so arming it put a sampler on every concurrent compile: a cold
+`cargo build -p zccache -j4` took 131-146 s instead of 41 s, and each
+`rustc -vV` probe 358 ms instead of 41 ms. The `zccache` binary therefore calls
+`install_without_native_capture` when argv is a compiler invocation
+(`zccache <compiler> ...`, `zccache cc|c++ ...`; see
+`is_compiler_wrapper_invocation`). It keeps the panic hook, spool drain and
+last-run marker. Short-lived subcommands keep full native capture.
+`cli_wrapper_startup_budget` guards the wrapper's cost.
+
+**The daemon arms native capture only on request (#1649).** The daemon lives
+for the whole build and beyond, so the same sampler made an *idle* daemon burn
+85-90% of a core indefinitely and took that core from the compilers during
+every build. `ZCCACHE_NATIVE_CRASH_CAPTURE=1` restores it, for example while
+chasing a native fault. Without it the daemon keeps the panic hook and
+previous-crash reporting. `daemon_idle_cpu_budget_test` guards the daemon's
+idle cost. The crash-trigger fixtures still exercise native capture directly.
+
+**Development namespaces are memoized (#1649).** An unstamped build derives
+its daemon namespace from a blake3 hash of its own executable (#1394). Cargo
+starts `RUSTC_WRAPPER` without a namespace in its environment, so every probe
+and compile re-hashed the binary (41 ms for the 76 MB release build). The
+digest is now cached in `<cache>/dev-identity/`, keyed by the executable's
+path and identity (size, mtime and, on Unix, device, inode and ctime).
+`development_namespace_is_not_rehashed_per_invocation` guards it.
+
 ### Artifact Store Recovery
 
 **Orphaned temp directories:** On startup, `{cache_root}/tmp/` is deleted recursively. This removes any incomplete artifact writes from a previous crash.

@@ -40,5 +40,6 @@ cargo nextest run --test cli -E 'test(/^<file_stem>::/)'
 - `cli_single_daemon_per_session`
 - `cli_wrapper_failure_boundaries`
 - `cli_wrapper_passthrough`
+- `cli_wrapper_startup_budget`
 - `formatter_api`
 - `single_binary_distribution`
