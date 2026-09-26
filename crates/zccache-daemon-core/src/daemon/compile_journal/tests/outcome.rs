@@ -179,6 +179,7 @@ fn test_extract_outcome_all_non_journalable() {
             watcher_active: true,
             watcher_degradations: 0,
             index_writer_gone: false,
+            materialization: Default::default(),
         }),
         Response::LookupResult(LR::Miss),
         Response::StoreResult(SR::Stored),

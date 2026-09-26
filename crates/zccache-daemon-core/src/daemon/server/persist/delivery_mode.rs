@@ -13,7 +13,7 @@
 
 use super::*;
 use crate::core::config::MaterializationMode;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 /// Which tiers a delivery may try, in the fixed order reflink -> hardlink;
 /// a byte copy always follows.
@@ -103,10 +103,45 @@ pub(in crate::daemon::server) fn caps_for_mode(
 
 static REFLINK_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
+/// Outputs delivered per tier since process start: reflink, hardlink, copy,
+/// and REFLINK -> copy fallbacks. Process-wide, like the capability cache.
+static DELIVERED: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+/// Count delivered outputs by tier for `zccache status` (#1683).
+pub(in crate::daemon::server) fn record_delivery(reflink: u64, hardlink: u64, copy: u64) {
+    for (slot, count) in DELIVERED.iter().zip([reflink, hardlink, copy]) {
+        if count > 0 {
+            slot.fetch_add(count, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Status snapshot: the service-default mode and the per-tier counters.
+pub(in crate::daemon::server) fn materialization_status(
+    service_default: Option<MaterializationMode>,
+) -> crate::protocol::MaterializationStatus {
+    let [reflink, hardlink, copy, reflink_fallbacks] = DELIVERED
+        .each_ref()
+        .map(|slot| slot.load(Ordering::Relaxed));
+    crate::protocol::MaterializationStatus {
+        mode: service_default.unwrap_or_default().as_str().to_string(),
+        reflink,
+        hardlink,
+        copy,
+        reflink_fallbacks,
+    }
+}
+
 /// `REFLINK` could not clone and delivered a copy instead (#1683 decision
 /// D2). The copy is semantically identical, so this is a one-time warning
 /// rather than an error.
 pub(in crate::daemon::server) fn note_reflink_fallback(cache_file: &Path, out_path: &Path) {
+    DELIVERED[3].fetch_add(1, Ordering::Relaxed);
     if !REFLINK_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
         tracing::warn!(
             event = "materialization_reflink_fallback",

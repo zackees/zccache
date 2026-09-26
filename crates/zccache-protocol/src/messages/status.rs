@@ -111,6 +111,25 @@ pub struct DaemonStatus {
     /// publishes will survive a restart. Distinct from a slow daemon, and not
     /// otherwise visible without reading the lifecycle log.
     pub index_writer_gone: bool,
+    /// `ZCCACHE_MODE` delivery diagnostics (#1683).
+    pub materialization: MaterializationStatus,
+}
+
+/// Cache-output delivery diagnostics for `ZCCACHE_MODE` (#1683): the
+/// service-default mode and how many outputs each tier delivered since the
+/// daemon started. A request's own `ZCCACHE_MODE` may differ from `mode`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializationStatus {
+    /// Service-default mode, canonical spelling (`AUTO` when unset).
+    pub mode: String,
+    /// Outputs delivered as copy-on-write clones.
+    pub reflink: u64,
+    /// Outputs delivered as hardlinks to the cache blob.
+    pub hardlink: u64,
+    /// Outputs delivered as independent byte copies.
+    pub copy: u64,
+    /// `REFLINK` deliveries that could not clone and copied instead.
+    pub reflink_fallbacks: u64,
 }
 
 /// Per-session statistics, returned when the session opted in to tracking.
