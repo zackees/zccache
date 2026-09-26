@@ -170,7 +170,14 @@ pub fn parse_gnu_args(args: &[String], cwd: &Path) -> ParsedArgs {
         // -include <file> (force include)
         if arg == "-include" {
             if let Some(next) = args.get(i + 1) {
-                result.force_includes.push(resolve_path(next, cwd));
+                let header = resolve_path(next, cwd);
+                // GCC silently substitutes `<file>.gch` when it exists. The
+                // header's bytes do not change when a header it includes does,
+                // and GCC's depfile lists neither the `.gch` nor its inputs, so
+                // the PCH binary must be a key input of its own (#1609).
+                let implicit_pch = gcc_implicit_pch(&header);
+                result.force_includes.push(header);
+                result.force_includes.extend(implicit_pch);
                 i += 2;
                 continue;
             }
@@ -484,6 +491,15 @@ fn profile_input_files(path: &str, cwd: &Path) -> Vec<NormalizedPath> {
     }
 }
 
+/// The `<header>.gch` GCC will use in place of a force-included header, if
+/// one exists as a regular file next to it.
+fn gcc_implicit_pch(header: &NormalizedPath) -> Option<NormalizedPath> {
+    let mut gch = header.as_path().as_os_str().to_owned();
+    gch.push(".gch");
+    let gch = Path::new(&gch);
+    gch.is_file().then(|| NormalizedPath::new(gch))
+}
+
 fn is_source_file(path: &Path) -> bool {
     let ext = path
         .extension()
@@ -589,6 +605,20 @@ mod tests {
     fn force_include() {
         let parsed = parse_gnu_args(&args(&["-include", "pch.h", "-c", "x.c"]), Path::new("/p"));
         assert_eq!(parsed.force_includes, vec![Path::new("/p/pch.h")]);
+    }
+
+    /// #1609: GCC substitutes `pch.h.gch` for `-include pch.h`; the binary is
+    /// the only input that changes when a header `pch.h` includes changes.
+    #[test]
+    fn force_include_with_gcc_implicit_pch_adds_the_gch() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pch.h"), "#include \"sub.h\"\n").unwrap();
+        std::fs::write(dir.path().join("pch.h.gch"), "gch").unwrap();
+        let parsed = parse_gnu_args(&args(&["-include", "pch.h", "-c", "x.c"]), dir.path());
+        assert_eq!(
+            parsed.force_includes,
+            vec![dir.path().join("pch.h"), dir.path().join("pch.h.gch")]
+        );
     }
 
     #[test]

@@ -282,6 +282,17 @@ impl DepGraph {
             .and_then(|key| self.contexts.get(&key).map(|e| e.resolved_includes.clone()))
     }
 
+    /// Get the force-included inputs (`-include`, `-include-pch`, ...) for a
+    /// context. They are key inputs just like resolved includes.
+    #[must_use]
+    pub fn get_force_includes(&self, key: &ContextKey) -> Option<Vec<NormalizedPath>> {
+        self.resolve_instance_key(key).and_then(|key| {
+            self.contexts
+                .get(&key)
+                .map(|e| e.context.force_includes.clone())
+        })
+    }
+
     /// Get rustc extern input paths for a context.
     #[must_use]
     pub fn get_rustc_externs(&self, key: &ContextKey) -> Option<Vec<(String, NormalizedPath)>> {

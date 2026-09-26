@@ -457,9 +457,8 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         let results: Vec<_> = post_paths
             .par_iter()
             .map(|path| {
-                let hash_path = resolve_pch_source(path, &state.pch_source_map)
-                    .unwrap_or_else(|| (*path).clone());
-                let result = hash_file(&state.cache_system, &hash_path, snap_clock);
+                let result =
+                    hash_dependency(&state.cache_system, &state.pch_source_map, path, snap_clock);
                 ((*path).clone(), result)
             })
             .collect();

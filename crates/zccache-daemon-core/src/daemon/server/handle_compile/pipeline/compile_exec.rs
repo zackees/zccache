@@ -346,11 +346,14 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
             all_paths
                 .par_iter()
                 .filter_map(|path| {
-                    let hash_path = resolve_pch_source(path, &pre_state.pch_source_map)
-                        .unwrap_or_else(|| (*path).clone());
-                    hash_file(&pre_state.cache_system, &hash_path, pre_clock)
-                        .ok()
-                        .map(|h| ((*path).clone(), h))
+                    hash_dependency(
+                        &pre_state.cache_system,
+                        &pre_state.pch_source_map,
+                        path,
+                        pre_clock,
+                    )
+                    .ok()
+                    .map(|h| ((*path).clone(), h))
                 })
                 .collect()
         })
