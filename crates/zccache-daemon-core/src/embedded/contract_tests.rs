@@ -29,7 +29,12 @@ fn concurrent_real_cache_hits_leave_embedded_control_plane_responsive() {
     let temp = TempDir::new().expect("fixture directory");
     let mut settings = config(&temp, "real-hit-control-plane", None);
     settings.runtime.handle = Some(host_rt.handle().clone());
-    let artifact_dir = crate::core::config::artifacts_dir_from_cache_dir(&settings.cache_root);
+    // #1686: the service stores under the versioned effective root, so the
+    // lock must be taken there. Locking `<cache_root>/artifacts` gated nothing,
+    // and the test only passed when the hits were still running at the check.
+    let artifact_dir = crate::core::config::artifacts_dir_from_cache_dir(
+        &crate::core::config::effective_cache_root_from_top_level(&settings.cache_root),
+    );
     let service = host_rt
         .block_on(ZccacheService::start(settings))
         .expect("embedded service starts");
@@ -131,10 +136,22 @@ fn concurrent_real_cache_hits_leave_embedded_control_plane_responsive() {
         responsive.is_ok() && started.elapsed() < Duration::from_secs(1),
         "concurrent real cache hits must leave the host worker responsive"
     );
-    assert!(
-        handles.iter().any(|handle| !handle.is_finished()),
-        "exclusive lock must still hold a real warm hit"
-    );
+    if handles.iter().all(tokio::task::JoinHandle::is_finished) {
+        // #1686: say which way the contract broke instead of only that every
+        // compile finished under the exclusive lock.
+        let outcomes = handles
+            .into_iter()
+            .map(|handle| match host_rt.block_on(handle) {
+                Ok(Ok(response)) => format!(
+                    "exit={} cached={} outcome={:?}",
+                    response.exit_code, response.cached, response.cache_outcome
+                ),
+                Ok(Err(error)) => format!("error: {error}"),
+                Err(error) => format!("join error: {error}"),
+            })
+            .collect::<Vec<_>>();
+        panic!("exclusive lock must still hold a real warm hit; outcomes: {outcomes:?}");
+    }
     release_tx.send(()).expect("release staged-store lock");
     lock_holder.join().expect("release store lock");
     for handle in handles {
