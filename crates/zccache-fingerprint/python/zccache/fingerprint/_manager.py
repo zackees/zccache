@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from zccache.fingerprint._result import FingerprintResult
 
@@ -65,6 +65,20 @@ class FingerprintManager:
                     mode-aware caching (e.g. ``"quick"``, ``"debug"``).
         mode_aware_names: Names that include *build_mode* in the cache file
                          name.  Defaults to ``{"cpp_test", "examples"}``.
+
+    Checking is not completing (#1650). :meth:`check` only *inspects* a
+    fingerprint; it never certifies that the guarded operation ran. Record
+    completion explicitly, per operation:
+
+    * :meth:`save` / :meth:`save_many` -- persist a status for named
+      operations that executed;
+    * :meth:`mark_ran` (or :meth:`update_test_metadata`) followed by
+      :meth:`save_all`;
+    * ``save_all(status, all_ran=True)`` when every checked operation ran.
+
+    :meth:`save_all` never writes *status* for a checked operation that was
+    not marked as run: an unexecuted cache hit keeps its prior status and
+    metadata, and an unexecuted cache miss is left dirty for the next run.
     """
 
     def __init__(
@@ -80,6 +94,9 @@ class FingerprintManager:
         self.fingerprint_dir.mkdir(exist_ok=True)
         self._fingerprints: dict[str, FingerprintResult] = {}
         self._prev_fingerprints: dict[str, Optional[FingerprintResult]] = {}
+        # Names whose operation actually executed this run (#1650). Checking
+        # a fingerprint only inspects it; only these may be certified.
+        self._ran: set[str] = set()
         self._mode_aware_names: set[str] = mode_aware_names or {
             "cpp_test",
             "examples",
@@ -103,7 +120,7 @@ class FingerprintManager:
         fp_file = self._get_fingerprint_file(name)
         if fp_file.exists():
             try:
-                with open(fp_file, "r") as f:
+                with open(fp_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 return FingerprintResult(
                     hash=data.get("hash", ""),
@@ -134,7 +151,7 @@ class FingerprintManager:
             data["duration_seconds"] = fingerprint.duration_seconds
         if fingerprint.test_name is not None:
             data["test_name"] = fingerprint.test_name
-        with open(fp_file, "w") as f:
+        with open(fp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     # ------------------------------------------------------------------
@@ -153,19 +170,67 @@ class FingerprintManager:
             return True
         return not prev.should_skip(current)
 
-    def save_all(self, status: str) -> None:
-        """Persist all fingerprints with the given status."""
+    def mark_ran(self, name: str) -> None:
+        """Record that the checked operation *name* actually executed.
+
+        Raises ``KeyError`` if *name* was never checked, so a typo cannot
+        silently leave the real operation uncertified.
+        """
+        if name not in self._fingerprints:
+            raise KeyError(f"fingerprint {name!r} was not checked")
+        self._ran.add(name)
+
+    def save(self, name: str, status: str) -> None:
+        """Mark *name* as run and persist it with *status* now."""
+        self.mark_ran(name)
+        self._persist(name, status)
+
+    def save_many(self, names: Iterable[str], status: str) -> None:
+        """Mark every name in *names* as run and persist each with *status*."""
+        names = list(names)
+        for name in names:
+            self.mark_ran(name)
+        for name in names:
+            self._persist(name, status)
+
+    def save_all(self, status: str, *, all_ran: bool = False) -> None:
+        """Persist *status* for every checked operation that ran.
+
+        An operation counts as run when it was passed to :meth:`mark_ran`,
+        :meth:`save`, :meth:`save_many` or :meth:`update_test_metadata`, or
+        when *all_ran* is true (the caller asserts every checked operation
+        executed). Checked operations that did not run are never certified:
+        a cache hit is re-persisted with its prior status and metadata, and a
+        cache miss is left untouched so it stays dirty on the next run.
+        """
+        if all_ran:
+            self._ran.update(self._fingerprints)
         for name, fp in self._fingerprints.items():
-            fp.status = status
-            # Carry forward test metadata from previous run on cache hits.
-            if fp.num_tests_run is None:
-                prev = self._prev_fingerprints.get(name)
-                if prev is not None:
-                    fp.num_tests_run = prev.num_tests_run
-                    fp.num_tests_passed = prev.num_tests_passed
-                    fp.duration_seconds = prev.duration_seconds
-                    fp.test_name = prev.test_name
-            self.write(name, fp)
+            if name in self._ran:
+                self._persist(name, status)
+                continue
+            prev = self._prev_fingerprints.get(name)
+            if prev is not None and prev.should_skip(fp):
+                # Unexecuted cache hit: refresh the entry, keep its verdict.
+                fp.status = prev.status
+                self._carry_forward_metadata(name, fp)
+                self.write(name, fp)
+
+    def _persist(self, name: str, status: str) -> None:
+        fp = self._fingerprints[name]
+        fp.status = status
+        self._carry_forward_metadata(name, fp)
+        self.write(name, fp)
+
+    def _carry_forward_metadata(self, name: str, fp: FingerprintResult) -> None:
+        # Carry forward test metadata from the previous run on cache hits.
+        if fp.num_tests_run is None:
+            prev = self._prev_fingerprints.get(name)
+            if prev is not None:
+                fp.num_tests_run = prev.num_tests_run
+                fp.num_tests_passed = prev.num_tests_passed
+                fp.duration_seconds = prev.duration_seconds
+                fp.test_name = prev.test_name
 
     # ------------------------------------------------------------------
     # Test metadata
@@ -179,8 +244,13 @@ class FingerprintManager:
         duration_seconds: float,
         test_name: Optional[str] = None,
     ) -> None:
-        """Attach test metadata to a fingerprint before saving."""
+        """Attach test metadata to a fingerprint before saving.
+
+        Test metadata only exists for an operation that executed, so this
+        also marks *name* as run (see :meth:`mark_ran`).
+        """
         if name in self._fingerprints:
+            self._ran.add(name)
             fp = self._fingerprints[name]
             fp.num_tests_run = num_tests_run
             fp.num_tests_passed = num_tests_passed
@@ -209,7 +279,8 @@ class FingerprintManager:
         computation.
 
         Side-effects on True: populates ``_prev_fingerprints[name]`` and
-        ``_fingerprints[name]`` so that :meth:`save_all` works correctly.
+        ``_fingerprints[name]`` so that :meth:`save_all` treats the entry as
+        a cache hit (refreshed with its prior status unless marked as run).
         """
         fp_file = self._get_fingerprint_file(name)
         if not fp_file.exists():
