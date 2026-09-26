@@ -80,6 +80,9 @@ jobs:
         uses: ./
         with:
           shared-key: test-${{ matrix.target }}
+          # Keep PR runs warm from shared caches without writing a private
+          # per-PR generation. Main continues to seed the reusable caches.
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Verify RUSTC_WRAPPER is set
         shell: bash

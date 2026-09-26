@@ -87,6 +87,31 @@ def test_new_pin_auto_or_unset_is_green(tmp_path: Path) -> None:
     assert guard.check(tmp_path) == []
 
 
+def test_local_action_must_disable_pr_saves(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        "  action:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./\n",
+    )
+
+    assert any(
+        "local action can save caches on pull_request" in error
+        for error in guard.check(tmp_path)
+    )
+
+
+def test_local_action_main_only_save_gate_passes(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        "  action:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - uses: ./\n        with:\n"
+        "          save-cache: ${{ github.ref == 'refs/heads/main' }}\n",
+    )
+
+    assert guard.check(tmp_path) == []
+
+
 def test_save_cache_true_needs_justification(tmp_path: Path) -> None:
     _workflow(tmp_path, "a.yml", _job("seed", **{"save-cache": '"true"'}))
     assert any("JUSTIFIED_PR_SAVES" in e for e in guard.check(tmp_path))

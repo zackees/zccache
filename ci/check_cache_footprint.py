@@ -15,6 +15,9 @@ Fails when:
   other ref only ``save-cache: false`` or an expression that is false on
   ``pull_request`` counts.  ``save-cache: true`` must be justified in
   ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``);
+* this repository's first-party action (``uses: ./``) cannot save durable
+  caches from pull-request workflows; allow only explicit no-save or a
+  main-ref-only save expression;
 * a cache-enabled setup-soldr step does not set ``cook-delta: false`` on a
   ref listed in ``COOK_DELTA_REFS``, unless the job is listed in
   ``JUSTIFIED_COOK_DELTA``.  The cook-delta layer saves one
@@ -180,11 +183,41 @@ def _cannot_save_on_pr(step: Step) -> bool:
     return value.lower() == "false" or value in {
         "${{github.event_name!='pull_request'}}",
         "${{github.event_name=='push'}}",
+        "${{github.ref=='refs/heads/main'}}",
     }
+
+
+def _local_action_errors(root: Path) -> list[str]:
+    errors: list[str] = []
+    for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        pr = bool(
+            _triggers(doc) & {"pull_request", "pull_request_target", "workflow_call"}
+        )
+        if not pr:
+            continue
+        for job_name, job in (doc.get("jobs") or {}).items():
+            for index, raw in enumerate(job.get("steps") or []):
+                if str(raw.get("uses", "")).strip() != "./":
+                    continue
+                step = Step(
+                    f"{path.name}:{job_name}#{index}",
+                    "./",
+                    dict(raw.get("with") or {}),
+                    frozenset(),
+                    True,
+                )
+                if not _cannot_save_on_pr(step):
+                    errors.append(
+                        f"{step.where} local action can save caches on pull_request; "
+                        "set save-cache: false or gate saves to refs/heads/main"
+                    )
+    return errors
 
 
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
+    errors.extend(_local_action_errors(root))
     steps = collect(root)
 
     refs = sorted({s.ref for s in steps})
