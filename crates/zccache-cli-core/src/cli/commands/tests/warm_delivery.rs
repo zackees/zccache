@@ -20,14 +20,9 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     (dir, src, dst)
 }
 
-fn now_times() -> (std::time::SystemTime, std::fs::FileTimes) {
-    let now = std::time::SystemTime::now();
-    (
-        now,
-        std::fs::FileTimes::new()
-            .set_accessed(now)
-            .set_modified(now),
-    )
+fn recent(path: &Path, now: std::time::SystemTime) -> bool {
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    modified.duration_since(now).is_ok() || now.duration_since(modified).unwrap().as_secs() < 2
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -44,34 +39,37 @@ fn hardlinks_supported(dir: &Path) -> bool {
 }
 
 /// COPY and REFLINK restore an independent, writable output and still stamp
-/// the cache file as recently used (the eviction LRU signal).
+/// the cache file as recently used (the eviction LRU signal), even when the
+/// cache file is read-only.
 #[test]
 fn independent_modes_restore_a_private_output_and_touch_the_cache_file() {
     for mode in [MaterializationMode::Copy, MaterializationMode::Reflink] {
-        let (_dir, src, dst) = fixture();
-        let (now, times) = now_times();
-        deliver_warm_file(&src, &dst, mode, times).unwrap();
-        assert!(
-            !same_file(&src, &dst),
-            "{mode}: output shares the cache inode"
-        );
-        assert_eq!(std::fs::read(&dst).unwrap(), BYTES);
-        assert!(
-            !std::fs::metadata(&dst).unwrap().permissions().readonly(),
-            "{mode}"
-        );
-        std::fs::write(&dst, b"edited").unwrap();
-        assert_eq!(
-            std::fs::read(&src).unwrap(),
-            BYTES,
-            "{mode}: edit reached the cache"
-        );
-        let cache_mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
-        assert!(
-            cache_mtime.duration_since(now).is_ok()
-                || now.duration_since(cache_mtime).unwrap().as_secs() < 2,
-            "{mode}: the cache file must be stamped recently used"
-        );
+        for cache_readonly in [false, true] {
+            let (_dir, src, dst) = fixture();
+            kernal_api::platform::fs::set_readonly(&src, cache_readonly).unwrap();
+            let now = std::time::SystemTime::now();
+            deliver_warm_file(&src, &dst, mode, now).unwrap();
+            assert!(
+                !same_file(&src, &dst),
+                "{mode}: output shares the cache inode"
+            );
+            assert_eq!(std::fs::read(&dst).unwrap(), BYTES);
+            assert!(
+                !std::fs::metadata(&dst).unwrap().permissions().readonly(),
+                "{mode}"
+            );
+            assert!(
+                recent(&src, now),
+                "{mode}: the cache file (read-only: {cache_readonly}) must be stamped recently used"
+            );
+            std::fs::write(&dst, b"edited").unwrap();
+            assert_eq!(
+                std::fs::read(&src).unwrap(),
+                BYTES,
+                "{mode}: edit reached the cache"
+            );
+            kernal_api::platform::fs::set_readonly(&src, false).unwrap();
+        }
     }
 }
 
@@ -82,25 +80,26 @@ fn link_mode_shares_the_cache_inode() {
         eprintln!("SKIP link_mode_shares_the_cache_inode: no hardlinks on this volume");
         return;
     }
-    let (_, times) = now_times();
-    deliver_warm_file(&src, &dst, MaterializationMode::Link, times).unwrap();
+    deliver_warm_file(
+        &src,
+        &dst,
+        MaterializationMode::Link,
+        std::time::SystemTime::now(),
+    )
+    .unwrap();
     assert!(same_file(&src, &dst));
 }
 
-/// AUTO never copies where it can share: the output is either a hardlink or
-/// a clone, and its bytes are the cache file's.
+/// AUTO keeps warm's historical order: it links wherever hardlinks work and
+/// never attempts a clone first.
 #[test]
-fn auto_mode_restores_the_cached_bytes() {
+fn auto_mode_links_first_like_before() {
     let (dir, src, dst) = fixture();
-    let (_, times) = now_times();
-    deliver_warm_file(&src, &dst, MaterializationMode::Auto, times).unwrap();
+    let now = std::time::SystemTime::now();
+    deliver_warm_file(&src, &dst, MaterializationMode::Auto, now).unwrap();
     assert_eq!(std::fs::read(&dst).unwrap(), BYTES);
-    if hardlinks_supported(dir.path())
-        && kernal_api::platform::fs::reflink_file(&src, &dir.path().join("clone-probe")).is_err()
-    {
-        assert!(
-            same_file(&src, &dst),
-            "AUTO must hardlink where it cannot clone"
-        );
+    if hardlinks_supported(dir.path()) {
+        assert!(same_file(&src, &dst), "AUTO must hardlink where it can");
+        assert!(recent(&src, now), "the shared inode carries the LRU stamp");
     }
 }

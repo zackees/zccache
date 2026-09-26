@@ -400,9 +400,6 @@ pub(crate) fn warm_target_with_mode(
     // hash), so don't be tempted to remove this thinking it duplicates
     // snapshot-fp-validate. Doing so would silently regress eviction.
     let now = std::time::SystemTime::now();
-    let file_times = std::fs::FileTimes::new()
-        .set_accessed(now)
-        .set_modified(now);
 
     // Hold shared staged-store ownership across BOTH the resolve loop and the
     // materialization below. `warm` runs in the CLI process, not the daemon,
@@ -488,8 +485,7 @@ pub(crate) fn warm_target_with_mode(
                     skipped.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
-                if let Err(e) = super::warm_delivery::deliver_warm_file(src, dst, mode, file_times)
-                {
+                if let Err(e) = super::warm_delivery::deliver_warm_file(src, dst, mode, now) {
                     eprintln!(
                         "zccache warm: failed to copy {} -> {}: {e}",
                         src.display(),
