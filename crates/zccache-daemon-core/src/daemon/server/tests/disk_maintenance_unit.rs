@@ -1193,9 +1193,27 @@ fn issue_1659_retired_store_bytes_are_reclaimed_before_live_entries() {
             .join(format!("old-{i}.meta"))
             .exists());
     }
-    assert!(report.retired_bytes_reclaimed > 0);
+    // #1673: reclaimed bytes are credited only where the volume proves the
+    // blocks exclusive; APFS/ReFS report unknown sharing and credit none,
+    // though the files are still removed and no live entry is evicted.
+    if volume_proves_exclusive(root.path()) {
+        assert!(report.retired_bytes_reclaimed > 0);
+    }
     assert!(report.bytes_reclaimed >= report.retired_bytes_reclaimed);
     assert_eq!(retired_store_bytes(&top_level, &current), 0);
+}
+
+/// Whether a fresh file in `dir` is reported `Exclusive`, i.e. whether this
+/// volume can prove that removing an `nlink == 1` file frees its space.
+fn volume_proves_exclusive(dir: &std::path::Path) -> bool {
+    let probe = dir.join("exclusive-probe.bin");
+    std::fs::write(&probe, b"probe").unwrap();
+    let exclusive = matches!(
+        kernal_api::platform::fs::extent_sharing(&probe),
+        Ok(kernal_api::platform::fs::ExtentSharing::Exclusive)
+    );
+    std::fs::remove_file(&probe).unwrap();
+    exclusive
 }
 
 /// Acceptance 6: evicting an entry whose file is also hard-linked into a
