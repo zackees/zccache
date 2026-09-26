@@ -39,6 +39,12 @@ const RESTART_MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// endless restart cycle.
 const MAX_RESTARTS: u32 = 5;
 
+/// How often a supervisor in restart backoff checks for shutdown. Both
+/// shutdown paths join the supervised depgraph loop (#1654), so an
+/// uninterruptible backoff would stall shutdown by up to the full backoff
+/// (#1684).
+const BACKOFF_SHUTDOWN_POLL: Duration = Duration::from_millis(100);
+
 /// Whether a dead task should be brought back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Restart {
@@ -82,6 +88,21 @@ pub(super) fn panic_message(err: &kernal_api::async_engine::TaskError) -> Option
     })
 }
 
+/// Sleep out `backoff`, returning `true` as soon as shutdown is requested.
+async fn backoff_or_shutdown(backoff: Duration, is_shutting_down: &impl Fn() -> bool) -> bool {
+    let deadline = kernal_api::async_engine::Deadline::after(backoff);
+    loop {
+        if is_shutting_down() {
+            return true;
+        }
+        let remaining = deadline.remaining();
+        if remaining.is_zero() {
+            return false;
+        }
+        kernal_api::async_engine::sleep(remaining.min(BACKOFF_SHUTDOWN_POLL)).await;
+    }
+}
+
 /// Spawn a long-lived background loop under supervision.
 ///
 /// `factory` builds the task future; it is called again on each restart, so it
@@ -100,7 +121,7 @@ pub(super) fn spawn_supervised<S, F, Fut>(
     factory: F,
 ) -> kernal_api::async_engine::Task<()>
 where
-    S: Fn() -> bool + Send + 'static,
+    S: Fn() -> bool + Send + Sync + 'static,
     F: Fn() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -151,8 +172,7 @@ where
                 return;
             }
 
-            kernal_api::async_engine::sleep(backoff).await;
-            if is_shutting_down() {
+            if backoff_or_shutdown(backoff, &is_shutting_down).await {
                 return;
             }
             restarts += 1;

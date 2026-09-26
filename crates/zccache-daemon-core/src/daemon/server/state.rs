@@ -667,12 +667,19 @@ impl SharedState {
         }
     }
 
-    pub(super) fn with_depgraph_persistence<T>(&self, save: impl FnOnce() -> T) -> T {
+    /// Run `save` on the depgraph as it stands once this cache root's
+    /// persistence guard is held. Loading under the guard means a save queued
+    /// behind another never writes a graph object the startup loader has
+    /// since replaced (#1684).
+    pub(super) fn with_depgraph_snapshot<T>(
+        &self,
+        save: impl FnOnce(&crate::depgraph::DepGraph) -> T,
+    ) -> T {
         let _guard = self
             .depgraph_persistence
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        save()
+        save(&self.dep_graph.load_full())
     }
 
     pub(super) fn begin_cache_request(&self) -> ActiveCacheRequest<'_> {

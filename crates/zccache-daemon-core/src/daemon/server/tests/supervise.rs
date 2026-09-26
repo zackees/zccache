@@ -155,6 +155,48 @@ async fn a_task_ending_during_shutdown_is_not_treated_as_a_fault() {
     );
 }
 
+/// #1684: both shutdown paths join the supervised depgraph loop, so a
+/// supervisor sleeping out its restart backoff must notice shutdown and
+/// return instead of stalling shutdown for the rest of the backoff.
+#[tokio::test(start_paused = true)]
+async fn shutdown_during_restart_backoff_ends_the_supervisor_promptly() {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&shutdown);
+    let attempts = Arc::new(AtomicU32::new(0));
+    let counter = Arc::clone(&attempts);
+
+    let handle = spawn_supervised(
+        "test-backoff-shutdown",
+        move || flag.load(Ordering::Acquire),
+        Restart::Idempotent,
+        None,
+        move || {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::AcqRel);
+                panic!("induced");
+            }
+        },
+    );
+
+    while attempts.load(Ordering::Acquire) == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    // Let the supervisor observe the death and enter its backoff sleep.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    shutdown.store(true, Ordering::Release);
+
+    tokio::time::timeout(RESTART_INITIAL_BACKOFF / 2, handle)
+        .await
+        .expect("shutdown must cut the restart backoff short")
+        .expect("the supervisor task itself must not panic");
+    assert_eq!(
+        attempts.load(Ordering::Acquire),
+        1,
+        "no restart may start once shutdown was requested"
+    );
+}
+
 /// A supervisor owns the loop it is awaiting. Cancelling the supervisor must
 /// therefore cancel that loop as well: leaving the child detached would let a
 /// supposedly stopped daemon keep running maintenance after its owner left.

@@ -281,15 +281,14 @@ impl DaemonServer {
                     // Tokio runtime thread.
                     let start = std::time::Instant::now();
                     let path = depgraph_file_path_for_cache_dir(&self.state.cache_dir);
-                    let dg = self.state.dep_graph.load_full();
                     let save_state = Arc::clone(&self.state);
-                    let depgraph_save = run_depgraph_save_with(save_state, None, move || {
+                    let depgraph_save = run_depgraph_save_with(save_state, None, move |dg| {
                         if let Some(parent) = path.parent() {
                             std::fs::create_dir_all(parent).ok();
                         }
                         let (cold_ctxs, warm_ctxs, stale_ctxs) = dg.state_breakdown();
                         let ctxs_with_key = dg.contexts_with_artifact_key();
-                        let result = crate::depgraph::save_to_file(&dg, &path);
+                        let result = crate::depgraph::save_to_file(dg, &path);
                         (result, cold_ctxs, warm_ctxs, stale_ctxs, ctxs_with_key)
                     })
                     .await;
