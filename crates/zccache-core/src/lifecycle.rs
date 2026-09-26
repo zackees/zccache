@@ -44,6 +44,7 @@
 //! | `wrapper-local-fallback` | CLI wrapper | retired by #1170; kept so historical logs still resolve and the audit rule can assert it never reappears | `reason`, tool fields |
 //! | `daemon_spawn_breaker_open` (#1170) | CLI wrapper | daemon recovery was exhausted; later invocations fail immediately until the cool-down expires | `reason`, `cooldown_ms`, `consecutive_failures` |
 //! | `wrapper-daemon-unavailable` (#1170) | CLI wrapper | the daemon could not be reached before request dispatch and the wrapper refused to run the tool uncached | `tool`, `cwd`, `endpoint`, `reason`, `phase`, `route`, `exit_code` |
+//! | `wrapper-no-verdict` | CLI wrapper | the daemon lost a dispatched request with no tool left running: it closed the connection, or the wrapper confirmed a wedged daemon dead; the wrapper exits 1 | `endpoint`, `cause`, `exit_code` |
 //! | `version_mismatch` | daemon | client / daemon protocol versions disagree | `daemon_protocol_version`, `client_protocol_version`, `reason` |
 //! | `state_corrupt` (#1157) | daemon | persisted state did not parse and was dropped rather than reconciled; consequence is a full cold recompile | `subsystem`, `consequence`, `message`, `path`, `bytes` |
 //! | `index_reconciled` (#1157) | daemon | a corrupt artifact index was rebuilt from surviving staged-v2 generations instead of starting empty | `recovered`, `candidates`, `skipped_multi_output`, `skipped_unverifiable`, `truncated_by_budget`, `budget_ms`, `elapsed_ns` |
@@ -222,6 +223,11 @@ pub const EVENT_WRAPPER_LOCAL_FALLBACK: &str = "wrapper-local-fallback";
 /// `wrapper-local-fallback` any more; its audit rule stays as the guard that
 /// it does not come back.
 pub const EVENT_WRAPPER_DAEMON_UNAVAILABLE: &str = "wrapper-daemon-unavailable";
+/// The daemon lost a dispatched request with no tool left running for it: it
+/// closed the connection, or it was wedged and the wrapper confirmed it dead.
+/// The wrapper still fails with exit 1; the event, stamped with its pid, lets
+/// the build tool that ran it compile directly instead.
+pub const EVENT_WRAPPER_NO_VERDICT: &str = "wrapper-no-verdict";
 /// The bounded recovery ladder was exhausted and the wrapper opened its
 /// cross-invocation breaker (#1170).
 ///
@@ -311,6 +317,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_CLIENT_CANCELLED,
     EVENT_WRAPPER_LOCAL_FALLBACK,
     EVENT_WRAPPER_DAEMON_UNAVAILABLE,
+    EVENT_WRAPPER_NO_VERDICT,
     EVENT_DAEMON_SPAWN_BREAKER_OPEN,
     EVENT_STAGED_PUBLICATION_CONFLICT,
     EVENT_STAGED_PUBLICATION_REPLACES_INVALID_GENERATION,
