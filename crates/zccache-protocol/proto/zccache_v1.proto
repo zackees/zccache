@@ -267,6 +267,16 @@ message DaemonStatus {
   // neither can be reused by a future prost field.
   reserved 31, 32;
   reserved "bincode_requests_by_type", "bincode_request_telemetry_available";
+  // ZCCACHE_MODE delivery diagnostics (#1683).
+  MaterializationStatus materialization = 33;
+}
+
+message MaterializationStatus {
+  string mode = 1;
+  uint64 reflink = 2;
+  uint64 hardlink = 3;
+  uint64 copy = 4;
+  uint64 reflink_fallbacks = 5;
 }
 
 message PrivateDaemonOwnerStatus {

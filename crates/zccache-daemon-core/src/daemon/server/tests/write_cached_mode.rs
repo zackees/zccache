@@ -413,3 +413,29 @@ fn every_mode_waits_for_child_spawn_before_writing() {
         assert_eq!(std::fs::read(&out).unwrap(), BYTES, "{mode}");
     }
 }
+
+/// `zccache status` counts every delivery by tier and every REFLINK -> copy
+/// fallback. The counters are process-wide and other tests deliver in
+/// parallel, so only a lower bound is asserted.
+#[test]
+fn deliveries_and_reflink_fallbacks_are_counted_for_status() {
+    let before = materialization_status(None);
+    let fixture = Fixture::legacy();
+    fixture.deliver(
+        &fixture.out("counted.rlib"),
+        DeliveryPolicy::HardlinkEligible,
+        Copy,
+    );
+    let fallback = fixture.out("fallback-counted.rlib");
+    let faults = StagedFaultGuard::arm(&fallback, [StagedFaultPoint::MaterializeReflink]);
+    fixture.deliver(&fallback, DeliveryPolicy::HardlinkEligible, Reflink);
+    faults.assert_all_consumed();
+    let after = materialization_status(Some(Copy));
+    assert!(after.copy >= before.copy + 2, "{before:?} -> {after:?}");
+    assert!(
+        after.reflink_fallbacks > before.reflink_fallbacks,
+        "{before:?} -> {after:?}"
+    );
+    assert_eq!(after.mode, "COPY");
+    assert_eq!(materialization_status(None).mode, "AUTO");
+}
