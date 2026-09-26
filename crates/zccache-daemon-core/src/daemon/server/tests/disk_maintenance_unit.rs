@@ -1193,9 +1193,27 @@ fn issue_1659_retired_store_bytes_are_reclaimed_before_live_entries() {
             .join(format!("old-{i}.meta"))
             .exists());
     }
-    assert!(report.retired_bytes_reclaimed > 0);
+    // #1673: reclaimed bytes are credited only where the volume proves the
+    // blocks exclusive; APFS/ReFS report unknown sharing and credit none,
+    // though the files are still removed and no live entry is evicted.
+    if volume_proves_exclusive(root.path()) {
+        assert!(report.retired_bytes_reclaimed > 0);
+    }
     assert!(report.bytes_reclaimed >= report.retired_bytes_reclaimed);
     assert_eq!(retired_store_bytes(&top_level, &current), 0);
+}
+
+/// Whether a fresh file in `dir` is reported `Exclusive`, i.e. whether this
+/// volume can prove that removing an `nlink == 1` file frees its space.
+fn volume_proves_exclusive(dir: &std::path::Path) -> bool {
+    let probe = dir.join("exclusive-probe.bin");
+    std::fs::write(&probe, b"probe").unwrap();
+    let exclusive = matches!(
+        kernal_api::platform::fs::extent_sharing(&probe),
+        Ok(kernal_api::platform::fs::ExtentSharing::Exclusive)
+    );
+    std::fs::remove_file(&probe).unwrap();
+    exclusive
 }
 
 /// Acceptance 6: evicting an entry whose file is also hard-linked into a
@@ -1243,4 +1261,22 @@ fn issue_1659_evicting_a_hard_linked_entry_reports_no_reclaimed_bytes() {
     );
     assert!(!cached.exists());
     assert_eq!(std::fs::read(target.join("out.o")).unwrap().len(), 4096);
+}
+
+/// #1673: a *newer* sibling store belongs to a newer daemon and never counts
+/// as reclaimable; only older-version siblings do.
+#[test]
+fn issue_1673_retired_store_bytes_ignore_newer_sibling_stores() {
+    let root = tempfile::tempdir().unwrap();
+    let top_level = root.path().to_path_buf();
+    std::fs::create_dir_all(top_level.join("v1.0.0")).unwrap();
+    let newer = top_level.join("v2.0.0").join("artifacts");
+    std::fs::create_dir_all(&newer).unwrap();
+    std::fs::write(newer.join("new.meta"), vec![0_u8; 4096]).unwrap();
+    assert_eq!(retired_store_bytes(&top_level, "v1.0.0"), 0);
+
+    let older = top_level.join("v0.9.0").join("artifacts");
+    std::fs::create_dir_all(&older).unwrap();
+    std::fs::write(older.join("old.meta"), vec![0_u8; 4096]).unwrap();
+    assert!(retired_store_bytes(&top_level, "v1.0.0") > 0);
 }
