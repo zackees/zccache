@@ -792,6 +792,8 @@ mod tests {
 
         a.check(&scan(src.path())).unwrap(); // a runs against v1
         create_file(src.path(), "a.rs", "v2 edited");
+        // Distinct mtime for the edit, as on a real clock (see hash_cache).
+        crate::hash_cache::tests::bump_mtime(&src.path().join("a.rs"));
         b.check(&scan(src.path())).unwrap(); // b's run against v2 is in flight
         a.mark_success().unwrap();
 

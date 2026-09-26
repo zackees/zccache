@@ -197,7 +197,7 @@ impl HashCache {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::scan;
     use super::*;
     use kernal_api::platform::fs::{set_file_mtime, FileTime};
@@ -216,6 +216,14 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(&path, content).unwrap();
+    }
+
+    /// Move `path`'s mtime two seconds forward.
+    pub(crate) fn bump_mtime(path: &std::path::Path) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        let later =
+            file.metadata().unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        file.set_modified(later).unwrap();
     }
 
     fn scan_dir(dir: &std::path::Path) -> Vec<ScannedFile> {
@@ -762,6 +770,11 @@ mod tests {
 
         a.check(&scan_dir(src.path())).unwrap(); // a runs against v1
         create_file(src.path(), "a.rs", "v2 edited");
+        // A real edit lands on a later clock tick. On coarse-mtime
+        // filesystems (NTFS) both writes can share one mtime, and the
+        // mtime fast path then cannot see the edit, which is not what this
+        // test is about.
+        bump_mtime(&src.path().join("a.rs"));
         b.check(&scan_dir(src.path())).unwrap(); // b's run against v2 is in flight
         a.mark_success().unwrap();
 
