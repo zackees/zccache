@@ -615,3 +615,67 @@ fn issue_1673_pressure_estimate_counts_unknown_but_not_proven_shared() {
         assert!(!file_frees_space_on_removal(&cached));
     }
 }
+
+/// #1687: the single rule both eviction planners use. `estimate` is the
+/// pressure/planning view (unknown sharing may free space); the strict view
+/// credits only provably exclusive blocks. Proven sharing (a reflink clone in
+/// `target/`) never counts, and the sharing probe runs only for the last link.
+#[test]
+fn issue_1687_removal_frees_space_truth_table() {
+    use kernal_api::platform::fs::ExtentSharing::{self, Exclusive, Shared, Unknown};
+    // `None` sharing = the probe itself failed (no FIEMAP, network share).
+    let rows: [(&str, Option<u64>, Option<ExtentSharing>, bool, bool); 7] = [
+        ("last link, exclusive", Some(1), Some(Exclusive), true, true),
+        (
+            "last link, reflink-shared",
+            Some(1),
+            Some(Shared),
+            false,
+            false,
+        ),
+        (
+            "last link, unknown sharing",
+            Some(1),
+            Some(Unknown),
+            true,
+            false,
+        ),
+        ("last link, probe failed", Some(1), None, true, false),
+        (
+            "hard-linked elsewhere",
+            Some(2),
+            Some(Exclusive),
+            false,
+            false,
+        ),
+        ("many links, shared", Some(40), Some(Shared), false, false),
+        ("unknown link count", None, Some(Exclusive), false, false),
+    ];
+    for (name, links, sharing, estimate, strict) in rows {
+        let probe = || sharing.ok_or_else(|| std::io::Error::other("probe failed"));
+        assert_eq!(
+            removal_frees_space(links, probe, true),
+            estimate,
+            "{name}: estimate"
+        );
+        assert_eq!(
+            removal_frees_space(links, probe, false),
+            strict,
+            "{name}: strict"
+        );
+    }
+    let mut probed = false;
+    let multi_linked = removal_frees_space(
+        Some(2),
+        || {
+            probed = true;
+            Ok(Exclusive)
+        },
+        true,
+    );
+    assert!(!multi_linked);
+    assert!(
+        !probed,
+        "the sharing probe must not run for a multi-linked file"
+    );
+}

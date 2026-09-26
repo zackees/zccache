@@ -116,7 +116,11 @@ pub fn is_older_version_dir(name: &str, current: &str) -> bool {
 /// over-counts (#1673). Unknown sharing never counts.
 #[must_use]
 pub fn file_frees_space_on_removal(path: &Path) -> bool {
-    file_link_count(path) == Some(1) && blocks_are_exclusive(path)
+    removal_frees_space(
+        file_link_count(path),
+        || kernal_api::platform::fs::extent_sharing(path),
+        false,
+    )
 }
 
 /// True when removing `path` may free its space, for the disk-pressure
@@ -128,18 +132,35 @@ pub fn file_frees_space_on_removal(path: &Path) -> bool {
 /// proven sharing (a btrfs/XFS/APFS/ReFS clone) is excluded.
 #[must_use]
 pub fn file_may_free_space_on_removal(path: &Path) -> bool {
-    file_link_count(path) == Some(1)
-        && !matches!(
-            kernal_api::platform::fs::extent_sharing(path),
-            Ok(kernal_api::platform::fs::ExtentSharing::Shared)
-        )
+    removal_frees_space(
+        file_link_count(path),
+        || kernal_api::platform::fs::extent_sharing(path),
+        true,
+    )
 }
 
-fn blocks_are_exclusive(path: &Path) -> bool {
-    matches!(
-        kernal_api::platform::fs::extent_sharing(path),
-        Ok(kernal_api::platform::fs::ExtentSharing::Exclusive)
-    )
+/// The one rule behind [`file_frees_space_on_removal`] (`estimate == false`)
+/// and [`file_may_free_space_on_removal`] (`estimate == true`), shared by the
+/// retired-store sweep and the live eviction planner so the two cannot drift
+/// (#1687). Only the last hard link can free space; proven block sharing
+/// never does; unknown sharing (or a failed probe) counts only for the
+/// estimate. `sharing` is consulted only for the last link, so multi-linked
+/// files never pay for the extent query.
+#[must_use]
+pub fn removal_frees_space(
+    link_count: Option<u64>,
+    sharing: impl FnOnce() -> std::io::Result<kernal_api::platform::fs::ExtentSharing>,
+    estimate: bool,
+) -> bool {
+    use kernal_api::platform::fs::ExtentSharing;
+    if link_count != Some(1) {
+        return false;
+    }
+    match sharing() {
+        Ok(ExtentSharing::Exclusive) => true,
+        Ok(ExtentSharing::Shared) => false,
+        Ok(ExtentSharing::Unknown) | Err(_) => estimate,
+    }
 }
 
 /// Outcome of a retired-store sweep — either [`sweep_retired_version_store`]
@@ -480,7 +501,11 @@ fn sweep_regular_file(
     let len = metadata.len();
     let link_count = file_link_count(path);
     // Observed before removal, while the file still exists.
-    let frees_space = link_count == Some(1) && blocks_are_exclusive(path);
+    let frees_space = removal_frees_space(
+        link_count,
+        || kernal_api::platform::fs::extent_sharing(path),
+        false,
+    );
     let should_delete = match (mode, link_count) {
         (RetiredSweepMode::Pressure, Some(1)) => true,
         _ => is_older_than(&metadata, now, max_age),
