@@ -816,13 +816,12 @@ async fn semantic_session_admission_holds_materialization_lock_through_native_sp
             .map(|_session| ())
     });
 
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while !admission_entered.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("actor must attempt admission");
+    // #1698: never wait for this spawn's admission *while* holding the lock.
+    // Native spawns go through one canonical actor, and a parallel test's
+    // spawn can occupy it blocked in its own admission on this very lock — a
+    // circular wait. The contract only needs that no native spawn can finish
+    // while materialization owns the exclusive lock.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(
         !start.is_finished(),
         "native spawn must wait while materialization owns the exclusive lock"
@@ -833,4 +832,8 @@ async fn semantic_session_admission_holds_materialization_lock_through_native_sp
         .await
         .expect("start task must not be cancelled")
         .expect("session must start after materialization releases its lock");
+    assert!(
+        admission_entered.load(Ordering::SeqCst),
+        "the spawn must have gone through semantic admission"
+    );
 }
