@@ -92,6 +92,8 @@ pub(crate) struct EmbeddedDaemon {
     index_writer_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     maintenance_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     depgraph_maintenance_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
+    /// The post-readiness startup depgraph load (#1652), joined by shutdown.
+    depgraph_load_handle: Mutex<Option<kernal_api::async_engine::Task<()>>>,
     /// Periodic tasks this service started, as reported by
     /// [`maintenance_schedule::MaintenanceSchedule::start`] (#1160). Retained
     /// so the parity guard can assert against a real embedded service rather
@@ -182,6 +184,7 @@ mod dependency_policy;
 mod directory_link;
 mod disk_maintenance;
 mod embedded;
+mod embedded_bringup;
 mod handle_clear;
 mod handle_compile;
 mod handle_compile_ephemeral;

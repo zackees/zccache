@@ -84,6 +84,8 @@
 //! | `watcher_rearmed` | daemon | a degraded daemon re-armed its file watcher | `attempt` |
 //! | `watcher_overflow` | daemon | the watcher event queue saturated; hardlink registry re-verified by stat signature | `links_unchanged`, `links_suspect` |
 //! | `embedded_dropped_without_shutdown` | daemon | a host dropped an embedded service without `shutdown()`; a best-effort checkpoint was written | `persisted`, `pid` |
+//! | `embedded_bringup` (#1652) | daemon | an embedded service became ready; per-phase wall time of its bring-up | `ready_ns`, `phases_ns`, `depgraph_load` |
+//! | `embedded_depgraph_loaded` (#1652) | daemon | the background startup depgraph load finished and compiles stopped waiting on it | `contexts`, `elapsed_ns` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -292,6 +294,11 @@ pub const EVENT_WATCHER_OVERFLOW: &str = "watcher_overflow";
 /// was salvaged by a best-effort checkpoint, but the host is misusing the API
 /// — this is the signal that says so, and log-audit rules can bound it.
 pub const EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN: &str = "embedded_dropped_without_shutdown";
+/// An embedded service became ready; carries each bring-up phase's wall time
+/// so a slow start is attributable from the log alone (#1652).
+pub const EVENT_EMBEDDED_BRINGUP: &str = "embedded_bringup";
+/// The embedded service's background startup depgraph load finished (#1652).
+pub const EVENT_EMBEDDED_DEPGRAPH_LOADED: &str = "embedded_depgraph_loaded";
 
 /// Complete lifecycle-event catalog. Keep this additive and update the module
 /// schema table with every new event; log-audit and operator docs depend on it.
@@ -344,6 +351,8 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_WATCHER_REARMED,
     EVENT_WATCHER_OVERFLOW,
     EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN,
+    EVENT_EMBEDDED_BRINGUP,
+    EVENT_EMBEDDED_DEPGRAPH_LOADED,
     EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
     EVENT_DESTINATION_WRITE_FAILED,
     EVENT_MISS_REASON_UNKNOWN,

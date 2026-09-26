@@ -199,6 +199,81 @@ async fn embedded_saves_the_depgraph_on_a_tick() {
     );
 }
 
+/// #1652: `metadata.bin` was written only by flush/shutdown/drop, so a host
+/// that exits without them (fbuild's idle eviction) restarted empty every
+/// time. The periodic save tick must snapshot it too.
+#[tokio::test]
+async fn embedded_snapshots_metadata_on_a_save_tick() {
+    let root = tempfile::tempdir().expect("cache root");
+    let cache_dir = crate::core::NormalizedPath::new(root.path());
+    let state = test_state(&cache_dir);
+    state.metadata_cache_loaded.store(true, Ordering::Release);
+    let source = root.path().join("tracked.c");
+    std::fs::write(&source, "int tracked(void) { return 1; }\n").unwrap();
+    hash_file(
+        &state.cache_system,
+        &source,
+        state.cache_system.current_clock(),
+    )
+    .expect("hash tracked source");
+    std::fs::remove_file(state.metadata_path.as_path()).ok();
+
+    let started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .start();
+
+    let snapshotted = wait_until(|| state.metadata_path.as_path().exists()).await;
+    stop(&state);
+    drop(started);
+    assert!(
+        snapshotted,
+        "the save tick must persist metadata.bin without a host flush()"
+    );
+    let restored = crate::fscache::MetadataCache::load_from_disk(state.metadata_path.as_path())
+        .expect("snapshot decodes");
+    assert!(restored
+        .get_cached_hash(&crate::core::NormalizedPath::new(&source))
+        .is_some());
+}
+
+/// A save tick must not snapshot a metadata cache whose startup load has not
+/// finished: that would overwrite the on-disk snapshot with a partial one.
+#[tokio::test]
+async fn metadata_snapshot_waits_for_the_startup_load() {
+    let root = tempfile::tempdir().expect("cache root");
+    let cache_dir = crate::core::NormalizedPath::new(root.path());
+    let state = test_state(&cache_dir);
+    state.metadata_cache_loaded.store(false, Ordering::Release);
+    let source = root.path().join("tracked.c");
+    std::fs::write(&source, "int tracked(void) { return 1; }\n").unwrap();
+    hash_file(
+        &state.cache_system,
+        &source,
+        state.cache_system.current_clock(),
+    )
+    .expect("hash tracked source");
+    let depgraph_path = depgraph_file_path_for_cache_dir(&cache_dir);
+    std::fs::remove_file(&depgraph_path).ok();
+    std::fs::remove_file(state.metadata_path.as_path()).ok();
+
+    let started = MaintenanceSchedule::new(
+        Arc::clone(&state),
+        MaintenancePolicy::default(),
+        ServiceMode::Embedded,
+    )
+    .with_intervals(fast_intervals())
+    .start();
+    let ticked = wait_until(|| depgraph_path.exists()).await;
+    stop(&state);
+    drop(started);
+    assert!(ticked, "the depgraph tick must still run");
+    assert!(!state.metadata_path.as_path().exists());
+}
+
 #[tokio::test]
 async fn depgraph_saves_are_exclusive_without_blocking_async_progress() {
     let root = tempfile::tempdir().expect("cache root");

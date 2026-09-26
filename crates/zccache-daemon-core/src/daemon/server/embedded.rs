@@ -31,7 +31,7 @@ const EMBEDDED_PUBLICATION_BARRIER_TIMEOUT: std::time::Duration =
 /// provide a runtime hook. Keeping this at the daemon boundary prevents a
 /// startup or flush operation from silently escaping the host's chosen
 /// blocking lane while its async siblings honor it.
-fn launch_embedded_blocking<F, R>(
+pub(super) fn launch_embedded_blocking<F, R>(
     runtime_handle: Option<&kernal_api::async_engine::RuntimeHandle>,
     operation: F,
 ) -> kernal_api::async_engine::Task<R>
@@ -126,6 +126,7 @@ impl EmbeddedDaemon {
             index_writer_handle: Mutex::new(None),
             maintenance_handle: Mutex::new(None),
             depgraph_maintenance_handle: Mutex::new(None),
+            depgraph_load_handle: Mutex::new(None),
             maintenance_tasks: Vec::new(),
         };
         daemon
@@ -155,115 +156,64 @@ impl EmbeddedDaemon {
             *self.index_writer_handle.lock().await = Some(handle);
         }
 
+        let mut timer = super::embedded_bringup::BringupTimer::new();
         let state = Arc::clone(&self.state);
-        let artifact_load = launch_embedded_blocking(runtime_handle.as_ref(), move || {
-            if let Err(error) = state.staging.cleanup_abandoned() {
-                tracing::debug!(%error, "abandoned private staging cleanup skipped");
-            }
-            if let Err(e) = state.artifact_store.load_from_disk() {
-                tracing::warn!("embedded artifact index load failed, continuing empty: {e}");
-            }
-            // #1157: same recovery as the standalone daemon's
-            // `ArtifactStoreLoader` — run it before snapshotting into
-            // `state.artifacts` so rebuilt entries are published together
-            // with the ones that loaded normally.
-            super::index_reconcile::reconcile_corrupt_index(
-                &state.artifact_store,
-                state.artifact_dir.as_path(),
-                state.cache_dir.as_path(),
-                super::index_reconcile::reconcile_budget(),
-            );
-            let entries = state.artifact_store.load_all();
-            let count = entries.len();
-            for (key, meta) in entries {
-                state
-                    .artifacts
-                    .entry(key)
-                    .or_insert_with(|| CachedArtifact::from_index(meta));
-            }
-            state.artifacts_loaded.store(true, Ordering::Release);
-            state.artifact_store_loaded.store(true, Ordering::Release);
-            count
-        })
-        .await
-        .unwrap_or(0);
+        let artifact_load = timer
+            .phase(
+                "artifact_index",
+                launch_embedded_blocking(runtime_handle.as_ref(), move || {
+                    if let Err(error) = state.staging.cleanup_abandoned() {
+                        tracing::debug!(%error, "abandoned private staging cleanup skipped");
+                    }
+                    if let Err(e) = state.artifact_store.load_from_disk() {
+                        tracing::warn!(
+                            "embedded artifact index load failed, continuing empty: {e}"
+                        );
+                    }
+                    // #1157: same recovery as the standalone daemon's
+                    // `ArtifactStoreLoader` — run it before snapshotting into
+                    // `state.artifacts` so rebuilt entries are published together
+                    // with the ones that loaded normally.
+                    super::index_reconcile::reconcile_corrupt_index(
+                        &state.artifact_store,
+                        state.artifact_dir.as_path(),
+                        state.cache_dir.as_path(),
+                        super::index_reconcile::reconcile_budget(),
+                    );
+                    let entries = state.artifact_store.load_all();
+                    let count = entries.len();
+                    for (key, meta) in entries {
+                        state
+                            .artifacts
+                            .entry(key)
+                            .or_insert_with(|| CachedArtifact::from_index(meta));
+                    }
+                    state.artifacts_loaded.store(true, Ordering::Release);
+                    state.artifact_store_loaded.store(true, Ordering::Release);
+                    count
+                }),
+            )
+            .await
+            .unwrap_or(0);
         if artifact_load > 0 {
             tracing::info!(loaded = artifact_load, "embedded artifact index restored");
         }
-
-        let metadata_state = Arc::clone(&self.state);
-        let metadata_path = self.state.metadata_path.clone();
-        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
-            match crate::fscache::MetadataCache::load_from_disk(metadata_path.as_path()) {
-                Ok(loaded) => metadata_state.cache_system.metadata().merge_from(loaded),
-                Err(e) => tracing::warn!(
-                    path = %metadata_path.display(),
-                    "failed to load embedded metadata cache, starting empty: {e}"
-                ),
-            }
-            metadata_state
-                .metadata_cache_loaded
-                .store(true, Ordering::Release);
-        })
+        super::embedded_bringup::load_persisted_caches(
+            &mut timer,
+            &self.state,
+            runtime_handle.as_ref(),
+        )
         .await;
 
-        let compiler_state = Arc::clone(&self.state);
-        let compiler_hash_cache_path = self.state.compiler_hash_cache_path.clone();
-        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
-            match CompilerHashCache::load_from_disk(compiler_hash_cache_path.as_path()) {
-                Ok(loaded) => compiler_state.compiler_hash_cache.merge_from(loaded),
-                Err(e) => tracing::warn!(
-                    path = %compiler_hash_cache_path.display(),
-                    "failed to load embedded compiler hash cache, starting empty: {e}"
-                ),
-            }
-            compiler_state
-                .compiler_hash_cache_loaded
-                .store(true, Ordering::Release);
-        })
-        .await;
-
-        let includes_state = Arc::clone(&self.state);
-        let system_includes_cache_path = self.state.system_includes_cache_path.clone();
-        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
-            match crate::depgraph::SystemIncludeCache::load_from_disk(
-                system_includes_cache_path.as_path(),
-            ) {
-                Ok(loaded) => {
-                    let mut live = includes_state.system_includes.blocking_lock();
-                    live.merge_from(loaded);
-                }
-                Err(e) => tracing::warn!(
-                    path = %system_includes_cache_path.display(),
-                    "failed to load embedded system include cache, starting empty: {e}"
-                ),
-            }
-            includes_state
-                .system_includes_loaded
-                .store(true, Ordering::Release);
-        })
-        .await;
-
-        let depgraph_path = embedded_depgraph_file_path(&self.state);
-        let state = Arc::clone(&self.state);
-        let _ = launch_embedded_blocking(runtime_handle.as_ref(), move || {
-            let outcome = crate::depgraph::classify_load(depgraph_path.as_path());
-            let warning = outcome.warning(depgraph_path.as_path());
-            if let Some(graph) = outcome.into_graph() {
-                state.dep_graph.store(Arc::new(graph));
-                state.dep_graph_persisted.store(true, Ordering::Release);
-            }
-            if let Some(warning) = warning {
-                let mut guard = state
-                    .depgraph_load_warning
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                *guard = Some(warning);
-            }
-            state.dep_graph_load_complete.store(true, Ordering::Release);
-            state.dep_graph_load_notify.notify_waiters();
-        })
-        .await;
+        // #1652: the depgraph scales with every context the host ever compiled
+        // and is the one phase that can take tens of seconds. Load it after
+        // readiness; compiles wait on `dep_graph_load_complete`.
+        *self.depgraph_load_handle.lock().await =
+            Some(super::embedded_bringup::spawn_depgraph_load(
+                Arc::clone(&self.state),
+                embedded_depgraph_file_path(&self.state),
+                runtime_handle.as_ref(),
+            ));
 
         // #1160: start the SAME schedule the standalone daemon starts. Before
         // this, embedded ran no periodic task at all beyond the disk loop, so
@@ -291,6 +241,7 @@ impl EmbeddedDaemon {
         *self.maintenance_handle.lock().await = started.disk_maintenance;
         *self.depgraph_maintenance_handle.lock().await = started.depgraph_save;
         self.maintenance_tasks = started.started;
+        timer.ready(&self.state);
     }
 
     pub(crate) async fn compile(
@@ -478,7 +429,14 @@ impl EmbeddedDaemon {
             Some(handle) => join_task(handle, "embedded depgraph maintenance").await,
             None => FlushStepOutcome::Completed,
         };
-        let outcome = disk_outcome.combine(depgraph_outcome);
+        // #1652: the final flush saves the depgraph only once its startup load
+        // has installed; wait for that load so a quick shutdown keeps it.
+        let load_handle = self.depgraph_load_handle.lock().await.take();
+        let load_outcome = match load_handle {
+            Some(handle) => join_task(handle, "embedded depgraph load").await,
+            None => FlushStepOutcome::Completed,
+        };
+        let outcome = disk_outcome.combine(depgraph_outcome).combine(load_outcome);
         EmbeddedFlushStepReport {
             step: "maintenance_shutdown".to_owned(),
             outcome,
@@ -761,6 +719,12 @@ async fn flush_embedded_state(
     let depgraph_state = Arc::clone(state);
     steps.push(
         flush_step("depgraph", async move {
+            if !super::embedded_bringup::await_depgraph_load(&depgraph_state).await {
+                tracing::warn!(
+                    "startup depgraph load still pending; flush keeps the on-disk graph"
+                );
+                return Ok(());
+            }
             run_depgraph_save_with(Arc::clone(&depgraph_state), runtime_handle, move |dg| {
                 if let Some(parent) = depgraph_path.parent() {
                     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
