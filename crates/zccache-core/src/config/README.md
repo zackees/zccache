@@ -26,6 +26,10 @@ Split into focused submodules (file-size discipline: every source file < 1,000 L
   (`daemon_namespace`, `daemon_namespace_label`), IPC sanitization
   (`sanitize_ipc_component`, `sanitize_daemon_namespace`), and the FNV-1a
   short-hash helper reused by colocation.
+- **`materialization_mode.rs`** - `ZCCACHE_MODE` (#1683): the
+  `MaterializationMode` enum (`AUTO`/`LINK`/`COPY`/`REFLINK`), its grammar, and
+  the only readers of the variable (process env and forwarded client env);
+  tests in `materialization_mode_tests.rs`, including a guard against raw reads.
 - **`cleanup.rs`** - Legacy / stale temp-state cleanup
   (`cleanup_legacy_temp_root_state`, `cleanup_stale_depfile_dirs`).
 - **`tests.rs`** - Unit tests for all of the above (kept here because they

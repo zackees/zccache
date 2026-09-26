@@ -133,7 +133,7 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     let blob_time = kernal_api::platform::fs::FileTime::from_last_modification_time(
         &std::fs::metadata(&blob).unwrap(),
     );
-    let caps = fs_caps(&blob, &output);
+    let caps = fs_caps_raw(&blob, &output);
     if cross_volume {
         assert!(!caps.reflink && !caps.hardlink);
     }
@@ -272,7 +272,7 @@ fn reflink_larger_than_four_gib_uses_chunked_clone() {
     kernal_api::platform::fs::set_file_mtime(&blob, old_time).unwrap();
     drop(file);
     register_trusted_blob_for_test(&blob).unwrap();
-    let caps = fs_caps(&blob, &output);
+    let caps = fs_caps_raw(&blob, &output);
     assert!(caps.reflink, "stress fixture must support reflinks");
     let observed = write_cached_file_observed(&output, &blob).unwrap();
     assert_eq!(observed.reflink_count, 1);

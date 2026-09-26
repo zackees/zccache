@@ -18,6 +18,7 @@ mod cli_defender_exclusions;
 mod cli_ino_convert;
 mod cli_installers;
 mod cli_kv;
+mod cli_materialization_mode;
 mod cli_meson_configure_cache;
 mod cli_no_spawn_guard;
 mod cli_rust_plan_lifecycle;

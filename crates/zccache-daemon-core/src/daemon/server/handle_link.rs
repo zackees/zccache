@@ -10,6 +10,7 @@ enum LinkCacheHitOutcome {
     Miss,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn materialize_link_cache_hit(
     state: &SharedState,
     key_hex: &str,
@@ -18,6 +19,7 @@ fn materialize_link_cache_hit(
     secondary_outputs: &[NormalizedPath],
     is_directory: bool,
     warning: Option<String>,
+    mode: MaterializationMode,
 ) -> LinkCacheHitOutcome {
     let Some(entry) = lookup_artifact_with_disk_fallback(state, key_hex) else {
         return LinkCacheHitOutcome::Miss;
@@ -96,7 +98,7 @@ fn materialize_link_cache_hit(
     });
     let materialize_started = std::time::Instant::now();
     payloads.record_staged_pre_materialization(&state.profiler.staged);
-    let observed = write_payloads_par_observed(&targets, &payloads);
+    let observed = write_payloads_par_observed(&targets, &payloads, mode);
     payloads.record_staged_lock_timings(&state.profiler.staged);
     drop(payloads);
     if let Err(failure) = &observed {
@@ -405,6 +407,7 @@ pub(super) async fn handle_link_ephemeral(
     let hit_is_directory =
         parsed_tool.output_kind == crate::compiler::parse_linker::LinkOutputKind::DirectoryBundle;
     let hit_warning = nd_warning.clone();
+    let hit_mode = state.materialization_mode(env.as_deref());
     let hit_outcome = state
         .launch_blocking(move || {
             materialize_link_cache_hit(
@@ -415,6 +418,7 @@ pub(super) async fn handle_link_ephemeral(
                 &hit_secondary,
                 hit_is_directory,
                 hit_warning,
+                hit_mode,
             )
         })
         .await;

@@ -371,6 +371,16 @@ never scans parent or sibling product roots. See
 [artifact-store.md](artifact-store.md#daemon-owned-retention-policy) for the
 single policy shared with standalone mode.
 
+Cache-hit delivery follows `ZCCACHE_MODE` (`AUTO`/`LINK`/`COPY`/`REFLINK`,
+re-exported as `zccache::embedded::MaterializationMode`). The service starts
+with the host process's own `ZCCACHE_MODE`; `set_materialization_mode(Some(_))`
+replaces that service-wide default at any time and `None` restores `AUTO`. A
+`CompileRequest` whose `env` carries a valid `ZCCACHE_MODE` overrides the
+default for that request, so a host may instead forward it per compile. It is a
+method rather than a config field so existing `ZccacheConfig` and
+`ZccacheStartOptions` literals stay source-compatible. Semantics:
+[artifact-store.md](artifact-store.md#materialization-mode-zccache_mode-1683).
+
 ### Maintenance limits and task ownership
 
 Both service modes start the **same** periodic set from one declaration:

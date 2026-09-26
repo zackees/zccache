@@ -102,6 +102,12 @@ fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The daemon reads `ZCCACHE_MODE` per request and would only log an
+    // invalid value, so reject it here, before dispatch (#1683 decision D4).
+    if let Err(err) = crate::core::config::materialization_mode_from_env() {
+        eprintln!("zccache: {err}");
+        return ExitCode::FAILURE;
+    }
 
     let wrapped_tool = tool_resolution::resolve_compiler_path(&args[0]);
     let tool_args: Vec<String> = args.get(1..).unwrap_or(&[]).to_vec();

@@ -79,7 +79,7 @@ fn cache_hit_copies_when_hardlink_registration_fails() {
     let cache = dir.path().join("cached.rmeta");
     let destination = dir.path().join("requested.rmeta");
     seed_persisted_blob(&cache, b"immutable rust metadata");
-    if !fs_caps(&cache, &destination).hardlink {
+    if !fs_caps_raw(&cache, &destination).hardlink {
         eprintln!("SKIP: test filesystem does not support hardlinks");
         return;
     }
@@ -117,7 +117,7 @@ fn long_cache_blob_path_delivers_requested_metadata_hit() {
     assert!(cache.as_os_str().len() > 260);
     let destination = dir.path().join("requested.rmeta");
     assert!(
-        fs_caps(&cache, &destination).hardlink,
+        fs_caps_raw(&cache, &destination).hardlink,
         "the fixture must exercise the hardlink-registration path"
     );
     let identity_available = crate::platform::fs::identity::file_identity(&cache).is_ok();
@@ -425,6 +425,7 @@ fn staged_generation_hardlinks_only_when_semantically_authorized() {
         &[payload],
         &Vec::<NormalizedPath>::new(),
         &[crate::compiler::DeliveryPolicy::HardlinkEligible],
+        MaterializationMode::Auto,
     )
     .unwrap();
     assert_eq!(
@@ -462,7 +463,7 @@ fn staged_hit_tier_faults_fall_through_without_misattribution() {
         .unwrap()
         .unwrap();
     let output = dir.path().join("target.rlib");
-    if !fs_caps(&payloads[0], &output).hardlink {
+    if !fs_caps_raw(&payloads[0], &output).hardlink {
         eprintln!("SKIP staged_hit_tier_faults: fixture has no hardlink capability");
         return;
     }
@@ -480,6 +481,7 @@ fn staged_hit_tier_faults_fall_through_without_misattribution() {
         &[payload],
         &Vec::<NormalizedPath>::new(),
         &[crate::compiler::DeliveryPolicy::HardlinkEligible],
+        MaterializationMode::Auto,
     )
     .unwrap();
     assert_eq!(observed.reflink_count, 0);
@@ -721,8 +723,8 @@ fn capability_verdict_is_cached_and_registry_tracks_hardlinks() {
     let out = dir.path().join("libapp.rlib");
     seed_persisted_blob(&cache, b"bytes");
 
-    let first = fs_caps(&cache, &out);
-    let second = fs_caps(&cache, &out);
+    let first = fs_caps_raw(&cache, &out);
+    let second = fs_caps_raw(&cache, &out);
     assert_eq!(first, second);
     write_cached_output(&out, &cache, b"bytes").unwrap();
     if crate::platform::fs::identity::same_file(&out, &cache).unwrap() {
@@ -948,7 +950,7 @@ fn multi_hit_materialization_failure_is_reported_to_the_handler() {
     }
 
     assert!(matches!(
-        materialize_multi_hit(&targets, &payloads),
+        materialize_multi_hit(&targets, &payloads, MaterializationMode::Auto),
         Err(MaterializationFailure::CacheBlobMissing(_))
     ));
     assert!(
@@ -967,7 +969,11 @@ fn multi_hit_destination_failure_is_not_cache_blob_loss() {
     std::fs::write(&blocked_parent, b"blocker").unwrap();
     let target: NormalizedPath = blocked_parent.join("output.o").into();
 
-    let result = materialize_multi_hit(&[target], &[CachedPayload::File(blob.clone())]);
+    let result = materialize_multi_hit(
+        &[target],
+        &[CachedPayload::File(blob.clone())],
+        MaterializationMode::Auto,
+    );
 
     assert!(matches!(
         result,
@@ -990,8 +996,12 @@ async fn destination_failure_survives_and_journals_concrete_reason() {
     let target: NormalizedPath = blocker.join("output.o").into();
 
     let (failure, reason, _, _) = capture_miss_reason(Box::pin(async {
-        let failure =
-            materialize_multi_hit(&[target], &[CachedPayload::File(blob.clone())]).unwrap_err();
+        let failure = materialize_multi_hit(
+            &[target],
+            &[CachedPayload::File(blob.clone())],
+            MaterializationMode::Auto,
+        )
+        .unwrap_err();
         report_materialization_failure(dir.path(), "artifact-key", "unit-test", &failure);
         failure
     }))
@@ -1053,8 +1063,12 @@ async fn deleted_cache_blob_invalidates_with_no_artifact_reason() {
     let target: NormalizedPath = dir.path().join("restored.o").into();
 
     let (failure, reason, _, _) = capture_miss_reason(Box::pin(async {
-        let failure =
-            materialize_multi_hit(&[target], &[CachedPayload::File(missing)]).unwrap_err();
+        let failure = materialize_multi_hit(
+            &[target],
+            &[CachedPayload::File(missing)],
+            MaterializationMode::Auto,
+        )
+        .unwrap_err();
         report_materialization_failure(dir.path(), "artifact-key", "unit-test", &failure);
         failure
     }))

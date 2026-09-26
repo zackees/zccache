@@ -41,6 +41,7 @@ mod staged_compiler_sets;
 mod system_includes_deferred;
 mod watcher_lifecycle;
 mod write_cached;
+mod write_cached_mode;
 
 /// Bind a daemon server on a fresh endpoint, rooted at a cache directory
 /// under `cache_root` that no other test can reach.

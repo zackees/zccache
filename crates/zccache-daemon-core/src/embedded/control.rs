@@ -128,6 +128,22 @@ impl ZccacheService {
         })
     }
 
+    /// Set the service-wide cache-hit delivery mode (`ZCCACHE_MODE`, #1683).
+    ///
+    /// The service starts with the host process's own `ZCCACHE_MODE` (an
+    /// invalid value is ignored with a warning). A compile request whose
+    /// forwarded environment carries a valid `ZCCACHE_MODE` still overrides
+    /// this default for that request. `None` restores `AUTO`.
+    pub fn set_materialization_mode(&self, mode: Option<crate::core::config::MaterializationMode>) {
+        self.daemon.set_materialization_mode_default(mode);
+    }
+
+    /// The service-wide delivery mode default; `None` means `AUTO`.
+    #[must_use]
+    pub fn materialization_mode(&self) -> Option<crate::core::config::MaterializationMode> {
+        self.daemon.materialization_mode_default()
+    }
+
     /// Reserve one unit from the shared embedded compiler-work budget for
     /// host-owned work. The returned opaque guard releases its reservation on
     /// drop, including when a host task is cancelled.
@@ -299,3 +315,7 @@ fn facade_runtime_handle(
     kernal_api::async_engine::RuntimeHandle::current()
         .map_err(|error| format!("host runtime handle is not usable: {error:?}"))
 }
+
+#[cfg(test)]
+#[path = "mode_tests.rs"]
+mod mode_tests;

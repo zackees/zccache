@@ -398,6 +398,35 @@ remove read-only attributes before deletion.
 
 `ZCCACHE_DISABLE_REFLINK=1` disables cloning and `ZCCACHE_COW_READONLY=0`
 disables read-only enforcement. Neither setting adds an IPC roundtrip.
+
+### Materialization mode (`ZCCACHE_MODE`, #1683)
+
+`ZCCACHE_MODE` selects how a cache hit reaches its requested path:
+
+| Mode | Delivery |
+|---|---|
+| `AUTO` (default) | Reflink, else hardlink (only outputs whose delivery policy allows sharing an inode), else copy. The tier order above, unchanged. |
+| `LINK` | Hardlink eligible outputs, never clone them. Outputs the policy keeps independent take reflink-else-copy. |
+| `COPY` | Always an independent, writable byte copy. Never probes the volume. |
+| `REFLINK` | An independent, writable clone; where the volume cannot clone, a copy (never a hardlink), with a one-time `materialization_reflink_fallback` warning. |
+
+`COPY` and `REFLINK` deliver the same thing — an independent, writable inode
+carrying the cache file's mtime, with the sibling floor applied — and differ
+only in the syscall. The mode can only *demote* an output to independent
+delivery; it never shares an inode the output's delivery policy forbids, so
+the ETXTBSY and in-place-edit guards hold in every mode. Switching from
+`LINK`/`AUTO` to `COPY`/`REFLINK` detaches an existing hardlinked output on its
+next hit. The legacy `ZCCACHE_DISABLE_REFLINK` applies to every mode except an
+explicit `REFLINK`.
+
+Resolution is per request, with no extra roundtrip: the wrapper forwards its
+environment on every compile/link/exec request, so a valid `ZCCACHE_MODE`
+there wins; otherwise the service default applies (the daemon's own
+`ZCCACHE_MODE` at start, or an embedded host's
+`ZccacheService::set_materialization_mode`); otherwise `AUTO`. The wrapper
+rejects an invalid value before dispatch (exit 1); the daemon only logs one.
+The pure decision is `plan_tiers` in
+`crates/zccache-daemon-core/src/daemon/server/persist/delivery_mode.rs`.
 Unsupported shapes—including shared multi-source side outputs, C++ modules,
 unrewritable/undeclared linker outputs, opaque generic exec, and stdout
 output—remain on the legacy path before compiler spawn. Explicit Rust `--emit=kind=path`

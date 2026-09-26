@@ -332,6 +332,7 @@ pub(super) fn new_shared_state(
             in_flight_exec: DashMap::new(),
             pending_cache_writes: DashMap::new(),
             exec_store,
+            materialization_mode_default: MaterializationModeDefault::from_process_env(),
         }),
         index_writer_rx,
     ))
