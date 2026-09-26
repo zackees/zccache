@@ -32,6 +32,70 @@ def production_dependencies(manifest: Path) -> set[str]:
     return found
 
 
+# zccache#1518 ended every direct dependency on these; they are reached only
+# through kernal-api. Cargo only lets code name a crate its own manifest
+# declares, so checking every dependency table of every workspace manifest,
+# plus the lockfile, covers normal, renamed, target, dev, build and
+# workspace-inherited reintroduction alike.
+FORBIDDEN_DIRECT_DEPENDENCIES = frozenset({"running-process"})
+DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+def _crate_key(name: str) -> str:
+    """Cargo treats `-` and `_` in a package name as the same crate."""
+    return name.replace("_", "-").lower()
+
+
+def _dependency_tables(manifest: dict) -> list[tuple[str, dict]]:
+    tables = [(kind, manifest.get(kind, {})) for kind in DEPENDENCY_TABLES]
+    for target, spec in manifest.get("target", {}).items():
+        tables += [(f"target.{target}.{kind}", spec.get(kind, {})) for kind in DEPENDENCY_TABLES]
+    tables.append(("workspace.dependencies", manifest.get("workspace", {}).get("dependencies", {})))
+    return tables
+
+
+def workspace_manifests(root: Path) -> list[Path]:
+    """The root manifest plus every workspace member's."""
+    root_manifest = root / "Cargo.toml"
+    if not root_manifest.is_file():
+        return []
+    workspace = tomllib.loads(root_manifest.read_text(encoding="utf-8")).get("workspace", {})
+    manifests = {root_manifest}
+    for pattern in workspace.get("members", []):
+        manifests |= {member / "Cargo.toml" for member in root.glob(pattern) if (member / "Cargo.toml").is_file()}
+    return sorted(manifests)
+
+
+def forbidden_direct_dependencies(root: Path) -> list[str]:
+    """Reject any workspace dependency on a backend kernal-api now owns."""
+    reason = "(reach it only through kernal-api, #1518)"
+    errors: list[str] = []
+    for manifest in workspace_manifests(root):
+        relative = manifest.relative_to(root).as_posix()
+        parsed = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        for table_name, table in _dependency_tables(parsed):
+            for key, spec in table.items():
+                package = _crate_key(spec.get("package", key) if isinstance(spec, dict) else key)
+                if package in FORBIDDEN_DIRECT_DEPENDENCIES:
+                    errors.append(
+                        f"forbidden direct dependency: {relative}: [{table_name}] {key} -> {package} {reason}"
+                    )
+    lockfile = root / "Cargo.lock"
+    if lockfile.is_file():
+        for package in tomllib.loads(lockfile.read_text(encoding="utf-8")).get("package", []):
+            # Registry and git packages carry a `source`; only workspace
+            # packages are ours, so kernal-api's own dependency is fine.
+            if "source" in package:
+                continue
+            for dependency in package.get("dependencies", []):
+                name = _crate_key(dependency.split(" ", 1)[0])
+                if name in FORBIDDEN_DIRECT_DEPENDENCIES:
+                    errors.append(
+                        f"forbidden direct dependency: Cargo.lock: {package['name']} -> {name} {reason}"
+                    )
+    return errors
+
+
 def evidence_label_value(provenance: str, label: str) -> str | None:
     """Return one exact `Label: value` evidence line, rejecting ambiguity."""
     prefix = f"{label}: "
@@ -145,6 +209,7 @@ def check(root: Path = ROOT) -> list[str]:
         for path in tests:
             if not (root / path).is_file():
                 errors.append(f"characterization path missing: {contract}: {path}")
+    errors.extend(forbidden_direct_dependencies(root))
     return errors
 
 
