@@ -95,7 +95,10 @@ pub(in crate::daemon::server) fn rehydrate_staged_output_bytes(
     )
 }
 
-fn rehydrate_logical_depfile_bytes(bytes: &[u8], requested_outputs: &[NormalizedPath]) -> Vec<u8> {
+pub(in crate::daemon::server) fn rehydrate_logical_depfile_bytes(
+    bytes: &[u8],
+    requested_outputs: &[NormalizedPath],
+) -> Vec<u8> {
     let mut rewritten = bytes.to_vec();
     let mut requested_outputs = requested_outputs.iter().collect::<Vec<_>>();
     requested_outputs

@@ -122,11 +122,61 @@ pub(super) fn contains_depfile_root_marker(bytes: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
 }
 
-/// Rewrite the logical marker to the requesting key root. `None` when the
-/// bytes need a root this request cannot supply.
-pub(super) fn rehydrate_depfile_root(bytes: &[u8], key_root: Option<&Path>) -> Option<Vec<u8>> {
-    if !contains_depfile_root_marker(bytes) {
-        return Some(bytes.to_vec());
+/// Header line of a stored depfile that only its own worktree may replay.
+const DEPFILE_ROOT_BOUND_PREFIX: &[u8] = b"# zccache-worktree-bound ";
+
+/// Whether canonical depfile bytes still name a path under `key_root` in a
+/// spelling the rewrite did not recognise: a `.` segment, a symlink into
+/// the root, another case or separator. The artifact key resolves every
+/// dependency with `canonicalize_path` and keys those under the root
+/// relative to it, so such a path lets a sibling worktree share an entry
+/// whose depfile fits only this one. Non-UTF-8 bytes count as bound.
+pub(super) fn names_unrewritten_root_path(canonical: &[u8], key_root: &Path) -> bool {
+    let Ok(text) = std::str::from_utf8(canonical) else {
+        return true;
+    };
+    crate::depgraph::depfile::depfile_path_tokens(text)
+        .iter()
+        .any(|token| {
+            let path = Path::new(token);
+            path.is_absolute()
+                && !token.starts_with(DEPFILE_WORKTREE_ROOT_MARKER)
+                && crate::depgraph::depfile::canonicalize_path(path, key_root)
+                    .as_path()
+                    .starts_with(key_root)
+        })
+}
+
+/// Prefix stored depfile bytes with the root they are bound to. A hit from
+/// any other root cannot rehydrate them and recompiles instead.
+pub(super) fn bind_depfile_to_root(canonical: &[u8], key_root: &Path) -> Vec<u8> {
+    let root = key_root.to_string_lossy();
+    let mut bound =
+        Vec::with_capacity(DEPFILE_ROOT_BOUND_PREFIX.len() + root.len() + 1 + canonical.len());
+    bound.extend_from_slice(DEPFILE_ROOT_BOUND_PREFIX);
+    bound.extend_from_slice(root.as_bytes());
+    bound.push(b'\n');
+    bound.extend_from_slice(canonical);
+    bound
+}
+
+/// Rewrite stored depfile bytes for the requesting key root: drop a bound
+/// header naming this root and replace the logical marker. `None` when the
+/// bytes belong to another root or need a root this request cannot supply.
+pub(super) fn rehydrate_depfile_root(
+    mut bytes: Vec<u8>,
+    key_root: Option<&Path>,
+) -> Option<Vec<u8>> {
+    if bytes.starts_with(DEPFILE_ROOT_BOUND_PREFIX) {
+        let rest = &bytes[DEPFILE_ROOT_BOUND_PREFIX.len()..];
+        let end = rest.iter().position(|&byte| byte == b'\n')?;
+        if rest[..end] != *key_root?.to_string_lossy().as_bytes() {
+            return None;
+        }
+        bytes.drain(..DEPFILE_ROOT_BOUND_PREFIX.len() + end + 1);
+    }
+    if !contains_depfile_root_marker(&bytes) {
+        return Some(bytes);
     }
     let root = key_root.and_then(root_spelling)?;
     let quoted = crate::daemon::server::quote_make_depfile_path(root.as_bytes());
@@ -146,23 +196,27 @@ pub(super) fn rehydrate_depfile_root(bytes: &[u8], key_root: Option<&Path>) -> O
     Some(rewritten)
 }
 
-/// Rewrite a delivered depfile in place for the requesting key root.
-pub(super) fn rehydrate_depfile_root_file(
+/// Rewrite a delivered depfile in place for the requesting compile: staged
+/// output names, then the logical worktree root. One read and at most one
+/// atomic replace, which never touches the shared blob.
+pub(super) fn rehydrate_delivered_depfile(
     path: &NormalizedPath,
+    requested_outputs: &[NormalizedPath],
     key_root: Option<&NormalizedPath>,
 ) -> std::io::Result<()> {
     let bytes = std::fs::read(path.as_path())?;
-    if !contains_depfile_root_marker(&bytes) {
-        return Ok(());
-    }
-    let rewritten = rehydrate_depfile_root(&bytes, key_root.map(NormalizedPath::as_path))
+    let staged = crate::daemon::server::rehydrate_logical_depfile_bytes(&bytes, requested_outputs);
+    let rewritten = rehydrate_depfile_root(staged, key_root.map(NormalizedPath::as_path))
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "cached depfile names the worktree root but the request has none",
+                "cached depfile is bound to another worktree root",
             )
         })?;
-    crate::daemon::server::replace_depfile_bytes(path.as_path(), &rewritten)
+    if rewritten != bytes {
+        crate::daemon::server::replace_depfile_bytes(path.as_path(), &rewritten)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -222,16 +276,64 @@ mod tests {
             "{text}"
         );
 
-        let delivered = rehydrate_depfile_root(&stored, Some(Path::new("/other/wt"))).unwrap();
+        let delivered =
+            rehydrate_depfile_root(stored.clone(), Some(Path::new("/other/wt"))).unwrap();
         assert_eq!(
             String::from_utf8(delivered).unwrap(),
             "obj/a.o: /other/wt/src/a.c /other/wt/include/a.h \\\n /work/tree2/b.h /usr/include/stdio.h /x/work/tree/c.h\n"
         );
-        assert!(rehydrate_depfile_root(&stored, None).is_none());
+        assert!(rehydrate_depfile_root(stored, None).is_none());
         assert_eq!(
-            rehydrate_depfile_root(b"a.o: a.c\n", None).unwrap(),
+            rehydrate_depfile_root(b"a.o: a.c\n".to_vec(), None).unwrap(),
             b"a.o: a.c\n"
         );
+    }
+
+    #[test]
+    fn rewritten_and_foreign_paths_do_not_bind_the_depfile() {
+        let stored = canonicalize_depfile_root(
+            b"obj/a.o: /work/tree/src/a.c src/b.h /work/tree2/b.h /usr/include/stdio.h\n",
+            Path::new(ROOT),
+        );
+        assert!(!names_unrewritten_root_path(&stored, Path::new(ROOT)));
+    }
+
+    #[test]
+    fn a_dot_segment_spelling_of_the_root_binds_the_depfile() {
+        let stored = canonicalize_depfile_root(
+            b"obj/a.o: /work/tree/src/a.c /work/./tree/gen/config.h\n",
+            Path::new(ROOT),
+        );
+        assert!(names_unrewritten_root_path(&stored, Path::new(ROOT)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_into_the_root_binds_the_depfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = base.join("tree");
+        std::fs::create_dir_all(root.join("gen")).unwrap();
+        std::fs::write(root.join("gen/config.h"), "").unwrap();
+        std::os::unix::fs::symlink(&root, base.join("alias")).unwrap();
+        let depfile = format!("obj/a.o: {}/gen/config.h\n", base.join("alias").display());
+        let stored = canonicalize_depfile_root(depfile.as_bytes(), &root);
+        assert!(names_unrewritten_root_path(&stored, &root));
+    }
+
+    #[test]
+    fn a_bound_depfile_replays_only_to_its_own_root() {
+        let stored = canonicalize_depfile_root(
+            b"obj/a.o: /work/tree/src/a.c /work/./tree/gen/config.h\n",
+            Path::new(ROOT),
+        );
+        let bound = bind_depfile_to_root(&stored, Path::new(ROOT));
+        assert_eq!(
+            rehydrate_depfile_root(bound.clone(), Some(Path::new(ROOT))).unwrap(),
+            b"obj/a.o: /work/tree/src/a.c /work/./tree/gen/config.h\n"
+        );
+        assert!(rehydrate_depfile_root(bound.clone(), Some(Path::new("/other/wt"))).is_none());
+        assert!(rehydrate_depfile_root(bound, None).is_none());
     }
 
     #[test]
@@ -249,7 +351,7 @@ mod tests {
                 m = DEPFILE_WORKTREE_ROOT_MARKER
             )
         );
-        let delivered = rehydrate_depfile_root(&stored, Some(Path::new("/w/b c"))).unwrap();
+        let delivered = rehydrate_depfile_root(stored, Some(Path::new("/w/b c"))).unwrap();
         assert_eq!(
             String::from_utf8(delivered).unwrap(),
             "/w/b\\ c/a.o: /w/b\\ c/a.c /x/a\\ /work/my\\ tree/b.h\n"
