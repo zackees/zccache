@@ -267,6 +267,12 @@ jobs:
       - name: Verify nested Dylint cache contract
         run: "soldr cargo test -p zccache --test cache_rust daemon_dylint_cache_test:: -- --ignored"
 
+  reflink-e2e:
+    name: Reflink e2e
+    # ZCCACHE_MODE on a real btrfs volume: parent/child worktree hits per
+    # mode, extent-sharing evidence, cross-device fallback (#1683).
+    uses: ./.github/workflows/reflink-e2e.yml
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest

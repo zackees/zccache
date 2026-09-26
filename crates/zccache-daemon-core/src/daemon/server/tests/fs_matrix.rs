@@ -18,8 +18,9 @@ fn filesystem_materialization_matrix_prints_loud_summary() {
         match builder() {
             Ok(fixture) => {
                 let evidence = exercise_row(&fixture, cross_volume);
+                let modes = exercise_modes(&fixture, cross_volume);
                 executed_names.push(row_name);
-                executed.push(format!("{row_name} ({evidence})"));
+                executed.push(format!("{row_name} ({evidence}; modes: {modes})"));
             }
             Err(skip) => skipped.push(format!("{} ({})", skip.name, skip.reason)),
         }
@@ -204,6 +205,88 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     format!(
         "tier={tier} copied_bytes={copied_bytes} mutation_behavior={mutation_behavior} mtime_preserved=true file_identity={file_identity} cleanup={cleanup}"
     )
+}
+
+/// The `ZCCACHE_MODE` column (#1683): every mode against this row's real
+/// filesystem. A tier outside the mode's plan is a failure; a planned tier
+/// the volume supports must win (COPY copies, REFLINK clones where it can,
+/// LINK links where it can); COPY and REFLINK outputs are always independent.
+fn exercise_modes(fixture: &FsFixture, cross_volume: bool) -> String {
+    let source_fixture = cross_volume.then(|| tempfile::tempdir().unwrap());
+    let source_root = source_fixture
+        .as_ref()
+        .map_or_else(|| fixture.root(), |temp| temp.path());
+    let blob = source_root.join("mode-blob.rlib");
+    let original = b"matrix-mode-bytes";
+    std::fs::write(&blob, original).unwrap();
+    write_authoritative_blob_digest(&blob).unwrap();
+    let raw_caps = fs_caps_raw(&blob, &fixture.root().join("mode-probe.rlib"));
+    let mut evidence = Vec::new();
+    for mode in MaterializationMode::ALL {
+        let output = fixture
+            .root()
+            .join(format!("mode-{}.rlib", mode.as_str().to_ascii_lowercase()));
+        let observed = materialize_cached_file_with_mode(
+            &output,
+            &blob,
+            crate::compiler::DeliveryPolicy::HardlinkEligible,
+            mode,
+            true,
+        )
+        .unwrap();
+        // Plan against the capabilities the executor uses, including the
+        // legacy ZCCACHE_DISABLE_REFLINK switch when a runner sets it.
+        let caps = caps_for_mode(mode, raw_caps, legacy_reflink_disabled());
+        let plan = plan_tiers(mode, true, caps, 0);
+        let tier = match (
+            observed.reflink_count,
+            observed.hardlink_count,
+            observed.copy_count,
+        ) {
+            (1, 0, 0) => "reflink",
+            (0, 1, 0) => "hardlink",
+            (0, 0, 1) => "copy",
+            other => panic!("{mode}: expected exactly one tier, observed {other:?}"),
+        };
+        assert!(
+            plan.reflink || tier != "reflink",
+            "{mode}: cloned outside its plan"
+        );
+        assert!(
+            plan.hardlink || tier != "hardlink",
+            "{mode}: linked outside its plan"
+        );
+        if plan.reflink {
+            assert_eq!(
+                tier, "reflink",
+                "{mode}: a reflink-capable volume must clone"
+            );
+        } else if plan.hardlink {
+            assert_eq!(
+                tier, "hardlink",
+                "{mode}: a hardlink-capable volume must link"
+            );
+        } else {
+            assert_eq!(tier, "copy", "{mode}");
+        }
+        if matches!(
+            mode,
+            MaterializationMode::Copy | MaterializationMode::Reflink
+        ) {
+            assert!(
+                !crate::platform::fs::identity::same_file(&blob, &output).unwrap(),
+                "{mode}: output shares the cache inode"
+            );
+            std::fs::write(&output, b"private").unwrap();
+            assert_eq!(std::fs::read(&blob).unwrap(), original, "{mode}");
+        }
+        let _ = crate::platform::fs::permissions::make_writable(&output);
+        std::fs::remove_file(&output).unwrap();
+        evidence.push(format!("{mode}={tier}"));
+    }
+    let _ = crate::platform::fs::permissions::make_writable(&blob);
+    remove_registered_blob(&blob).unwrap();
+    evidence.join(" ")
 }
 
 /// ReFS uses cluster-rounded duplicate-extents calls for non-aligned lengths.
