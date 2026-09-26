@@ -23,8 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
+      - uses: zackees/setup-soldr@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
         with:
+          save-cache: auto
           zccache-seed-strict: true
           cache: false
           linker: fast

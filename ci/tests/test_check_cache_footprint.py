@@ -2,8 +2,8 @@ from pathlib import Path
 
 from ci import check_cache_footprint as guard
 
-PENDING = next(iter(guard.PENDING_527_REFS))
-RELEASED = "0" * 40
+CURRENT = next(iter(guard.SAVE_CACHE_REFS))
+OLD = "5b2b45cecfc63c646413da68bb38677b87d043f3"  # v0.9.76, pre-#527
 
 
 def _workflow(
@@ -15,7 +15,7 @@ def _workflow(
 
 
 def _job(
-    name: str, ref: str = PENDING, os: str = "ubuntu-latest", **inputs: str
+    name: str, ref: str = CURRENT, os: str = "ubuntu-latest", **inputs: str
 ) -> str:
     lines = "".join(f"          {k}: {v}\n" for k, v in inputs.items())
     return (
@@ -67,43 +67,56 @@ def test_rejects_mixed_versions_and_pins(tmp_path: Path) -> None:
     _workflow(
         tmp_path,
         "a.yml",
-        _job("a", version="0.9.21") + _job("b", ref=RELEASED, **{"save-cache": "auto"}),
+        _job("a", version="0.9.21") + _job("b", ref=OLD, **{"save-cache": "auto"}),
     )
     errors = guard.check(tmp_path)
     assert any("soldr versions" in e for e in errors)
     assert any("pinned at 2 refs" in e for e in errors)
 
 
-def test_pr_save_requires_save_cache_after_527(tmp_path: Path) -> None:
-    _workflow(tmp_path, "a.yml", _job("a", ref=RELEASED))
+def test_old_pin_without_exemption_is_red(tmp_path: Path) -> None:
+    # The pre-#527 pin cannot stop PR saves; with the exemption gone it fails
+    # even when save-cache: auto is written (the old action ignores it).
+    _workflow(tmp_path, "a.yml", _job("a", ref=OLD, **{"save-cache": "auto"}))
     assert any("can save caches on pull_request" in e for e in guard.check(tmp_path))
 
 
-def test_pr_save_is_exempt_only_for_pending_527_ref(tmp_path: Path) -> None:
-    _workflow(tmp_path, "a.yml", _job("a"))
+def test_new_pin_auto_or_unset_is_green(tmp_path: Path) -> None:
+    _workflow(tmp_path, "a.yml", _job("a") + _job("b", **{"save-cache": "auto"}))
     assert guard.check(tmp_path) == []
 
 
-def test_save_cache_auto_or_push_only_or_cache_off_passes(tmp_path: Path) -> None:
+def test_save_cache_true_needs_justification(tmp_path: Path) -> None:
+    _workflow(tmp_path, "a.yml", _job("seed", **{"save-cache": '"true"'}))
+    assert any("JUSTIFIED_PR_SAVES" in e for e in guard.check(tmp_path))
+
+
+def test_save_cache_true_with_justification_passes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(guard.JUSTIFIED_PR_SAVES, "a.yml:seed", "seeds job b")
+    _workflow(tmp_path, "a.yml", _job("seed", **{"save-cache": '"true"'}))
+    assert guard.check(tmp_path) == []
+
+
+def test_old_pin_false_expression_or_cache_off_passes(tmp_path: Path) -> None:
     _workflow(
         tmp_path,
         "a.yml",
-        _job("a", ref=RELEASED, **{"save-cache": "auto"})
+        _job("a", ref=OLD, **{"save-cache": "false"})
         + _job(
             "b",
-            ref=RELEASED,
+            ref=OLD,
             **{"save-cache": "${{ github.event_name != 'pull_request' }}"},
         )
-        + _job("c", ref=RELEASED, cache="false"),
+        + _job("c", ref=OLD, cache="false"),
     )
     assert guard.check(tmp_path) == []
 
 
 def test_reusable_workflow_counts_as_pr_reachable(tmp_path: Path) -> None:
-    _workflow(tmp_path, "a.yml", _job("a", ref=RELEASED), on="workflow_call")
+    _workflow(tmp_path, "a.yml", _job("a", ref=OLD), on="workflow_call")
     assert guard.check(tmp_path) != []
 
 
 def test_push_only_workflow_may_save(tmp_path: Path) -> None:
-    _workflow(tmp_path, "a.yml", _job("a", ref=RELEASED), on="[push]")
+    _workflow(tmp_path, "a.yml", _job("a", ref=OLD), on="[push]")
     assert guard.check(tmp_path) == []

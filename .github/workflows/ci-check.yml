@@ -32,8 +32,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
+      - uses: zackees/setup-soldr@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
         with:
+          save-cache: auto
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -64,8 +65,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
-      - uses: zackees/setup-soldr@5b2b45cecfc63c646413da68bb38677b87d043f3
+      - uses: zackees/setup-soldr@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
         with:
+          save-cache: auto
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -98,7 +100,7 @@ jobs:
         run: soldr cargo test --workspace --lib --bins --no-fail-fast --no-run
       - name: Stop setup-soldr builder cache before tests
         if: ${{ false }} # no preceding builder compile remains to stop.
-        uses: zackees/setup-soldr/cleanup@5b2b45cecfc63c646413da68bb38677b87d043f3
+        uses: zackees/setup-soldr/cleanup@fabebf4ac3867b0008576797d566db0cb18d43c3 # v0.9.78
       - name: Test
         shell: bash
         env:

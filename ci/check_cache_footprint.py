@@ -9,16 +9,12 @@ Fails when:
 * the workflows pin more than one setup-soldr ref or resolve more than one
   soldr ``version``;
 * a cache-enabled setup-soldr step in a workflow reachable from
-  ``pull_request`` can save durable caches.  Only ``save-cache: false``,
-  ``save-cache: auto`` or an expression that is false on ``pull_request``
-  counts as "cannot save".
-
-Pending exemption: the pinned setup-soldr ref predates zackees/setup-soldr#527,
-the release that adds ``save-cache`` to the main action.  Until it ships, no
-step can express "restore but never save on pull_request", so the PR-save
-check is waived for exactly the refs in ``PENDING_527_REFS``.  The pin bump
-that adopts #527 must delete that entry and set ``save-cache: auto``; any
-other ref is checked in full.
+  ``pull_request`` can save durable caches.  On a ref listed in
+  ``SAVE_CACHE_REFS`` (setup-soldr v0.9.78+, zackees/setup-soldr#527)
+  ``save-cache`` unset or ``auto`` means "no saves on pull_request".  On any
+  other ref only ``save-cache: false`` or an expression that is false on
+  ``pull_request`` counts.  ``save-cache: true`` must be justified in
+  ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``).
 
 Usage: ``uv run --no-project --with pyyaml python ci/check_cache_footprint.py``
 """
@@ -44,12 +40,16 @@ JUSTIFIED_SUFFIXES: dict[str, str] = {
     "`cross-targets`, not the host",
 }
 
-# setup-soldr refs that predate zackees/setup-soldr#527 (no main-action
-# `save-cache`).  Remove on the pin bump that adopts #527.
-PENDING_527_REFS: dict[str, str] = {
-    "5b2b45cecfc63c646413da68bb38677b87d043f3": "setup-soldr v0.9.76; "
-    "zackees/setup-soldr#527 unreleased",
+# setup-soldr refs whose main action honors `save-cache: auto|true|false`
+# with `auto` (the default) skipping durable saves on pull_request
+# (zackees/setup-soldr#527).  Add the new ref on each pin bump.
+SAVE_CACHE_REFS: dict[str, str] = {
+    "fabebf4ac3867b0008576797d566db0cb18d43c3": "setup-soldr v0.9.78",
 }
+
+# `workflow.yml:job` -> why that job must save on pull_request (e.g. it seeds
+# a cache a later job in the same run restores).  None today.
+JUSTIFIED_PR_SAVES: dict[str, str] = {}
 
 SHAPE_INPUTS = (
     "toolchain",
@@ -98,40 +98,43 @@ def _oses(job: dict) -> frozenset[str]:
     return frozenset({runs_on})
 
 
+def _step(where: str, step: dict, oses: frozenset[str], pr: bool) -> Step | None:
+    uses = str(step.get("uses", ""))
+    if not uses.startswith(ACTION):
+        return None
+    name, _, ref = uses.partition("@")
+    ref = ref.split("#", 1)[0].strip()
+    if name != ACTION:  # sub-actions share the pin check only
+        return Step(where, ref, {"cache": False}, frozenset(), False, False)
+    return Step(where, ref, dict(step.get("with") or {}), oses, pr)
+
+
 def collect(root: Path) -> list[Step]:
     steps: list[Step] = []
+    pr_texts: list[str] = []
     for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        text = path.read_text(encoding="utf-8")
+        doc = yaml.safe_load(text) or {}
         triggers = _triggers(doc)
         # A reusable workflow inherits its callers' events; assume a PR caller.
         pr = bool(triggers & {"pull_request", "pull_request_target", "workflow_call"})
+        if pr:
+            pr_texts.append(text)
         for job_name, job in (doc.get("jobs") or {}).items():
-            for index, step in enumerate(job.get("steps") or []):
-                uses = str(step.get("uses", ""))
-                if not uses.startswith(ACTION):
-                    continue
-                name, _, ref = uses.partition("@")
-                if name != ACTION:  # sub-actions share the pin check only
-                    steps.append(
-                        Step(
-                            f"{path.name}:{job_name}#{index}",
-                            ref,
-                            {"cache": False},
-                            frozenset(),
-                            False,
-                            False,
-                        )
-                    )
-                    continue
-                steps.append(
-                    Step(
-                        f"{path.name}:{job_name}#{index}",
-                        ref,
-                        dict(step.get("with") or {}),
-                        _oses(job),
-                        pr,
-                    )
-                )
+            for index, raw in enumerate(job.get("steps") or []):
+                found = _step(f"{path.name}:{job_name}#{index}", raw, _oses(job), pr)
+                if found:
+                    steps.append(found)
+    # Composite actions: PR-reachable when a PR-reachable workflow uses them.
+    for path in sorted((root / ".github" / "actions").glob("*/action.y*ml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        local = f"./.github/actions/{path.parent.name}"
+        pr = any(local in text for text in pr_texts)
+        where = f"actions/{path.parent.name}"
+        for index, raw in enumerate((doc.get("runs") or {}).get("steps") or []):
+            found = _step(f"{where}:steps#{index}", raw, frozenset({ANY_OS}), pr)
+            if found:
+                steps.append(found)
     return steps
 
 
@@ -152,7 +155,9 @@ def _shape(step: Step) -> tuple[str, ...]:
 
 def _cannot_save_on_pr(step: Step) -> bool:
     value = str(step.inputs.get("save-cache", "")).strip().replace(" ", "")
-    return value.lower() in {"false", "auto"} or value in {
+    if step.ref in SAVE_CACHE_REFS and value.lower() in {"", "auto"}:
+        return True
+    return value.lower() == "false" or value in {
         "${{github.event_name!='pull_request'}}",
         "${{github.event_name=='push'}}",
     }
@@ -191,14 +196,20 @@ def check(root: Path = ROOT) -> list[str]:
             )
 
     for s in cached:
-        if (
-            s.pr_reachable
-            and not _cannot_save_on_pr(s)
-            and s.ref not in PENDING_527_REFS
-        ):
-            errors.append(
-                f"{s.where} can save caches on pull_request; set save-cache: auto"
-            )
+        if not s.pr_reachable or _cannot_save_on_pr(s):
+            continue
+        job = s.where.rsplit("#", 1)[0]
+        if str(s.inputs.get("save-cache", "")).strip().lower() == "true":
+            if job not in JUSTIFIED_PR_SAVES:
+                errors.append(
+                    f"{s.where} sets save-cache: true on a pull_request-reachable "
+                    "workflow; justify it in JUSTIFIED_PR_SAVES"
+                )
+            continue
+        errors.append(
+            f"{s.where} can save caches on pull_request; pin setup-soldr "
+            "v0.9.78+ (SAVE_CACHE_REFS) with save-cache: auto"
+        )
     return errors
 
 
