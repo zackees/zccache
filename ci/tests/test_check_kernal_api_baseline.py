@@ -1,3 +1,5 @@
+import pytest
+
 from pathlib import Path
 
 from ci import check_kernal_api_baseline
@@ -212,3 +214,99 @@ def test_check_accepts_the_documented_compiler_prefix(tmp_path: Path) -> None:
         "baseline capture provenance mismatch" in error
         for error in check_kernal_api_baseline.check(tmp_path)
     )
+
+
+def write_workspace(root: Path, member_manifest: str, *, workspace_extra: str = "") -> None:
+    (root / "Cargo.toml").write_text(
+        f'[workspace]\nmembers = ["crates/*"]\n{workspace_extra}',
+        encoding="utf-8",
+    )
+    member = root / "crates" / "member"
+    member.mkdir(parents=True)
+    (member / "Cargo.toml").write_text(
+        f'[package]\nname = "member"\nversion = "0.1.0"\n{member_manifest}',
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    ("member_manifest", "workspace_extra"),
+    [
+        ('[dependencies]\nrunning-process = "4"\n', ""),
+        ('[dependencies]\nrp = { package = "running-process", version = "4" }\n', ""),
+        ('[dependencies]\nrunning_process = "4"\n', ""),
+        ("[target.'cfg(unix)'.dependencies]\nrunning-process = \"4\"\n", ""),
+        ('[dev-dependencies]\nrunning-process = "4"\n', ""),
+        ('[build-dependencies]\nrunning-process = "4"\n', ""),
+        (
+            "[dependencies]\nrunning-process = { workspace = true }\n",
+            '[workspace.dependencies]\nrunning-process = "4"\n',
+        ),
+    ],
+    ids=["normal", "renamed", "underscore", "target", "dev", "build", "workspace"],
+)
+def test_forbidden_backend_is_rejected_on_every_dependency_route(
+    tmp_path: Path, member_manifest: str, workspace_extra: str
+) -> None:
+    write_workspace(tmp_path, member_manifest, workspace_extra=workspace_extra)
+
+    errors = check_kernal_api_baseline.forbidden_direct_dependencies(tmp_path)
+
+    assert errors, "a direct running-process dependency must be rejected"
+    assert all("running-process" in error and "#1518" in error for error in errors)
+
+
+def test_forbidden_backend_is_rejected_from_a_stale_lockfile(tmp_path: Path) -> None:
+    write_workspace(tmp_path, "")
+    (tmp_path / "Cargo.lock").write_text(
+        """version = 4
+
+[[package]]
+name = "member"
+version = "0.1.0"
+dependencies = [
+ "running-process 4.10.14",
+]
+""",
+        encoding="utf-8",
+    )
+
+    errors = check_kernal_api_baseline.forbidden_direct_dependencies(tmp_path)
+
+    assert errors == [
+        "forbidden direct dependency: Cargo.lock: member -> running-process "
+        "(reach it only through kernal-api, #1518)"
+    ]
+
+
+def test_forbidden_backend_is_allowed_transitively_through_kernal_api(
+    tmp_path: Path,
+) -> None:
+    write_workspace(tmp_path, '[dependencies]\nkernal-api = "0.1"\n')
+    (tmp_path / "Cargo.lock").write_text(
+        """version = 4
+
+[[package]]
+name = "kernal-api"
+version = "0.1.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "running-process",
+]
+
+[[package]]
+name = "member"
+version = "0.1.0"
+dependencies = [
+ "kernal-api",
+]
+""",
+        encoding="utf-8",
+    )
+
+    assert check_kernal_api_baseline.forbidden_direct_dependencies(tmp_path) == []
+
+
+def test_current_workspace_has_no_forbidden_direct_dependency() -> None:
+    root = Path(check_kernal_api_baseline.ROOT)
+    assert check_kernal_api_baseline.forbidden_direct_dependencies(root) == []

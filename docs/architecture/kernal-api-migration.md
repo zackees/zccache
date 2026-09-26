@@ -17,7 +17,7 @@ The authoritative inventory is [kernal-api-migration.toml](kernal-api-migration.
 - **move** — move generic native implementation to the kernel; or
 - **retain** — leave product policy in its owning zccache crate, with a reason and no native implementation.
 
-Run `uv run --no-project python ci/check_kernal_api_baseline.py` after changing the facade, inventory, or covered manifests. It verifies relevant dependency declarations, dispositions, captured-baseline provenance, and characterization evidence. It fails if a declaration has no mapping, a mapping goes stale, a disposition is invalid, or a characterization path disappears.
+Run `uv run --no-project python ci/check_kernal_api_baseline.py` after changing the facade, inventory, or covered manifests. It verifies relevant dependency declarations, dispositions, captured-baseline provenance, and characterization evidence. It fails if a declaration has no mapping, a mapping goes stale, a disposition is invalid, or a characterization path disappears. It also fails if any workspace package depends on `running-process` directly (#1518). It checks every dependency table of the root and member manifests, including renamed (`package =`), target, dev, build and `workspace.dependencies` entries, plus the lockfile. `running-process` is reachable only through kernal-api.
 
 The completed zccache-platform migration ([#1365](https://github.com/zackees/zccache/issues/1365) through [#1380](https://github.com/zackees/zccache/issues/1380)) is predecessor evidence, not a second migration to perform. Its remaining crate has been removed after this integration slice validated the replacement adapters; the historical mapping stays as evidence without keeping a live duplicate implementation.
 
