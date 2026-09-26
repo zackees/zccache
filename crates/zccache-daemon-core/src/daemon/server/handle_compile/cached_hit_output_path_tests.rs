@@ -86,6 +86,7 @@ fn materialize(
         mtime_floor_paths: Vec::new(),
         rustc_metadata_compat_outputs: None,
         rustc_archive_hardlink_eligible,
+        materialization_mode: MaterializationMode::Auto,
         phases: CachedHitPhases::request_cache(0, 0),
     })
     .expect("cache hit must materialize");
