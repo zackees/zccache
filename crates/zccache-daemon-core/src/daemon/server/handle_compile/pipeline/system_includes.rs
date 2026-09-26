@@ -401,10 +401,12 @@ mod tests {
 
     /// FastLED/fbuild#1466: a cold burst of compiles for one compiler must
     /// spawn the system-include probe once, not once per compile.
-    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_cold_discovery_probes_the_compiler_once() {
-        use std::os::unix::fs::PermissionsExt;
+        // The fake compiler is a POSIX shell script.
+        if crate::platform::host::is_windows() {
+            return;
+        }
 
         let tmp = tempfile::tempdir().unwrap();
         let include_dir = tmp.path().join("include");
@@ -423,7 +425,7 @@ mod tests {
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::platform::fs::permissions::make_executable(&compiler).unwrap();
 
         let cache_dir = NormalizedPath::new(tmp.path().join("cache"));
         let server =
