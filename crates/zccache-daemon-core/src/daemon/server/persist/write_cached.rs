@@ -226,6 +226,10 @@ fn materialize_verified_cached_file_tiers(
                 &std::fs::metadata(cache_file)?,
             );
             detach_with_floored_mtime(out_path, cache_file, floor)?;
+            // The detached output is a new inode: apply the sibling floor
+            // exactly like the copy tier, or a mode switch (LINK -> COPY)
+            // could leave it older than its siblings (#466/#467).
+            touch_mtime(out_path);
             return Ok(observed(0, 0, 1, bytes));
         }
         crate::platform::fs::permissions::set_readonly(cache_file, readonly_enabled())?;

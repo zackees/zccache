@@ -7,8 +7,9 @@
 //! resort, so every hit delivers something.
 //!
 //! The mode is resolved per request ([`resolve_request_mode`]): the client's
-//! forwarded `ZCCACHE_MODE`, else the service default (the daemon's own
-//! environment at start, or an embedded host's setting), else `AUTO`.
+//! forwarded `ZCCACHE_MODE`, else the service default (an embedded host's
+//! environment at start or its setting; a standalone daemon has none), else
+//! `AUTO`.
 
 use super::*;
 use crate::core::config::MaterializationMode;
@@ -104,9 +105,10 @@ pub(in crate::daemon::server) fn note_reflink_fallback(cache_file: &Path, out_pa
     }
 }
 
-/// Service-wide default mode: the daemon's own `ZCCACHE_MODE` at start, or
-/// an embedded host's explicit setting. `None` means "AUTO unless a request
-/// says otherwise".
+/// Service-wide default mode: an embedded host's `ZCCACHE_MODE` at start or
+/// its explicit setting. A standalone daemon has none — it is spawned lazily
+/// from whichever shell ran first, so its own environment says nothing about
+/// later clients. `None` means "AUTO unless a request says otherwise".
 #[derive(Debug)]
 pub(in crate::daemon::server) struct MaterializationModeDefault(AtomicU8);
 
@@ -115,19 +117,6 @@ const NO_DEFAULT: u8 = u8::MAX;
 impl MaterializationModeDefault {
     pub(in crate::daemon::server) fn new(mode: Option<MaterializationMode>) -> Self {
         Self(AtomicU8::new(encode(mode)))
-    }
-
-    /// Seed from this process's environment. An invalid value is reported
-    /// once and ignored, so a bad daemon environment degrades to `AUTO`
-    /// rather than failing every compile; the CLI rejects it up front.
-    pub(in crate::daemon::server) fn from_process_env() -> Self {
-        match crate::core::config::materialization_mode_from_env() {
-            Ok(mode) => Self::new(mode),
-            Err(error) => {
-                tracing::warn!(event = "materialization_mode_invalid", %error, "ignoring invalid daemon ZCCACHE_MODE");
-                Self::new(None)
-            }
-        }
     }
 
     pub(in crate::daemon::server) fn get(&self) -> Option<MaterializationMode> {

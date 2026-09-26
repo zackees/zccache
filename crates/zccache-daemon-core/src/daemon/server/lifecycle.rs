@@ -332,7 +332,11 @@ pub(super) fn new_shared_state(
             in_flight_exec: DashMap::new(),
             pending_cache_writes: DashMap::new(),
             exec_store,
-            materialization_mode_default: MaterializationModeDefault::from_process_env(),
+            // Never seeded from this process's environment: a lazily spawned
+            // daemon inherits whichever shell started it, and every client
+            // forwards its own ZCCACHE_MODE per request (#1683). Embedded hosts
+            // seed it from their own environment at start.
+            materialization_mode_default: MaterializationModeDefault::new(None),
         }),
         index_writer_rx,
     ))

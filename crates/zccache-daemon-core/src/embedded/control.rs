@@ -95,6 +95,10 @@ impl ZccacheService {
             options.disk_limits.max_cache_percent,
         )
         .map_err(EmbeddedError::Start)?;
+        // #1683: the host's own ZCCACHE_MODE seeds the service default. An
+        // invalid value is a start error (decision D4), never a silent AUTO.
+        let host_mode = crate::core::config::materialization_mode_from_env()
+            .map_err(|error| EmbeddedError::Start(error.to_string()))?;
         let daemon = EmbeddedDaemon::start_with_maintenance(
             endpoint,
             cache_root,
@@ -106,6 +110,7 @@ impl ZccacheService {
         )
         .await
         .map_err(|err| EmbeddedError::Start(err.to_string()))?;
+        daemon.set_materialization_mode_default(host_mode);
         let host_inflight_guard = config
             .limits
             .host_in_flight
@@ -131,7 +136,7 @@ impl ZccacheService {
     /// Set the service-wide cache-hit delivery mode (`ZCCACHE_MODE`, #1683).
     ///
     /// The service starts with the host process's own `ZCCACHE_MODE` (an
-    /// invalid value is ignored with a warning). A compile request whose
+    /// invalid value fails the start). A compile request whose
     /// forwarded environment carries a valid `ZCCACHE_MODE` still overrides
     /// this default for that request. `None` restores `AUTO`.
     pub fn set_materialization_mode(&self, mode: Option<crate::core::config::MaterializationMode>) {

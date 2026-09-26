@@ -421,10 +421,13 @@ explicit `REFLINK`.
 
 Resolution is per request, with no extra roundtrip: the wrapper forwards its
 environment on every compile/link/exec request, so a valid `ZCCACHE_MODE`
-there wins; otherwise the service default applies (the daemon's own
-`ZCCACHE_MODE` at start, or an embedded host's
-`ZccacheService::set_materialization_mode`); otherwise `AUTO`. The wrapper
-rejects an invalid value before dispatch (exit 1); the daemon only logs one.
+there wins; otherwise the service default applies; otherwise `AUTO`. Only an
+embedded service has a default (the host process's `ZCCACHE_MODE` at start,
+or `ZccacheService::set_materialization_mode`). A standalone daemon has none:
+it is spawned lazily from whichever shell ran first, so its own environment
+must not decide later clients' delivery. The wrapper rejects an invalid value
+before dispatch (exit 1), an embedded service refuses to start on one, and
+the daemon only logs one that arrives in a request.
 The pure decision is `plan_tiers` in
 `crates/zccache-daemon-core/src/daemon/server/persist/delivery_mode.rs`.
 Unsupported shapes—including shared multi-source side outputs, C++ modules,

@@ -284,30 +284,62 @@ fn capability_cache_is_mode_independent() {
 }
 
 /// `ZCCACHE_COW_READONLY` protects a *shared* blob only: independent
-/// deliveries never flip the cache file's permissions.
+/// deliveries never flip the cache file's permissions, whichever way they
+/// start.
 #[test]
 fn independent_modes_never_change_the_cache_file_permissions() {
     for mode in [Copy, Reflink] {
-        let fixture = Fixture::legacy();
-        let before = std::fs::metadata(&fixture.cache)
-            .unwrap()
-            .permissions()
-            .readonly();
-        let out = fixture.out("perm.rlib");
-        fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, mode);
-        assert_eq!(
-            std::fs::metadata(&fixture.cache)
-                .unwrap()
-                .permissions()
-                .readonly(),
-            before,
-            "{mode}"
-        );
-        assert!(
-            !std::fs::metadata(&out).unwrap().permissions().readonly(),
-            "{mode}"
-        );
+        for start_readonly in [false, true] {
+            let fixture = Fixture::legacy();
+            crate::platform::fs::permissions::set_readonly(&fixture.cache, start_readonly).unwrap();
+            let out = fixture.out("perm.rlib");
+            fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, mode);
+            assert_eq!(
+                std::fs::metadata(&fixture.cache)
+                    .unwrap()
+                    .permissions()
+                    .readonly(),
+                start_readonly,
+                "{mode}: cache permissions changed (started read-only: {start_readonly})"
+            );
+            assert!(
+                !std::fs::metadata(&out).unwrap().permissions().readonly(),
+                "{mode}"
+            );
+            let _ = crate::platform::fs::permissions::make_writable(&fixture.cache);
+        }
     }
+}
+
+/// A mode switch that detaches a hardlinked output (LINK -> COPY) must
+/// apply the sibling floor like any copy, or cargo sees the output older
+/// than its siblings and recompiles dependents (#466/#467).
+#[test]
+fn mode_switch_detach_applies_the_sibling_floor() {
+    let fixture = Fixture::legacy();
+    if !fixture.hardlinks_supported() {
+        eprintln!("SKIP mode_switch_detach_applies_the_sibling_floor: no hardlinks here");
+        return;
+    }
+    let out = fixture.out("floored.rlib");
+    fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, Link);
+    assert_shared_delivery(&out, &fixture.cache);
+    let sibling = fixture.out("newer-sibling.rlib");
+    std::fs::write(&sibling, b"sibling").unwrap();
+    let newer = kernal_api::platform::fs::FileTime::from_unix_time(1_500_000_000, 0);
+    kernal_api::platform::fs::set_file_mtime(&sibling, newer).unwrap();
+
+    fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, Copy);
+    assert!(!same_file(&out, &fixture.cache));
+    assert!(
+        mtime(&out).unix_seconds() >= newer.unix_seconds(),
+        "the detached output must be floored to its newest sibling"
+    );
+    assert_eq!(
+        mtime(&fixture.cache).unix_seconds(),
+        1_000_000_000,
+        "flooring the output must not touch the cache file"
+    );
 }
 
 /// The batch path used by compile, link, exec and multi-source hits honors
