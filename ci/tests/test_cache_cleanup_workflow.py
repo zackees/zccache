@@ -87,13 +87,14 @@ def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
     fixture = ROOT / "ci/tests/fixtures/cache_cleanup_shapes.json"
     script = (
         "const fs=require('node:fs');"
-        "const {planCountPrune,planHardCap}=require(process.argv[1]);"
+        "const {planCountPrune,planHardCap,isEligible}=require(process.argv[1]);"
         "const caches=JSON.parse(fs.readFileSync(0,'utf8'));"
         "const plan=planCountPrune(caches);"
         "const linux=caches.filter(c=>c.id===16||c.id===26);"
         "const cap=planHardCap(linux,2000000000,1500000000);"
         "process.stdout.write(JSON.stringify({"
         "keep:plan.keep.map(c=>c.id),stale:plan.stale.map(c=>c.id),"
+        "registryEligible:caches.filter(c=>[21,22,27,28].includes(c.id)).map(c=>isEligible(c.key)),"
         "capKeep:cap.keep.map(c=>c.id),capSelected:cap.selected.map(c=>c.id),"
         "capBytes:cap.projectedBytes,capWithinBudget:cap.withinBudget}));"
     )
@@ -108,8 +109,11 @@ def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
     # Keep the newest generation for each (ref, target shape); main and PR
     # caches are not assumed to be mutually restorable. Foundation caches are
     # not candidates.
-    assert set(plan["keep"]) == {10, 11, 14, 15, 16, 17, 18, 19, 20, 22, 28}
-    assert set(plan["stale"]) == {12, 13, 21, 25, 26, 27, 29}
+    assert set(plan["keep"]) == {10, 11, 14, 15, 16, 17, 18, 19, 20}
+    assert set(plan["stale"]) == {12, 13, 25, 26, 29}
+    # setup-soldr registry keys encode both Cargo.lock identity and registry
+    # archive digest; these are separate content identities, not generations.
+    assert plan["registryEligible"] == [False, False, False, False]
     # Regression for the former global-oldest hard cap: it deleted both
     # Linux ARM64 generations, including the current main key. Only the old
     # duplicate may be selected; the current target remains protected.

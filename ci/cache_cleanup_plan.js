@@ -22,16 +22,14 @@ const CACHE_PREFIXES = [
   "zccache-macos-arm64-bench-",
   "zccache-macOS-ARM64-bench-",
   "cargo-target-macos-arm64-bench-",
-  "setup-soldr-cargoregistry-v1-",
 ];
 
+// setup-soldr Cargo-registry keys are content-addressed: after the platform,
+// the key includes Cargo.lock identity and an archive digest. Distinct keys
+// may therefore represent separate lockfile/dependency snapshots; they are
+// not old generations of one reusable shape and stay outside retention.
+
 function cacheShape(key) {
-  if (key.startsWith("setup-soldr-cargoregistry-v1-")) {
-    const match = key.match(
-      /^(setup-soldr-cargoregistry-v1-(?:linux-x64|linux-arm64|macos-arm64|windows-x64|windows-arm64))-.*$/i,
-    );
-    return match ? match[1].toLowerCase() : null;
-  }
   if (/^cargo-registry-.+-test-/.test(key)) {
     // The trailing digest changes with the registry snapshot, not the target.
     return key.replace(/-[0-9a-f]{16}$/i, "");
