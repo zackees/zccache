@@ -343,5 +343,10 @@ name = "exec"
 harness = false
 required-features = ["test-support"]
 
+[[bench]]
+name = "miss_overhead"
+harness = false
+required-features = ["test-support"]
+
 [lints]
 workspace = true

@@ -239,6 +239,11 @@ pub struct PhaseProfiler {
     // Miss path
     /// Run the actual compiler (miss path).
     pub compiler_exec_ns: AtomicU64,
+    /// Compiler child process time, a subset of `compiler_exec_ns`: from
+    /// just before compile-slot/host admission through child exit. Admission
+    /// is immediate when compiles do not contend, so for serial compiles
+    /// `total_miss_ns` minus this is zccache's per-miss overhead.
+    pub compiler_process_ns: AtomicU64,
     /// Scan includes (miss path).
     pub include_scan_ns: AtomicU64,
     /// Hash all files for artifact key (miss path).
@@ -269,6 +274,7 @@ impl PhaseProfiler {
             bookkeeping_ns: AtomicU64::new(0),
             total_hit_ns: AtomicU64::new(0),
             compiler_exec_ns: AtomicU64::new(0),
+            compiler_process_ns: AtomicU64::new(0),
             include_scan_ns: AtomicU64::new(0),
             hash_all_ns: AtomicU64::new(0),
             artifact_store_ns: AtomicU64::new(0),
@@ -309,6 +315,8 @@ impl PhaseProfiler {
         self.miss_count.fetch_add(1, Ordering::Relaxed);
         self.compiler_exec_ns
             .fetch_add(phases.compiler_exec_ns, Ordering::Relaxed);
+        self.compiler_process_ns
+            .fetch_add(phases.compiler_process_ns, Ordering::Relaxed);
         self.include_scan_ns
             .fetch_add(phases.include_scan_ns, Ordering::Relaxed);
         self.hash_all_ns
@@ -335,6 +343,7 @@ impl PhaseProfiler {
         self.bookkeeping_ns.store(0, Ordering::Relaxed);
         self.total_hit_ns.store(0, Ordering::Relaxed);
         self.compiler_exec_ns.store(0, Ordering::Relaxed);
+        self.compiler_process_ns.store(0, Ordering::Relaxed);
         self.include_scan_ns.store(0, Ordering::Relaxed);
         self.hash_all_ns.store(0, Ordering::Relaxed);
         self.artifact_store_ns.store(0, Ordering::Relaxed);
@@ -401,6 +410,7 @@ impl PhaseProfiler {
             avg_bookkeeping_ns: self.bookkeeping_ns.load(Ordering::Relaxed) / n,
             avg_total_hit_ns: self.total_hit_ns.load(Ordering::Relaxed) / n,
             avg_compiler_exec_ns: self.compiler_exec_ns.load(Ordering::Relaxed) / mn,
+            avg_compiler_process_ns: self.compiler_process_ns.load(Ordering::Relaxed) / mn,
             avg_include_scan_ns: self.include_scan_ns.load(Ordering::Relaxed) / mn,
             avg_hash_all_ns: self.hash_all_ns.load(Ordering::Relaxed) / mn,
             avg_artifact_store_ns: self.artifact_store_ns.load(Ordering::Relaxed) / mn,
@@ -433,6 +443,7 @@ pub struct HitPhases {
 /// Timing data for one cache-miss compile request.
 pub struct MissPhases {
     pub compiler_exec_ns: u64,
+    pub compiler_process_ns: u64,
     pub include_scan_ns: u64,
     pub hash_all_ns: u64,
     pub artifact_store_ns: u64,
@@ -509,6 +520,8 @@ pub struct ProfileSnapshot {
     pub avg_bookkeeping_ns: u64,
     pub avg_total_hit_ns: u64,
     pub avg_compiler_exec_ns: u64,
+    /// Average compiler child wall time; see `PhaseProfiler::compiler_process_ns`.
+    pub avg_compiler_process_ns: u64,
     pub avg_include_scan_ns: u64,
     pub avg_hash_all_ns: u64,
     pub avg_artifact_store_ns: u64,
@@ -659,6 +672,7 @@ mod tests {
         });
         p.record_miss(&MissPhases {
             compiler_exec_ns: 1000,
+            compiler_process_ns: 900,
             include_scan_ns: 2000,
             hash_all_ns: 3000,
             artifact_store_ns: 4000,
@@ -696,6 +710,7 @@ mod tests {
         });
         p.record_miss(&MissPhases {
             compiler_exec_ns: 1_000,
+            compiler_process_ns: 900,
             include_scan_ns: 2_000,
             hash_all_ns: 3_000,
             artifact_store_ns: 4_000,
@@ -790,5 +805,25 @@ mod tests {
         assert_eq!(s.hits, 1000);
         assert_eq!(s.hit_time_ns, 100_000);
         assert_eq!(s.bytes_read, 10_000);
+    }
+
+    #[test]
+    fn snapshot_averages_compiler_process_time_separately() {
+        let p = PhaseProfiler::new();
+        for (exec, process) in [(1_000, 800), (3_000, 1_200)] {
+            p.record_miss(&MissPhases {
+                compiler_exec_ns: exec,
+                compiler_process_ns: process,
+                include_scan_ns: 0,
+                hash_all_ns: 0,
+                artifact_store_ns: 0,
+                total_ns: exec,
+            });
+        }
+        let s = p.snapshot();
+        assert_eq!(s.avg_compiler_exec_ns, 2_000);
+        assert_eq!(s.avg_compiler_process_ns, 1_000);
+        p.reset();
+        assert_eq!(p.snapshot().avg_compiler_process_ns, 0);
     }
 }

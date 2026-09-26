@@ -288,3 +288,29 @@ jobs:
           solo-toolchain-cache: true
       - name: Build docs
         run: soldr cargo doc --workspace --no-deps
+
+  miss-overhead:
+    name: Miss overhead budget
+    # zccache#1670: gate per-TU cache-miss overhead (request wall time minus
+    # the compiler child's run time). The test needs clang++, which the
+    # hosted Ubuntu image provides; the same fixture backs the
+    # `miss_overhead` criterion bench.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: zackees/setup-soldr@dfbe9627f6cb0226716b61625b99a58949162720 # v0.9.79
+        with:
+          save-cache: auto
+          zccache-seed-strict: true
+          toolchain: 1.95.0
+          cache: true
+          linker: fast
+      - name: Check clang++
+        run: clang++ --version
+      - name: Run miss-overhead budget
+        env:
+          # The daemon-core library test build is memory-heavy on hosted runners.
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
+        run: soldr cargo test -p zccache-daemon-core --features test-support --lib miss_overhead_budget -- --ignored --nocapture

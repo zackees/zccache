@@ -634,4 +634,9 @@ impl ProfileHandle {
     pub fn snapshot(&self) -> super::super::stats::ProfileSnapshot {
         self.state.profiler.snapshot()
     }
+
+    /// Zero the phase profiler, e.g. between benchmark batches.
+    pub fn reset(&self) {
+        self.state.profiler.reset();
+    }
 }
