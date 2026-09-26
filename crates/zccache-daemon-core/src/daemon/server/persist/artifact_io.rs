@@ -173,7 +173,7 @@ pub(in crate::daemon::server) fn persist_artifact_paths_with_stats(
     mode: MaterializationMode,
 ) -> std::io::Result<PersistArtifactFileStats> {
     if staged_artifacts_enabled() && staged_key_supported(key_hex) && !pack_mode_enabled() {
-        let stats = persist_staged_artifact_paths(artifact_dir, key_hex, sources)?;
+        let stats = persist_staged_artifact_paths_with_mode(artifact_dir, key_hex, sources, mode)?;
         return Ok(PersistArtifactFileStats {
             reflink_count: stats.reflink_count,
             hardlink_count: 0,
@@ -308,7 +308,10 @@ pub(in crate::daemon::server) fn persist_artifact_file(
                 ..PersistArtifactFileStats::default()
             });
         }
-        let copy_bytes = std::fs::copy(source_path, &tmp_path)?;
+        // The byte-copy tier creates its destination exclusively; clear any
+        // leftover temporary (e.g. from a crashed store) first.
+        let _ = std::fs::remove_file(&tmp_path);
+        let copy_bytes = mode.copy_file(source_path, &tmp_path)?;
         crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
         digest.write_for(&tmp_path, cache_path)?;
         replace_artifact_cache_file(&tmp_path, cache_path)?;

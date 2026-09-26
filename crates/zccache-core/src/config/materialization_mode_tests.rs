@@ -120,6 +120,64 @@ fn shareable_tiers_per_mode() {
     assert_eq!(tiers(MaterializationMode::Reflink), (true, false));
 }
 
+/// COPY must own its blocks even where `std::fs::copy` would clone
+/// (`copy_file_range` on btrfs/XFS); other modes keep the fast path. On a
+/// volume that cannot share blocks both results are trivially exclusive.
+#[test]
+fn copy_mode_copy_file_owns_its_blocks() {
+    use kernal_api::platform::fs::{extent_sharing, ExtentSharing};
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.bin");
+    let bytes: Vec<u8> = (0..512 * 1024_u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&source, &bytes).unwrap();
+
+    let copied = dir.path().join("copied.bin");
+    let written = MaterializationMode::Copy
+        .copy_file(&source, &copied)
+        .unwrap();
+    assert_eq!(written, bytes.len() as u64);
+    assert_eq!(std::fs::read(&copied).unwrap(), bytes);
+    assert!(
+        !matches!(extent_sharing(&copied), Ok(ExtentSharing::Shared)),
+        "COPY must not share blocks with its source"
+    );
+    assert_eq!(
+        std::fs::metadata(&copied).unwrap().permissions(),
+        std::fs::metadata(&source).unwrap().permissions()
+    );
+
+    let fast = dir.path().join("fast.bin");
+    MaterializationMode::Auto.copy_file(&source, &fast).unwrap();
+    assert_eq!(std::fs::read(&fast).unwrap(), bytes);
+}
+
+/// COPY creates its destination exclusively, so it can never truncate a
+/// file (for example one a racing delivery just hardlinked to the cache
+/// blob), and a failed copy leaves no partial destination behind.
+#[test]
+fn copy_mode_copy_file_refuses_existing_destinations_and_cleans_up_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.bin");
+    std::fs::write(&source, b"fresh bytes").unwrap();
+    let existing = dir.path().join("existing.bin");
+    std::fs::write(&existing, b"someone else's bytes").unwrap();
+    let error = MaterializationMode::Copy
+        .copy_file(&source, &existing)
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&existing).unwrap(), b"someone else's bytes");
+
+    // Reading a directory fails after the destination was created.
+    let failed = dir.path().join("failed.bin");
+    assert!(MaterializationMode::Copy
+        .copy_file(dir.path(), &failed)
+        .is_err());
+    assert!(
+        !failed.exists(),
+        "a failed copy must not leave a partial file"
+    );
+}
+
 /// Every raw hardlink or reflink call sits in a module that plans its tiers
 /// from `ZCCACHE_MODE` (#1683). A new call site must route through one of
 /// them, or join this list with the mode applied.

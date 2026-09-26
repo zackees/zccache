@@ -225,7 +225,7 @@ fn materialize_verified_cached_file_tiers(
             let floor = kernal_api::platform::fs::FileTime::from_last_modification_time(
                 &std::fs::metadata(cache_file)?,
             );
-            detach_with_floored_mtime(out_path, cache_file, floor)?;
+            detach_with_floored_mtime(out_path, cache_file, floor, mode)?;
             // The detached output is a new inode: apply the sibling floor
             // exactly like the copy tier, or a mode switch (LINK -> COPY)
             // could leave it older than its siblings (#466/#467).
@@ -236,7 +236,7 @@ fn materialize_verified_cached_file_tiers(
         match compute_sibling_floor(out_path)? {
             Some(floor) => {
                 let bytes = std::fs::metadata(cache_file)?.len();
-                detach_with_floored_mtime(out_path, cache_file, floor)?;
+                detach_with_floored_mtime(out_path, cache_file, floor, mode)?;
                 return Ok(observed(0, 0, 1, bytes));
             }
             None => register_hardlink(cache_file, out_path)?,
@@ -363,7 +363,7 @@ fn materialize_verified_cached_file_tiers(
     }
     #[cfg(test)]
     inject_staged_fault(out_path, StagedFaultPoint::MaterializeCopy)?;
-    let copied_bytes = std::fs::copy(cache_file, out_path)?;
+    let copied_bytes = mode.copy_file(cache_file, out_path)?;
     crate::platform::fs::permissions::make_writable(out_path)?;
     restore_cache_mtime(cache_file, out_path)?;
     touch_mtime(out_path);
@@ -425,11 +425,12 @@ fn detach_with_floored_mtime(
     out_path: &Path,
     cache_file: &Path,
     floor: kernal_api::platform::fs::FileTime,
+    mode: MaterializationMode,
 ) -> std::io::Result<()> {
     let registration = prepare_registered_detach(out_path);
     crate::platform::fs::permissions::make_writable(out_path)?;
     remove_output_file(out_path)?;
-    std::fs::copy(cache_file, out_path)?;
+    mode.copy_file(cache_file, out_path)?;
     crate::platform::fs::permissions::make_writable(out_path)?;
     let result = set_materialized_mtime(out_path, floor);
     crate::platform::fs::permissions::set_readonly(cache_file, readonly_enabled())?;

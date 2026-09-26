@@ -9,6 +9,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+use crate::core::config::MaterializationMode;
+
 mod maintenance;
 pub(in crate::daemon::server) use maintenance::clear_staged_artifacts;
 #[cfg(test)]
@@ -350,9 +352,9 @@ fn remove_uncommitted_generation(pointer: &Path, generation_hex: &str, generatio
 fn copy_independent(
     source: &Path,
     destination: &Path,
-    try_reflink: bool,
+    mode: MaterializationMode,
 ) -> io::Result<(bool, u64)> {
-    let reflink_allowed = try_reflink && {
+    let reflink_allowed = mode != MaterializationMode::Copy && {
         #[cfg(test)]
         {
             fault::inject(destination, StagedFaultPoint::MaterializeReflink).is_ok()
@@ -373,26 +375,22 @@ fn copy_independent(
     let _ = fs::remove_file(destination);
     #[cfg(test)]
     fault::inject(destination, StagedFaultPoint::MaterializeCopy)?;
-    let bytes = fs::copy(source, destination)?;
+    let bytes = mode.copy_file(source, destination)?;
     Ok((false, bytes))
 }
 
-fn copy_output(source: &Path, destination: &Path) -> io::Result<(bool, u64)> {
-    copy_output_with(source, destination, true)
-}
-
-/// Independent delivery: reflink (when `try_reflink`) else a byte copy, then
-/// writable with the source's mtime. `COPY` mode passes `false` (#1683).
+/// Independent delivery or store: a reflink (unless `COPY`) else the mode's
+/// copy tier, then writable with the source's mtime (#1683).
 fn copy_output_with(
     source: &Path,
     destination: &Path,
-    try_reflink: bool,
+    mode: MaterializationMode,
 ) -> io::Result<(bool, u64)> {
     let source_metadata = fs::metadata(source)?;
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-    let result = copy_independent(source, destination, try_reflink);
+    let result = copy_independent(source, destination, mode);
     if result.is_err() {
         let _ = fs::remove_file(destination);
         return result;
@@ -507,6 +505,23 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
     key_hex: &str,
     sources: &[NormalizedPath],
 ) -> io::Result<PersistArtifactFileStats> {
+    persist_staged_artifact_paths_with_mode(
+        artifact_dir,
+        key_hex,
+        sources,
+        MaterializationMode::Auto,
+    )
+}
+
+/// [`persist_staged_artifact_paths`] under an explicit `ZCCACHE_MODE`: the
+/// generation copy of each compiler output follows the mode's copy tiers,
+/// so COPY stores bytes the build output does not share (#1683).
+pub(in crate::daemon::server) fn persist_staged_artifact_paths_with_mode(
+    artifact_dir: &Path,
+    key_hex: &str,
+    sources: &[NormalizedPath],
+    mode: MaterializationMode,
+) -> io::Result<PersistArtifactFileStats> {
     let publish_started = std::time::Instant::now();
     validate_key(key_hex)?;
     if sources.is_empty() {
@@ -557,8 +572,8 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths(
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::OutputCopy(index))
                 .map_err(|error| publish_error(StagedPublishFailure::OutputCopy, error))?;
-            let (reflink, copied_bytes) =
-                copy_output(source.as_path(), &destination).map_err(|error| {
+            let (reflink, copied_bytes) = copy_output_with(source.as_path(), &destination, mode)
+                .map_err(|error| {
                     publish_error(
                         StagedPublishFailure::OutputCopy,
                         io::Error::new(

@@ -91,6 +91,72 @@ impl MaterializationMode {
     }
 }
 
+impl MaterializationMode {
+    /// The copy tier for this mode. `COPY` writes every byte itself so the
+    /// destination owns its blocks: `std::fs::copy` uses `copy_file_range`,
+    /// which btrfs and XFS may satisfy with a clone, silently turning COPY
+    /// into REFLINK. Every other mode keeps the kernel's fast path, where a
+    /// shared-extent result is acceptable.
+    ///
+    /// The COPY path creates `destination` exclusively (callers remove it
+    /// first): opening an existing path could truncate a file that a racing
+    /// delivery has just hardlinked to the cache blob. A failed copy removes
+    /// its partial destination. Permissions — and on Windows, where
+    /// `CopyFileExW` preserves it, the modification time — match what
+    /// `std::fs::copy` produces.
+    pub fn copy_file(
+        self,
+        source: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> std::io::Result<u64> {
+        if self != Self::Copy {
+            return std::fs::copy(source, destination);
+        }
+        byte_copy(source, destination)
+    }
+}
+
+/// COPY's copy tier: every byte through userspace, no `copy_file_range`.
+fn byte_copy(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<u64> {
+    let mut reader = std::fs::File::open(source)?;
+    let metadata = reader.metadata()?;
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    // Only a file this call created is removed on failure.
+    let result = fill(&mut reader, writer, &metadata, destination);
+    if result.is_err() {
+        let _ = std::fs::remove_file(destination);
+    }
+    result
+}
+
+fn fill(
+    reader: &mut std::fs::File,
+    mut writer: std::fs::File,
+    metadata: &std::fs::Metadata,
+    destination: &std::path::Path,
+) -> std::io::Result<u64> {
+    use std::io::{Read, Write};
+    let mut buffer = vec![0_u8; 256 * 1024];
+    let mut copied = 0_u64;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read])?;
+        copied += read as u64;
+    }
+    writer.flush()?;
+    #[cfg(windows)]
+    writer.set_modified(metadata.modified()?)?;
+    drop(writer);
+    std::fs::set_permissions(destination, metadata.permissions())?;
+    Ok(copied)
+}
+
 impl fmt::Display for MaterializationMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())

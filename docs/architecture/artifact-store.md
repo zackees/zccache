@@ -407,7 +407,7 @@ disables read-only enforcement. Neither setting adds an IPC roundtrip.
 |---|---|
 | `AUTO` (default) | Reflink, else hardlink (only outputs whose delivery policy allows sharing an inode), else copy. The tier order above, unchanged. |
 | `LINK` | Hardlink eligible outputs, never clone them. Outputs the policy keeps independent take reflink-else-copy. |
-| `COPY` | Always an independent, writable byte copy. Never probes the volume. |
+| `COPY` | Always an independent, writable byte copy that owns its blocks. Never probes the volume, and writes the bytes itself: `std::fs::copy` uses `copy_file_range`, which btrfs/XFS may satisfy with a clone. |
 | `REFLINK` | An independent, writable clone; where the volume cannot clone, a copy (never a hardlink), with a one-time `materialization_reflink_fallback` warning. |
 
 `COPY` and `REFLINK` deliver the same thing — an independent, writable inode
