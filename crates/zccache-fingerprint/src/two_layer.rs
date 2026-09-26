@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 use rayon::prelude::*;
 use zccache_core::NormalizedPath;
@@ -16,6 +17,10 @@ use super::scan::ScannedFile;
 /// merely touched (e.g., `git checkout`) — update cached mtime silently.
 pub struct TwoLayerCache {
     cache_file: NormalizedPath,
+    /// The snapshot this value's last `check()` staged. `mark_*` commits it in
+    /// preference to the shared on-disk `.pending`, which a concurrent cycle on
+    /// the same cache file may already have consumed or replaced (#1648).
+    staged: Mutex<Option<TwoLayerData>>,
 }
 
 impl TwoLayerCache {
@@ -23,6 +28,7 @@ impl TwoLayerCache {
     pub fn new(cache_file: impl Into<NormalizedPath>) -> Self {
         Self {
             cache_file: cache_file.into(),
+            staged: Mutex::new(None),
         }
     }
 
@@ -48,7 +54,7 @@ impl TwoLayerCache {
                 // No cache — compute everything and write pending.
                 let entries = self.compute_all(files)?;
                 let pending = TwoLayerData::new("pending", entries);
-                persist::write_pending(&self.cache_file, &pending)?;
+                self.stage(pending)?;
                 return Ok(CacheDecision::Run(RunReason::NoCacheFile));
             }
         };
@@ -56,7 +62,7 @@ impl TwoLayerCache {
         if prev_status == "failure" {
             let entries = self.compute_all(files)?;
             let pending = TwoLayerData::new("pending", entries);
-            persist::write_pending(&self.cache_file, &pending)?;
+            self.stage(pending)?;
             return Ok(CacheDecision::Run(RunReason::PreviousFailure));
         }
 
@@ -115,7 +121,7 @@ impl TwoLayerCache {
         }
 
         let pending = TwoLayerData::new("pending", entries);
-        persist::write_pending(&self.cache_file, &pending)?;
+        self.stage(pending)?;
 
         if changed {
             Ok(CacheDecision::Run(RunReason::ContentChanged))
@@ -148,6 +154,7 @@ impl TwoLayerCache {
 
     /// Delete cache and pending files.
     pub fn invalidate(&self) -> Result<()> {
+        *self.staged.lock().unwrap_or_else(PoisonError::into_inner) = None;
         persist::remove_cache(&self.cache_file);
         Ok(())
     }
@@ -175,25 +182,45 @@ impl TwoLayerCache {
                     && data.max_source_mtime_ns == max_source_mtime =>
             {
                 tracing::debug!("mtime fast-path: cache is newer than all sources, skipping");
+                // The verified cache entry is this cycle's snapshot, so a later
+                // `mark_*` commits it rather than failing with `NoPendingData`
+                // (#1648). In memory only: the fast path stays write-free.
+                *self.staged.lock().unwrap_or_else(PoisonError::into_inner) = Some(data);
                 Ok(Some(CacheDecision::Skip))
             }
             _ => Ok(None),
         }
     }
 
+    /// Stage `pending` for this cycle: on disk for a `mark-*` in a separate
+    /// process, and on this value for its own `mark_*`.
+    fn stage(&self, pending: TwoLayerData) -> Result<()> {
+        persist::write_pending(&self.cache_file, &pending)?;
+        *self.staged.lock().unwrap_or_else(PoisonError::into_inner) = Some(pending);
+        Ok(())
+    }
+
+    /// Commit this cycle's snapshot: the one staged by this value's own
+    /// `check()`, else (a `mark-*` in a separate process) the on-disk
+    /// `.pending`.
     fn promote_with_status(&self, status: &str) -> Result<()> {
-        let mut data =
-            persist::read_pending::<TwoLayerData>(&self.cache_file)?.ok_or_else(|| {
+        let staged = self
+            .staged
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let claimed = match staged {
+            Some(data) => data,
+            None => persist::read_pending::<TwoLayerData>(&self.cache_file)?.ok_or_else(|| {
                 super::error::FingerprintError::NoPendingData {
                     path: self.cache_file.clone(),
                 }
-            })?;
-        data.status = status.to_string();
-        data.timestamp_ns = persist::now_ns();
-        persist::write_atomic(&self.cache_file, &data)?;
-        let pending = NormalizedPath::from(self.cache_file.with_extension("pending"));
-        let _ = std::fs::remove_file(pending);
-        Ok(())
+            })?,
+        };
+        persist::commit_pending(&self.cache_file, claimed, |data| {
+            data.status = status.to_string();
+            data.timestamp_ns = persist::now_ns();
+        })
     }
 
     fn compute_all(&self, files: &[ScannedFile]) -> Result<BTreeMap<String, FileEntry>> {
@@ -727,5 +754,109 @@ mod tests {
         // Full check must detect the change.
         let decision = cache.check(&scan(src.path())).unwrap();
         assert_eq!(decision, CacheDecision::Run(RunReason::ContentChanged));
+    }
+
+    // ── Interleaved check → mark cycles on one cache file (#1648) ────
+
+    /// Two cycles interleaved on one cache file must each promote the snapshot
+    /// their own `check()` took, instead of the second failing with
+    /// `NoPendingData` because the first consumed the shared `.pending`.
+    #[test]
+    fn interleaved_cycles_each_promote_their_own_check() {
+        let (src, cache_dir) = setup();
+        create_file(src.path(), "a.rs", "v1");
+        let cache_file = cache_dir.path().join("fp.json");
+        let a = TwoLayerCache::new(cache_file.clone());
+        let b = TwoLayerCache::new(cache_file.clone());
+
+        a.check(&scan(src.path())).unwrap();
+        b.check(&scan(src.path())).unwrap();
+        a.mark_success().unwrap();
+        b.mark_success().unwrap();
+
+        let decision = TwoLayerCache::new(cache_file)
+            .check(&scan(src.path()))
+            .unwrap();
+        assert_eq!(decision, CacheDecision::Skip);
+    }
+
+    /// A success certifies only the files its own check saw, never a newer
+    /// snapshot a concurrent cycle staged in the shared `.pending`.
+    #[test]
+    fn mark_success_certifies_only_its_own_snapshot() {
+        let (src, cache_dir) = setup();
+        create_file(src.path(), "a.rs", "v1");
+        let cache_file = cache_dir.path().join("fp.json");
+        let a = TwoLayerCache::new(cache_file.clone());
+        let b = TwoLayerCache::new(cache_file.clone());
+
+        a.check(&scan(src.path())).unwrap(); // a runs against v1
+        create_file(src.path(), "a.rs", "v2 edited");
+        b.check(&scan(src.path())).unwrap(); // b's run against v2 is in flight
+        a.mark_success().unwrap();
+
+        let decision = TwoLayerCache::new(cache_file.clone())
+            .check(&scan(src.path()))
+            .unwrap();
+        assert_eq!(
+            decision,
+            CacheDecision::Run(RunReason::ContentChanged),
+            "v2 has not run successfully yet"
+        );
+
+        b.mark_success().unwrap();
+        let decision = TwoLayerCache::new(cache_file)
+            .check(&scan(src.path()))
+            .unwrap();
+        assert_eq!(decision, CacheDecision::Skip);
+    }
+
+    /// A `Skip` from the mtime fast path is still a check: the cycle that got
+    /// it can report its outcome instead of failing with `NoPendingData`.
+    #[test]
+    fn mark_after_mtime_fast_path_skip_commits_the_cached_snapshot() {
+        let (src, cache_dir) = setup();
+        create_file(src.path(), "a.rs", "v1");
+        let cache_file = cache_dir.path().join("fp.json");
+        let cache = TwoLayerCache::new(cache_file.clone());
+        cache.check(&scan(src.path())).unwrap();
+        cache.mark_success().unwrap();
+
+        let decision = cache.check(&scan(src.path())).unwrap();
+        assert_eq!(decision, CacheDecision::Skip);
+        cache.mark_success().unwrap();
+        let decision = cache.check(&scan(src.path())).unwrap();
+        assert_eq!(decision, CacheDecision::Skip);
+
+        cache.mark_failure().unwrap();
+        let decision = TwoLayerCache::new(cache_file)
+            .check(&scan(src.path()))
+            .unwrap();
+        assert_eq!(decision, CacheDecision::Run(RunReason::PreviousFailure));
+    }
+
+    /// The cross-process flow (`zccache-fp check`, then `zccache-fp
+    /// mark-success` in a second process) promotes the on-disk `.pending`.
+    #[test]
+    fn mark_success_from_fresh_instance_promotes_on_disk_pending() {
+        let (src, cache_dir) = setup();
+        create_file(src.path(), "a.rs", "v1");
+        let cache_file = cache_dir.path().join("fp.json");
+
+        TwoLayerCache::new(cache_file.clone())
+            .check(&scan(src.path()))
+            .unwrap();
+        TwoLayerCache::new(cache_file.clone())
+            .mark_success()
+            .unwrap();
+
+        assert!(
+            !cache_file.with_extension("pending").exists(),
+            "the promoted pending should be consumed"
+        );
+        let decision = TwoLayerCache::new(cache_file)
+            .check(&scan(src.path()))
+            .unwrap();
+        assert_eq!(decision, CacheDecision::Skip);
     }
 }
