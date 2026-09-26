@@ -17,6 +17,7 @@ use super::staged_store::materialization_error_progress;
 #[cfg(test)]
 use super::staged_store::{inject_staged_fault, StagedFaultGuard, StagedFaultPoint};
 use super::staged_store::{materialization_error, staged_lane_enabled, StagedMaterializationStats};
+use crate::core::config::MaterializationMode;
 use crate::core::path::NormalizedPath;
 use crate::depgraph::DepfileStrategy;
 use std::io;
@@ -794,8 +795,11 @@ impl StagedCompilePlan {
         }
     }
 
-    pub(in crate::daemon::server) fn materialize(&self) -> io::Result<StagedMaterializationStats> {
-        let stats = self.materialize_without_cleanup()?;
+    pub(in crate::daemon::server) fn materialize(
+        &self,
+        mode: MaterializationMode,
+    ) -> io::Result<StagedMaterializationStats> {
+        let stats = self.materialize_without_cleanup(mode)?;
         self.cleanup()
             .map_err(|error| materialization_error(error, stats))?;
         Ok(stats)
@@ -806,6 +810,7 @@ impl StagedCompilePlan {
     /// alive until publication has consumed every staged source.
     pub(in crate::daemon::server) fn materialize_without_cleanup(
         &self,
+        mode: MaterializationMode,
     ) -> io::Result<StagedMaterializationStats> {
         let mut stats = StagedMaterializationStats::default();
         let requested_outputs = self
@@ -828,9 +833,10 @@ impl StagedCompilePlan {
                 std::fs::create_dir_all(parent)
                     .map_err(|error| materialization_error(error, stats))?;
             }
-            let output_stats = crate::daemon::server::persist::materialize_independent_with_stats(
+            let output_stats = crate::daemon::server::persist::materialize_independent_with_mode(
                 output.staged.as_path(),
                 output.requested.as_path(),
+                mode,
             )
             .map_err(|error| {
                 materialization_error(

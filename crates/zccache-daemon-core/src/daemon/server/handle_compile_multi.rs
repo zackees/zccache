@@ -1025,6 +1025,7 @@ pub(super) async fn handle_compile_multi(
                     state_task.artifact_dir.as_path(),
                     &artifact_key_hex,
                     std::slice::from_ref(&output_path),
+                    materialization_mode,
                 ) {
                     tracing::warn!(
                         key = %artifact_key_hex,

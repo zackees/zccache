@@ -56,6 +56,18 @@ pub(in crate::daemon::server) fn plan_tiers(
     TierPlan { reflink, hardlink }
 }
 
+/// Tiers the *store* direction (compiler output -> cache blob) may try. The
+/// store has no delivery policy of its own: AUTO and LINK keep today's
+/// reflink -> hardlink -> copy order, but a hardlinked store leaves the build
+/// output sharing the cache blob's inode, which COPY and REFLINK forbid.
+pub(in crate::daemon::server) const fn plan_store_tiers(mode: MaterializationMode) -> TierPlan {
+    let tiers = mode.tiers_for_shareable();
+    TierPlan {
+        reflink: tiers.reflink,
+        hardlink: tiers.hardlink,
+    }
+}
+
 /// Capabilities the executor plans against. `COPY` never probes the volume;
 /// the legacy `ZCCACHE_DISABLE_REFLINK` switch applies to every mode except
 /// an explicit `REFLINK` (#1683 decision D3).

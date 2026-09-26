@@ -111,7 +111,10 @@ impl ExecStagedPlan {
             .collect()
     }
 
-    pub(super) fn materialize(&self) -> std::io::Result<StagedMaterializationStats> {
+    pub(super) fn materialize(
+        &self,
+        mode: MaterializationMode,
+    ) -> std::io::Result<StagedMaterializationStats> {
         let mut observed = StagedMaterializationStats::default();
         for (fault_index, (requested, staged)) in self.outputs.iter().enumerate() {
             #[cfg(not(test))]
@@ -128,9 +131,10 @@ impl ExecStagedPlan {
                 std::fs::create_dir_all(parent)
                     .map_err(|error| materialization_error(error, observed))?;
             }
-            let output = crate::daemon::server::persist::materialize_independent_with_stats(
+            let output = crate::daemon::server::persist::materialize_independent_with_mode(
                 staged.as_path(),
                 requested.as_path(),
+                mode,
             )
             .map_err(|error| materialization_error(error, observed))?;
             observed.add(output);
@@ -532,7 +536,9 @@ pub(super) async fn handle_generic_tool_exec(
             };
         }
         let salvage_reason = staged_publication_failure.map(StagedPublishFailure::id);
-        if let Err(error) = materialize_exec_plan_observed(state, plan, salvage_reason) {
+        if let Err(error) =
+            materialize_exec_plan_observed(state, plan, salvage_reason, materialization_mode)
+        {
             return Response::Error {
                 message: format!("failed to materialize generic tool outputs: {error}"),
             };

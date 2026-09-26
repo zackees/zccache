@@ -5,6 +5,9 @@ use super::super::*;
 pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) state_arc: &'a Arc<SharedState>,
     pub(super) sid: &'a SessionId,
+    /// The request's resolved `ZCCACHE_MODE`; COPY/REFLINK never hardlink
+    /// the compiler output into the cache (#1683).
+    pub(super) materialization_mode: MaterializationMode,
     pub(super) context_key: &'a ContextKey,
     pub(super) source_path: &'a NormalizedPath,
     pub(super) output_path: &'a NormalizedPath,
@@ -67,6 +70,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
     let MissArtifactStoreRequest {
         state_arc,
         sid,
+        materialization_mode,
         context_key,
         source_path,
         output_path,
@@ -150,6 +154,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 staged_persist_plan,
                 publication_guard,
                 resource_admission,
+                materialization_mode,
             );
         } else {
             store_single_output(
@@ -170,6 +175,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 synchronous_persist,
                 publication_guard,
                 resource_admission,
+                materialization_mode,
             );
         }
     }
@@ -323,6 +329,7 @@ fn store_rustc_outputs(
     staged_persist_plan: Option<StagedCompilePlan>,
     publication_guard: kernal_api::async_engine::OwnedRwLockReadGuard<()>,
     resource_admission: crate::daemon::server::compile_resource_gate::CompileResourcePermit,
+    materialization_mode: MaterializationMode,
 ) {
     let state = state_arc.as_ref();
     let t_artifact_meta_build = Instant::now();
@@ -416,7 +423,7 @@ fn store_rustc_outputs(
                 let _resource_admission = resource_admission;
                 let _staged_plan = plan_for_publish;
                 let snapshot =
-                    persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths)?;
+                    persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths, materialization_mode)?;
                 commit_rustc_artifact_index(
                     state_for_publish.as_ref(),
                     key_hex,
@@ -517,8 +524,12 @@ fn store_rustc_outputs(
     }
 
     let t_persist_sync = Instant::now();
-    let sync_persist_result =
-        persist_artifact_paths_with_stats(&state.artifact_dir, artifact_key_hex, &source_paths);
+    let sync_persist_result = persist_artifact_paths_with_stats(
+        &state.artifact_dir,
+        artifact_key_hex,
+        &source_paths,
+        materialization_mode,
+    );
     stats.rust_snapshot_ns = t_persist_sync.elapsed().as_nanos() as u64;
     let persisted = match sync_persist_result {
         Ok(snapshot_stats) => {
@@ -699,6 +710,7 @@ fn store_single_output(
     synchronous_persist: bool,
     publication_guard: kernal_api::async_engine::OwnedRwLockReadGuard<()>,
     resource_admission: crate::daemon::server::compile_resource_gate::CompileResourcePermit,
+    materialization_mode: MaterializationMode,
 ) {
     let state = state_arc.as_ref();
     // Issue #643: stash the user's depfile as a second output so cache
@@ -774,60 +786,62 @@ fn store_single_output(
         use crate::daemon::staged_stats::{StagedBytes, StagedCounter, StagedTiming};
         let staged_publication =
             staged_artifacts_enabled() && staged_key_supported(&key_hex) && !pack_mode_enabled();
-        let written =
-            match persist_artifact_paths_with_stats(&artifact_dir, &key_hex, &source_paths) {
-                Ok(persisted) => {
-                    let (index_failure, index_commit_ns) = if persisted.staged {
-                        match send_staged_index_insert(state, key_hex.clone(), persist_meta.clone())
-                        {
-                            Ok(elapsed_ns) => (None, elapsed_ns),
-                            Err(reason) => (Some(reason), 0),
-                        }
-                    } else {
-                        (None, 0)
-                    };
-                    if let Some(reason) = index_failure {
-                        stats.staged_failure_reason = Some(reason.id());
-                        stats.rust_snapshot_error_count =
-                            stats.rust_snapshot_error_count.saturating_add(1);
-                        record_staged_publication_failure(state, reason);
-                        false
-                    } else {
-                        if persisted.staged {
-                            state
-                                .profiler
-                                .staged
-                                .count(StagedCounter::PublicationSuccess);
-                            state
-                                .profiler
-                                .staged
-                                .timing(StagedTiming::Hashing, persisted.staged_hash_ns);
-                            state.profiler.staged.timing(
-                                StagedTiming::Publication,
-                                persisted
-                                    .staged_publication_ns
-                                    .saturating_add(index_commit_ns),
-                            );
-                            state
-                                .profiler
-                                .staged
-                                .bytes(StagedBytes::Publication, persisted.copy_bytes);
-                        }
-                        true
+        let written = match persist_artifact_paths_with_stats(
+            &artifact_dir,
+            &key_hex,
+            &source_paths,
+            materialization_mode,
+        ) {
+            Ok(persisted) => {
+                let (index_failure, index_commit_ns) = if persisted.staged {
+                    match send_staged_index_insert(state, key_hex.clone(), persist_meta.clone()) {
+                        Ok(elapsed_ns) => (None, elapsed_ns),
+                        Err(reason) => (Some(reason), 0),
                     }
-                }
-                Err(error) => {
-                    let failure_reason =
-                        staged_publish_failure(&error).unwrap_or(StagedPublishFailure::StoreSetup);
+                } else {
+                    (None, 0)
+                };
+                if let Some(reason) = index_failure {
+                    stats.staged_failure_reason = Some(reason.id());
                     stats.rust_snapshot_error_count =
                         stats.rust_snapshot_error_count.saturating_add(1);
-                    stats.staged_failure_reason = Some(failure_reason.id());
-                    if staged_publication {
-                        record_staged_publication_failure(state, failure_reason);
-                    }
+                    record_staged_publication_failure(state, reason);
                     false
+                } else {
+                    if persisted.staged {
+                        state
+                            .profiler
+                            .staged
+                            .count(StagedCounter::PublicationSuccess);
+                        state
+                            .profiler
+                            .staged
+                            .timing(StagedTiming::Hashing, persisted.staged_hash_ns);
+                        state.profiler.staged.timing(
+                            StagedTiming::Publication,
+                            persisted
+                                .staged_publication_ns
+                                .saturating_add(index_commit_ns),
+                        );
+                        state
+                            .profiler
+                            .staged
+                            .bytes(StagedBytes::Publication, persisted.copy_bytes);
+                    }
+                    true
                 }
-            };
+            }
+            Err(error) => {
+                let failure_reason =
+                    staged_publish_failure(&error).unwrap_or(StagedPublishFailure::StoreSetup);
+                stats.rust_snapshot_error_count = stats.rust_snapshot_error_count.saturating_add(1);
+                stats.staged_failure_reason = Some(failure_reason.id());
+                if staged_publication {
+                    record_staged_publication_failure(state, failure_reason);
+                }
+                false
+            }
+        };
         if written && !staged_publication {
             enqueue_index_insert(state, key_hex.clone(), persist_meta.clone());
         }

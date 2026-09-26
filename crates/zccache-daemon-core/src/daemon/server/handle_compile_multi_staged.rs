@@ -558,7 +558,12 @@ pub(super) async fn try_handle_staged_misses(
     let mut changed_outputs = Vec::new();
     let mut dependency_directories = HashSet::new();
     for miss in &published {
-        if let Err(error) = materialize_multi_plan_observed(state, &miss.plan, None) {
+        if let Err(error) = materialize_multi_plan_observed(
+            state,
+            &miss.plan,
+            None,
+            state.materialization_mode(client_env.as_deref()),
+        ) {
             return Some(Response::Error {
                 message: format!("failed to materialize multi-source output: {error}"),
             });

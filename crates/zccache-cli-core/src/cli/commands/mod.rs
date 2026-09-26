@@ -28,6 +28,7 @@ pub(crate) mod status;
 pub(crate) mod symbols;
 pub(crate) mod targz;
 pub(crate) mod util;
+pub(crate) mod warm_delivery;
 pub(crate) mod wrap;
 
 use super::defender;

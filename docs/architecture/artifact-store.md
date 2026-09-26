@@ -430,6 +430,17 @@ before dispatch (exit 1), an embedded service refuses to start on one, and
 the daemon only logs one that arrives in a request.
 The pure decision is `plan_tiers` in
 `crates/zccache-daemon-core/src/daemon/server/persist/delivery_mode.rs`.
+
+The mode governs every delivery, not just cache hits. The *store* direction
+(`persist_artifact_file`, compiler output -> cache blob) never hardlinks under
+`COPY`/`REFLINK`, so the build output never shares the blob's inode; `COPY`
+also skips the clone. Staged miss-path delivery (compile, link, exec,
+multi-source) and rust-plan bundles are always independent and skip the clone
+under `COPY`. `zccache warm` follows the same shareable tiers (`AUTO`:
+reflink, hardlink, copy); an independent warm output stamps the cache file
+directly so eviction still sees it as recently used. Every raw hardlink or
+reflink call lives in one of these mode-aware modules, which a guard test in
+`zccache-core` enforces.
 Unsupported shapes—including shared multi-source side outputs, C++ modules,
 unrewritable/undeclared linker outputs, opaque generic exec, and stdout
 output—remain on the legacy path before compiler spawn. Explicit Rust `--emit=kind=path`

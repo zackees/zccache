@@ -284,7 +284,7 @@ fn persist_artifact_file_creates_independent_immutable_snapshot() {
     let content = b"compiled rust artifact";
     std::fs::write(&source, content).unwrap();
 
-    let stats = persist_artifact_file(&cache, &source).unwrap();
+    let stats = persist_artifact_file(&cache, &source, MaterializationMode::Auto).unwrap();
 
     assert_eq!(std::fs::read(&cache).unwrap(), content);
     assert_eq!(
@@ -321,7 +321,7 @@ fn persist_artifact_file_uses_hardlink_when_reflink_unavailable() {
     let content = b"compiled rust artifact for hardlink fast path";
     std::fs::write(&source, content).unwrap();
 
-    let stats = persist_artifact_file(&cache, &source).unwrap();
+    let stats = persist_artifact_file(&cache, &source, MaterializationMode::Auto).unwrap();
 
     assert_eq!(std::fs::read(&cache).unwrap(), content);
     if stats.reflink_count == 0 {
@@ -369,7 +369,7 @@ fn persist_artifact_file_writes_digest_before_publishing() {
     let content = b"compiled rust artifact";
     std::fs::write(&source, content).unwrap();
 
-    persist_artifact_file(&cache, &source).unwrap();
+    persist_artifact_file(&cache, &source, MaterializationMode::Auto).unwrap();
     assert!(cache.exists());
 
     forget_blob_registration_for_restart_test(&cache);

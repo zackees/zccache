@@ -88,6 +88,7 @@ async fn perf_staged_rust_hit_uses_provisional_payload_before_durable_publicatio
         Some(plan),
         publication_guard,
         resource_admission,
+        MaterializationMode::Auto,
     );
     let exclusive_gate = resource_gate.clone();
     let mut exclusive = tokio::spawn(async move { exclusive_gate.acquire(true).await });

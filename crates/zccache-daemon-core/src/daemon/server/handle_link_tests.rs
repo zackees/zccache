@@ -184,9 +184,15 @@ async fn failed_link_publication_salvages_output_without_becoming_cacheable() {
     let fault = StagedFaultGuard::arm(&server.state.artifact_dir, [StagedFaultPoint::IndexCommit]);
 
     let key = "a".repeat(64);
-    let cacheable =
-        publish_and_materialize_staged_link(&server.state, &plan, &key, metadata, &[staged])
-            .unwrap();
+    let cacheable = publish_and_materialize_staged_link(
+        &server.state,
+        &plan,
+        &key,
+        metadata,
+        &[staged],
+        MaterializationMode::Auto,
+    )
+    .unwrap();
     assert!(!cacheable);
     assert!(!server.state.artifacts.contains_key(&key));
     assert_eq!(std::fs::read(&requested).unwrap(), b"complete linked image");
@@ -233,8 +239,15 @@ async fn failed_link_publication_and_salvage_fail_closed() {
     );
     let salvage_fault = StagedFaultGuard::arm(&requested, [StagedFaultPoint::MaterializeOutput(0)]);
 
-    publish_and_materialize_staged_link(&server.state, &plan, &"b".repeat(64), metadata, &[staged])
-        .unwrap_err();
+    publish_and_materialize_staged_link(
+        &server.state,
+        &plan,
+        &"b".repeat(64),
+        metadata,
+        &[staged],
+        MaterializationMode::Auto,
+    )
+    .unwrap_err();
     assert!(!requested.exists());
     let staged = server.state.profiler.staged.snapshot();
     assert_eq!(staged.counters["salvage_failure"], 1);

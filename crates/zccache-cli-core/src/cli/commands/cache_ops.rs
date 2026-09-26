@@ -334,12 +334,35 @@ pub(crate) fn artifact_matches_lockfile(
 
 /// Core logic for `zccache warm` — testable with custom paths.
 /// If lockfile is Some, only restores artifacts matching crates in the lockfile.
+/// Delivery follows this process's `ZCCACHE_MODE` (#1683).
 pub(crate) fn warm_target(
     index_path: &Path,
     artifact_dir: &Path,
     target_dir: &Path,
     profile: &str,
     lockfile: Option<&Path>,
+) -> Result<(u64, u64, u64), String> {
+    let mode = crate::core::config::materialization_mode_from_env()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    warm_target_with_mode(
+        index_path,
+        artifact_dir,
+        target_dir,
+        profile,
+        lockfile,
+        mode,
+    )
+}
+
+/// [`warm_target`] under an explicit materialization mode.
+pub(crate) fn warm_target_with_mode(
+    index_path: &Path,
+    artifact_dir: &Path,
+    target_dir: &Path,
+    profile: &str,
+    lockfile: Option<&Path>,
+    mode: crate::core::config::MaterializationMode,
 ) -> Result<(u64, u64, u64), String> {
     if !index_path.exists() {
         return Err(format!("no artifact index at {}", index_path.display()));
@@ -368,10 +391,11 @@ pub(crate) fn warm_target(
     // mtime bump below is the LRU recency signal for zccache's *own*
     // artifact-cache eviction (see `crates/zccache-daemon/src/eviction.rs`,
     // which picks the highest mtime across an artifact group as last-use).
-    // We hardlink each artifact-cache file into target/, which shares an
-    // inode with the cache file — so touching the dst here also bumps the
-    // cache file's mtime, telling eviction "this artifact was just used,
-    // don't evict it". NOT a cargo-freshness signal: cargo never
+    // A hardlinked output shares an inode with the cache file, so touching
+    // the dst also bumps the cache file's mtime, telling eviction "this
+    // artifact was just used, don't evict it"; an independent (reflinked or
+    // copied) output gets the cache file touched directly
+    // (`warm_delivery::deliver_warm_file`). NOT a cargo-freshness signal: cargo never
     // mtime-checks rlib outputs (they're content-keyed by their filename
     // hash), so don't be tempted to remove this thinking it duplicates
     // snapshot-fp-validate. Doing so would silently regress eviction.
@@ -464,23 +488,15 @@ pub(crate) fn warm_target(
                     skipped.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
-                let linked = std::fs::hard_link(src, dst).is_ok();
-                if !linked {
-                    if let Err(e) = std::fs::copy(src, dst) {
-                        eprintln!(
-                            "zccache warm: failed to copy {} -> {}: {e}",
-                            src.display(),
-                            dst.display()
-                        );
-                        errors.fetch_add(1, Ordering::Relaxed);
-                        return;
-                    }
-                }
-
-                // The mtime shared with a file payload is zccache's LRU
-                // signal, not a cargo freshness signal.
-                if let Ok(f) = std::fs::File::open(dst) {
-                    let _ = f.set_times(file_times);
+                if let Err(e) = super::warm_delivery::deliver_warm_file(src, dst, mode, file_times)
+                {
+                    eprintln!(
+                        "zccache warm: failed to copy {} -> {}: {e}",
+                        src.display(),
+                        dst.display()
+                    );
+                    errors.fetch_add(1, Ordering::Relaxed);
+                    return;
                 }
             }
             crate::artifact::ResolvedArtifactPayload::Bytes(data) => {

@@ -41,6 +41,7 @@ mod session_errors;
 mod session_staged_attribution;
 mod staged_compiler_sets;
 pub(crate) mod staged_env;
+mod store_mode;
 mod system_includes_deferred;
 mod watcher_lifecycle;
 mod write_cached;

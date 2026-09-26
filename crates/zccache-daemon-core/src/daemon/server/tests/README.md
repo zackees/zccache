@@ -9,6 +9,8 @@ filesystem fixture and always prints executed/skipped rows with reasons.
 `write_cached_mode.rs` runs the cache-hit executor under each `ZCCACHE_MODE`
 (#1683): COPY/REFLINK share one independent-delivery contract, LINK shares the
 cache inode only for eligible outputs, and switching modes migrates outputs.
+`store_mode.rs` covers the store direction: COPY/REFLINK never hardlink the
+compiler output into the cache.
 `fingerprint_encoding.rs` checks the request encoder against literal legacy bytes.
 
 `mod.rs` declares the per-domain submodules and owns the crate-wide canonical

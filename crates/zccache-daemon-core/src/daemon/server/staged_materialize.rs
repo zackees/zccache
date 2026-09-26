@@ -161,6 +161,7 @@ pub(super) fn materialize_link_plan_observed(
     state: &SharedState,
     plan: &StagedCompilePlan,
     salvage_reason: Option<&'static str>,
+    mode: MaterializationMode,
 ) -> std::io::Result<()> {
     let output_count = plan.output_paths().len();
     record_salvage_start(state, output_count, salvage_reason);
@@ -170,7 +171,7 @@ pub(super) fn materialize_link_plan_observed(
         output_count,
         salvage_reason,
         started,
-        plan.materialize(),
+        plan.materialize(mode),
     )
 }
 
@@ -195,6 +196,7 @@ pub(super) fn materialize_exec_plan_observed(
     state: &SharedState,
     plan: &ExecStagedPlan,
     salvage_reason: Option<&'static str>,
+    mode: MaterializationMode,
 ) -> std::io::Result<()> {
     let output_count = plan.output_count();
     record_salvage_start(state, output_count, salvage_reason);
@@ -204,7 +206,7 @@ pub(super) fn materialize_exec_plan_observed(
         output_count,
         salvage_reason,
         started,
-        plan.materialize(),
+        plan.materialize(mode),
     )
 }
 
@@ -212,6 +214,7 @@ pub(super) fn materialize_multi_plan_observed(
     state: &SharedState,
     plan: &StagedMultiUnitPlan,
     salvage_reason: Option<&'static str>,
+    mode: MaterializationMode,
 ) -> std::io::Result<()> {
     let output_count = plan.outputs.len();
     record_salvage_start(state, output_count, salvage_reason);
@@ -221,6 +224,6 @@ pub(super) fn materialize_multi_plan_observed(
         output_count,
         salvage_reason,
         started,
-        plan.materialize(),
+        plan.materialize(mode),
     )
 }

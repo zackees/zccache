@@ -464,7 +464,7 @@ fn clear_during_salvage_cannot_remove_private_compiler_outputs() {
         }],
     );
     let hook = StagedHookGuard::arm(&requested, StagedHookPoint::MaterializeOutput);
-    let salvage = std::thread::spawn(move || plan.materialize());
+    let salvage = std::thread::spawn(move || plan.materialize(MaterializationMode::Auto));
     hook.wait_until_reached();
 
     assert!(clear_staged_artifacts(&artifact_dir).unwrap() > 0);
@@ -600,7 +600,8 @@ fn mutable_page_writer_never_shares_backend_inode() {
             .unwrap()
             .unwrap();
     let destination = dir.path().join("work.db");
-    materialize_independent_with_stats(&payloads[0], &destination).unwrap();
+    materialize_independent_with_mode(&payloads[0], &destination, MaterializationMode::Auto)
+        .unwrap();
     let mut page = vec![0x22_u8; 4096];
     page[37] = 0x99;
     fs::write(&destination, page).unwrap();
