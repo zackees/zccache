@@ -101,9 +101,9 @@ impl MaterializationMode {
     /// The COPY path creates `destination` exclusively (callers remove it
     /// first): opening an existing path could truncate a file that a racing
     /// delivery has just hardlinked to the cache blob. A failed copy removes
-    /// its partial destination. Permissions — and on Windows, where
-    /// `CopyFileExW` preserves it, the modification time — match what
-    /// `std::fs::copy` produces.
+    /// its partial destination. Permissions match `std::fs::copy`; the
+    /// modification time is the copy's own on every platform — delivery
+    /// callers set the output's mtime explicitly afterwards.
     pub fn copy_file(
         self,
         source: &std::path::Path,
@@ -150,8 +150,6 @@ fn fill(
         copied += read as u64;
     }
     writer.flush()?;
-    #[cfg(windows)]
-    writer.set_modified(metadata.modified()?)?;
     drop(writer);
     std::fs::set_permissions(destination, metadata.permissions())?;
     Ok(copied)
