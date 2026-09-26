@@ -104,6 +104,34 @@ pub(crate) fn default_output(
 /// the compiler. The compiler always receives the exact original args.
 #[must_use]
 pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
+    parse_invocation_with(compiler, args, true)
+}
+
+/// The per-source object layout of a GNU-style compile that is non-cacheable
+/// only because it requests an unmodeled side output (`--coverage`,
+/// `-gsplit-dwarf`, ...). `None` for every other invocation.
+///
+/// Such a compile runs directly, writing its object, depfile and side outputs
+/// in place. A prior cached compile may have materialized those paths as
+/// hardlinks, so the caller detaches them first (#1648).
+#[must_use]
+pub fn side_output_compilations(
+    compiler: &str,
+    args: &[String],
+) -> Option<Vec<CacheableCompilation>> {
+    unmodeled_side_output_flag(args, false)?;
+    match parse_invocation_with(compiler, args, false) {
+        ParsedInvocation::Cacheable(compilation) => Some(vec![compilation]),
+        ParsedInvocation::MultiFile { compilations, .. } => Some(compilations),
+        ParsedInvocation::NonCacheable { .. } => None,
+    }
+}
+
+fn parse_invocation_with(
+    compiler: &str,
+    args: &[String],
+    reject_side_outputs: bool,
+) -> ParsedInvocation {
     let family = detect_family(compiler);
     // Rustfmt is not a compiler — reject here, CLI handles it separately.
     if family == CompilerFamily::Rustfmt {
@@ -261,7 +289,7 @@ pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
         };
     }
 
-    if let Some(flag) = unmodeled_side_output_flag(args, false) {
+    if let Some(flag) = unmodeled_side_output_flag(args, false).filter(|_| reject_side_outputs) {
         return ParsedInvocation::NonCacheable {
             reason: format!("unmodeled compiler side output requested by {flag}"),
         };

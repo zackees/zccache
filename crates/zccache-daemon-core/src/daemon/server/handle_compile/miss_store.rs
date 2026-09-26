@@ -863,7 +863,16 @@ fn store_single_output(
     let index_writer_tx = state.index_writer_tx.clone();
     let lifecycle_cache_root = state.cache_dir.clone();
     let completion_key = artifact_key_hex.to_string();
-    kernal_api::async_engine::launch(async move {
+    // #1648: the detached path publishes the same staged generation as the
+    // synchronous one, so it must report into the same staged telemetry.
+    let staged_publication =
+        staged_artifacts_enabled() && staged_key_supported(&key_hex) && !pack_mode_enabled();
+    // Attribute that telemetry to the requesting session, as the response
+    // path's own staged counters are.
+    let request_profile = crate::daemon::staged_stats::current_request_profile();
+    kernal_api::async_engine::launch(crate::daemon::staged_stats::scope_optional_request_profile(
+        request_profile,
+        async move {
         #[expect(
             clippy::expect_used,
             reason = "persist_semaphore is owned by ServerState for the daemon's lifetime; AcquireError here would be a logic bug (semaphore explicitly closed), not a runtime condition"
@@ -889,7 +898,7 @@ fn store_single_output(
             // `persist::enrich_persist_err`).
             let gap_ms = t_persist_enqueue.elapsed().as_millis() as u64;
             match persist_artifact_payloads(&artifact_dir, &key_hex, &persist_payloads) {
-                Ok(()) => PersistOutcome::published(persist_meta),
+                Ok(()) => (PersistOutcome::published(persist_meta), None),
                 Err(e) => {
                     tracing::warn!(
                         key = %key_hex,
@@ -909,15 +918,30 @@ fn store_single_output(
                             "gap_ms": gap_ms,
                         }),
                     );
-                    PersistOutcome::failed()
+                    let reason =
+                        staged_publish_failure(&e).unwrap_or(StagedPublishFailure::StoreSetup);
+                    (PersistOutcome::failed(), Some(reason))
                 }
             }
         })
         .detach_on_drop()
         .await;
         match written {
-            Ok(outcome) => {
-                if !enqueue_persisted_index(outcome, &index_writer_tx, completion_key.clone()) {
+            Ok((outcome, failure)) => {
+                let published =
+                    enqueue_persisted_index(outcome, &index_writer_tx, completion_key.clone());
+                if staged_publication {
+                    if let Some(reason) = failure {
+                        record_staged_publication_failure(state_ref.as_ref(), reason);
+                    } else if published {
+                        use crate::daemon::staged_stats::StagedCounter;
+                        state_ref
+                            .profiler
+                            .staged
+                            .count(StagedCounter::PublicationSuccess);
+                    }
+                }
+                if !published {
                     // This entry was only provisional while the filesystem
                     // publish ran. Do not retain a lookup row for a failed
                     // persist, or a later hit could point at missing payloads.
@@ -932,7 +956,8 @@ fn store_single_output(
         // Always complete the pending entry, even on JoinError, so
         // waiters cannot hang past the spawn's lifetime.
         pending_writes::complete(&state_ref.pending_cache_writes, &completion_key);
-    }).detach();
+    }))
+    .detach();
     stats.persist_enqueue_ns = t_persist_enqueue.elapsed().as_nanos() as u64;
 
     let t_artifact_insert_stats = Instant::now();

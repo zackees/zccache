@@ -12,6 +12,7 @@ mod staged;
 mod types;
 
 use args::filter_multi_source_args;
+pub(in crate::daemon::server) use preflight::detach_direct_batch_outputs;
 use preflight::InputSnapshot;
 pub(super) use types::materialize_multi_hit;
 use types::{

@@ -444,6 +444,8 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = tmp.path().join("cache");
         let _cache_env = CacheDirEnvGuard::set(&cache_dir);
+        let _staged_env =
+            super::staged_env::StagedArtifactsEnvGuard::set_while_locked(&_cache_env, "c-cpp");
         let endpoint = crate::ipc::unique_test_endpoint();
         let mut server = DaemonServer::bind(&endpoint).unwrap();
         let state = server.test_state_arc();
@@ -514,11 +516,12 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
             })
         ));
         assert!(output.exists(), "successful compile was not salvaged");
+        super::staged_env::settle_publication(&state).await;
         publish_fault.assert_all_consumed();
 
-        let publish_fault =
-            StagedFaultGuard::arm(&state.artifact_dir, [StagedFaultPoint::PointerCommit]);
-        let salvage_fault =
+        // Materialization precedes publication (#1104), so a failed requested
+        // materialization is the request's error and nothing is published.
+        let materialize_fault =
             StagedFaultGuard::arm(&failed_output, [StagedFaultPoint::MaterializeOutput(0)]);
         client
             .send(&compile(session_id.clone(), &failed_source, &failed_output))
@@ -530,13 +533,15 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
         ));
         assert!(
             !failed_output.exists(),
-            "failed salvage reported a requested output"
+            "failed materialization reported a requested output"
         );
-        publish_fault.assert_all_consumed();
-        salvage_fault.assert_all_consumed();
+        super::staged_env::settle_publication(&state).await;
+        materialize_fault.assert_all_consumed();
 
-        let index_fault =
-            StagedFaultGuard::arm(&state.artifact_dir, [StagedFaultPoint::IndexCommit]);
+        // A durable-publication failure after the response (the manifest of
+        // the new generation cannot be written) keeps the materialized output.
+        let manifest_fault =
+            StagedFaultGuard::arm(&state.artifact_dir, [StagedFaultPoint::ManifestWrite]);
         client
             .send(&compile(session_id.clone(), &index_source, &index_output))
             .await
@@ -549,10 +554,11 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
                 ..
             })
         ));
-        assert!(index_output.exists(), "index failure was not salvaged");
-        index_fault.assert_all_consumed();
+        assert!(index_output.exists(), "publication failure lost the output");
+        super::staged_env::settle_publication(&state).await;
+        manifest_fault.assert_all_consumed();
 
-        // Failed index publication must not leave a process-local cache entry.
+        // Failed publication must not leave a process-local cache entry.
         // The identical request must execute again, not become a false hit.
         std::fs::remove_file(&index_output).unwrap();
         client
@@ -569,8 +575,9 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
         ));
         assert!(
             index_output.exists(),
-            "retry after index failure did not compile"
+            "retry after publication failure did not compile"
         );
+        super::staged_env::settle_publication(&state).await;
 
         client
             .send(&Request::SessionEnd {
@@ -584,14 +591,16 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
             }
             other => panic!("expected SessionEnded stats, got {other:?}"),
         };
-        assert_eq!(staged.counters["publication_failure"], 3);
-        assert_eq!(staged.failures["pointer_commit"], 2);
-        assert_eq!(staged.failures["index_commit"], 1);
-        assert_eq!(staged.counters["salvage_attempt"], 3);
-        assert_eq!(staged.counters["salvage_success"], 2);
-        assert_eq!(staged.counters["salvage_failure"], 1);
+        // The detached publisher reports into the session's staged telemetry.
+        assert_eq!(staged.counters["publication_failure"], 2);
+        assert_eq!(staged.failures["pointer_commit"], 1);
+        assert_eq!(staged.failures["manifest"], 1);
+        assert_eq!(staged.counters["publication_success"], 1);
         assert_eq!(staged.counters["materialize_failure"], 1);
-        assert!(staged.timings_ns.contains_key("salvage"));
+        assert_eq!(staged.failures["requested_materialization"], 1);
+        // Outputs are materialized before publication, so a publication
+        // failure never needs a salvage copy.
+        assert_eq!(staged.counters["salvage_attempt"], 0);
 
         shutdown.notify_one();
         server_task.await.unwrap();
@@ -611,40 +620,20 @@ async fn staged_publication_fault_salvages_or_fails_closed_with_forensics() {
             })
             .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
             .collect::<String>();
-        assert_eq!(
-            lifecycle
-                .matches("\"event\":\"staged_salvage_started\"")
-                .count(),
-            3
-        );
-        assert_eq!(
-            lifecycle
-                .matches("\"event\":\"staged_salvage_complete\"")
-                .count(),
-            2
-        );
-        assert_eq!(
-            lifecycle
-                .matches("\"event\":\"staged_salvage_failed\"")
-                .count(),
-            1
-        );
-        for event in lifecycle
+        assert!(!lifecycle.contains("\"event\":\"staged_salvage_"));
+        // Each durable-publication fault leaves one forensic record naming the
+        // artifact and the injected cause.
+        let persist_failures: Vec<serde_json::Value> = lifecycle
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .filter(|event| {
-                event["event"]
-                    .as_str()
-                    .is_some_and(|name| name.starts_with("staged_salvage_"))
-            })
-        {
-            let reason = event["reason"].as_str().expect("bounded salvage reason");
-            assert!(reason
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte == b'_'));
-            assert!(event["output_count"].is_u64());
-            assert!(event["copied_bytes"].is_u64());
-            assert!(event["elapsed_ns"].is_u64());
+            .filter(|event| event["event"] == crate::core::lifecycle::EVENT_PERSIST_FAILED)
+            .collect();
+        assert_eq!(persist_failures.len(), 2, "{lifecycle}");
+        for event in &persist_failures {
+            assert!(event["artifact_key"].is_string());
+            assert!(event["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("injected staged fault")));
         }
         assert!(!lifecycle.contains(state.staging.path().to_string_lossy().as_ref()));
     })
