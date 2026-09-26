@@ -3,7 +3,9 @@
 
 The integration workflow seeds a warm cache, so its runtime telemetry must be
 cleared without deleting the cached artifacts that make the test phase warm.
-Keep these filename rules aligned with ``zccache-audit::classify_source``.
+These filename rules must match ``zccache-audit::classify_source``; both sides
+are tested against ``ci/log_audit_source_fixture.json`` (#1523), so a drift on
+either side fails a test.
 """
 
 from __future__ import annotations

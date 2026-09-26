@@ -73,3 +73,49 @@ def test_workspace_test_phases_bound_compile_and_runtime_concurrency() -> None:
         assert 'CARGO_BUILD_JOBS: "1"' in suite
         assert 'SOLDR_JOBS: "1"' in suite
         assert "--test-threads=1" in suite
+
+
+def _step_names(workflow: str) -> list[str]:
+    prefix = "      - name: "
+    return [
+        line[len(prefix) :] for line in workflow.splitlines() if line.startswith(prefix)
+    ]
+
+
+def test_seeded_telemetry_is_cleared_before_the_full_workspace_suite() -> None:
+    """#1523: the seeded cache carries a prior job's history and lifecycle logs."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    cleanup = _step_block(
+        workflow,
+        "Remove seeded runtime journals before tests",
+        "Test (full workspace)",
+    )
+
+    assert "ci/clear_runtime_telemetry.py" in cleanup
+    assert '--cache-root "$SOLDR_CACHE_DIR/cache/zccache"' in cleanup
+
+
+def test_every_telemetry_producer_is_followed_by_cleanup_before_the_audit() -> None:
+    """#1523: only strict runtime-fixture telemetry may reach the final audit.
+
+    The seeded cache and every step that runs zccache-wrapped cargo against the
+    isolated cache must be followed by a full telemetry cleanup before the
+    aggregate audit. The wrapper boundary test asserts its own intentional
+    `wrapper-daemon-unavailable` event directly.
+    """
+    names = _step_names(WORKFLOW.read_text(encoding="utf-8"))
+    ordered = [
+        "Stop setup-soldr builder cache before tests",
+        "Remove seeded runtime journals before tests",
+        "Test (full workspace)",
+        "Remove build-harness journals before strict audit",
+        "Wrapper daemon-unavailable contract (exit 125)",
+        "Remove wrapper-contract telemetry before strict audit",
+        "Test ignored integration and stress suite",
+        "Remove ignored-suite harness journals before strict audit",
+        "Audit isolated integration cache",
+    ]
+
+    assert all(name in names for name in ordered), set(ordered) - set(names)
+    positions = [names.index(name) for name in ordered]
+    assert positions == sorted(positions), list(zip(ordered, positions))
