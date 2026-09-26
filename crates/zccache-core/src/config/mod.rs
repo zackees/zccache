@@ -106,8 +106,9 @@ pub use resolve::{
 pub use retired_store::{
     file_frees_space_on_removal, file_link_count, file_may_free_space_on_removal,
     is_older_version_dir, removal_frees_space, sweep_retired_version_store,
-    sweep_retired_version_stores_in, touch_store_activity_marker, RetiredStoreSweepReport,
-    RetiredSweepMode, LAST_ACTIVE_MARKER_FILE,
+    sweep_retired_version_store_with_mode, sweep_retired_version_stores_in,
+    sweep_retired_version_stores_in_with_mode, touch_store_activity_marker,
+    RetiredStoreSweepReport, RetiredSweepMode, LAST_ACTIVE_MARKER_FILE,
 };
 
 /// Top-level configuration for zccache.

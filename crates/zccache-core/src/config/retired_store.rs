@@ -248,7 +248,7 @@ pub fn file_link_count(path: &Path) -> Option<u64> {
 ///    store directory is removed (lock released first, since an open handle
 ///    to it can block deletion on Windows).
 #[must_use]
-pub fn sweep_retired_version_store(
+pub fn sweep_retired_version_store_with_mode(
     store: &Path,
     max_age: Duration,
     now: SystemTime,
@@ -331,7 +331,7 @@ pub fn sweep_retired_version_store(
 /// every *newer* version are never inspected, in either mode. Missing `top_level` is a
 /// silent no-op, matching [`super::resolve::prune_stale_version_dirs_in`].
 #[must_use]
-pub fn sweep_retired_version_stores_in(
+pub fn sweep_retired_version_stores_in_with_mode(
     top_level: &Path,
     keep: &str,
     max_age: Duration,
@@ -351,7 +351,7 @@ pub fn sweep_retired_version_stores_in(
         if !super::resolve::is_version_dir_name(&name) || !is_older_version_dir(&name, keep) {
             continue;
         }
-        report.merge(&sweep_retired_version_store(
+        report.merge(&sweep_retired_version_store_with_mode(
             &entry.path(),
             max_age,
             now,
@@ -537,3 +537,37 @@ fn is_older_than(metadata: &Metadata, now: SystemTime, max_age: Duration) -> boo
 #[cfg(test)]
 #[path = "retired_store_tests.rs"]
 mod tests;
+
+/// Routine sweep of one retired store, with the signature published before
+/// 1.14.14 (#1601).
+///
+/// #1673 added `mode` to this function in a patch release, which broke every
+/// downstream caller (soldr's embedded-store maintenance) that had not yet
+/// changed. The mode-taking form is [`sweep_retired_version_store_with_mode`];
+/// this keeps the old call compiling with the safe routine behavior.
+#[must_use]
+pub fn sweep_retired_version_store(
+    store: &Path,
+    max_age: Duration,
+    now: SystemTime,
+) -> RetiredStoreSweepReport {
+    sweep_retired_version_store_with_mode(store, max_age, now, RetiredSweepMode::Routine)
+}
+
+/// Routine sweep of every retired sibling store, with the signature published
+/// before 1.14.14 (#1601). See [`sweep_retired_version_store`].
+#[must_use]
+pub fn sweep_retired_version_stores_in(
+    top_level: &Path,
+    keep: &str,
+    max_age: Duration,
+    now: SystemTime,
+) -> RetiredStoreSweepReport {
+    sweep_retired_version_stores_in_with_mode(
+        top_level,
+        keep,
+        max_age,
+        now,
+        RetiredSweepMode::Routine,
+    )
+}

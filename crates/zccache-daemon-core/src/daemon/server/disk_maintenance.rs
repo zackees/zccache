@@ -755,7 +755,7 @@ fn maintain_disk_artifacts_with_barrier(
         if !retired_swept && retired_bytes > 0 && plan.pressure != MaintenancePressure::None {
             if let Some((top_level, current)) = retired_top_level.as_ref() {
                 retired_swept = true;
-                let sweep = crate::core::config::sweep_retired_version_stores_in(
+                let sweep = crate::core::config::sweep_retired_version_stores_in_with_mode(
                     top_level,
                     current,
                     RETIRED_STORE_MAX_AGE,
@@ -1163,7 +1163,7 @@ async fn sweep_retired_version_stores(
         tracing::debug!(%error, cache_root = %cache_dir.display(), "failed to stamp store activity marker");
     }
     let report = launch_maintenance_blocking(runtime_handle, move || {
-        crate::core::config::sweep_retired_version_stores_in(
+        crate::core::config::sweep_retired_version_stores_in_with_mode(
             &top_level,
             &current,
             RETIRED_STORE_MAX_AGE,
