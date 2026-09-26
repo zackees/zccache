@@ -330,6 +330,9 @@ pub(super) struct SharedState {
     /// in the same directory. Weak values let idle directory locks disappear.
     pub(super) link_output_locks: DashMap<NormalizedPath, std::sync::Weak<Mutex<()>>>,
     pub(super) system_includes: Mutex<SystemIncludeCache>,
+    /// Single-flight gates for system-include discovery, keyed by compiler
+    /// path (FastLED/fbuild#1466).
+    pub(super) system_include_probes: KeyedLocks,
     /// Dependency graph: tracks include relationships and cache verdicts.
     ///
     /// **Wrapped in `ArcSwap` per #640** so that the on-disk-loaded graph
