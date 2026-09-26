@@ -107,3 +107,75 @@ fn resolve_pch_source_non_pch_returns_none() {
     let result = resolve_pch_source(Path::new("/build/foo.o"), &pch_map);
     assert_eq!(result, None);
 }
+
+// ── #1609: a PCH consumer's key must track the PCH binary ───────────
+
+/// A build-directory PCH maps to its source header (`src/pch.h`), but the
+/// header's own bytes do not change when a header *it includes* changes.
+/// The regenerated PCH binary does. Keying the consumer on the header alone
+/// let `main.o` hit stale after `sub.h` changed (#1609).
+#[test]
+fn pch_dependency_hash_changes_when_the_binary_is_regenerated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let build = tmp.path().join("build");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&build).unwrap();
+    let header = src.join("pch.h");
+    let pch = build.join("pch.h.pch");
+    std::fs::write(&header, "#include \"sub.h\"\n").unwrap();
+    std::fs::write(&pch, "pch built from SUB_VALUE 42").unwrap();
+
+    let pch_map: DashMap<NormalizedPath, NormalizedPath> = DashMap::new();
+    pch_map.insert(NormalizedPath::new(&pch), NormalizedPath::new(&header));
+    let cache_system = CacheSystem::new();
+
+    let before =
+        hash_dependency(&cache_system, &pch_map, &pch, cache_system.current_clock()).unwrap();
+    // sub.h changed and the PCH was regenerated; pch.h is byte-identical.
+    std::fs::write(&pch, "pch built from SUB_VALUE 99, plus sub_extra()").unwrap();
+    let after =
+        hash_dependency(&cache_system, &pch_map, &pch, cache_system.current_clock()).unwrap();
+
+    assert_ne!(
+        before, after,
+        "consumer key must change with the PCH binary"
+    );
+}
+
+/// Editing the source header without regenerating the PCH must also change
+/// the key, so the compiler (not a stale hit) reports the out-of-date PCH.
+#[test]
+fn pch_dependency_hash_changes_when_the_source_header_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let header = tmp.path().join("pch.h");
+    let pch = tmp.path().join("pch.h.pch");
+    std::fs::write(&header, "#define A 1\n").unwrap();
+    std::fs::write(&pch, "binary").unwrap();
+    let pch_map: DashMap<NormalizedPath, NormalizedPath> = DashMap::new();
+    let cache_system = CacheSystem::new();
+
+    let before =
+        hash_dependency(&cache_system, &pch_map, &pch, cache_system.current_clock()).unwrap();
+    std::fs::write(&header, "#define A 2 /* edited */\n").unwrap();
+    let after =
+        hash_dependency(&cache_system, &pch_map, &pch, cache_system.current_clock()).unwrap();
+
+    assert_ne!(before, after);
+}
+
+/// Non-PCH paths keep their plain content hash, so no other cache key moves.
+#[test]
+fn non_pch_dependency_hash_is_the_plain_file_hash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let header = tmp.path().join("plain.h");
+    std::fs::write(&header, "#define B 1\n").unwrap();
+    let pch_map: DashMap<NormalizedPath, NormalizedPath> = DashMap::new();
+    let cache_system = CacheSystem::new();
+    let clock = cache_system.current_clock();
+
+    assert_eq!(
+        hash_dependency(&cache_system, &pch_map, &header, clock).unwrap(),
+        hash_file(&cache_system, &header, clock).unwrap()
+    );
+}

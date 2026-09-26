@@ -111,9 +111,8 @@ pub(super) async fn maybe_store_rustc_error_artifact(
 
     let mut hash_map: HashMap<NormalizedPath, ContentHash> = HashMap::new();
     for path in &tracked_paths {
-        let hash_path =
-            resolve_pch_source(path, &state.pch_source_map).unwrap_or_else(|| path.clone());
-        let hash = hash_file(&state.cache_system, &hash_path, snap_clock).ok()?;
+        let hash =
+            hash_dependency(&state.cache_system, &state.pch_source_map, path, snap_clock).ok()?;
         hash_map.insert(path.clone(), hash);
     }
 
