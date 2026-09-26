@@ -88,19 +88,26 @@ async fn bringup_logs_every_phase_and_the_background_depgraph_load() {
     assert!(loaded[0]["elapsed_ns"].is_u64());
 }
 
-/// Resets the process-global load delay even if the test panics.
-struct LoadDelay;
+/// Holds the background depgraph load of every daemon rooted under `root`
+/// until released or dropped (released even if the test panics).
+struct LoadHold(std::path::PathBuf);
 
-impl LoadDelay {
-    fn set(ms: u64) -> Self {
-        super::super::embedded_bringup::TEST_DEPGRAPH_LOAD_DELAY_MS.store(ms, Ordering::Release);
-        Self
+impl LoadHold {
+    fn hold(root: &Path) -> Self {
+        super::super::embedded_bringup::TEST_DEPGRAPH_LOAD_HOLDS
+            .lock()
+            .unwrap()
+            .push(root.to_path_buf());
+        Self(root.to_path_buf())
     }
 }
 
-impl Drop for LoadDelay {
+impl Drop for LoadHold {
     fn drop(&mut self) {
-        super::super::embedded_bringup::TEST_DEPGRAPH_LOAD_DELAY_MS.store(0, Ordering::Release);
+        super::super::embedded_bringup::TEST_DEPGRAPH_LOAD_HOLDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|root| root != &self.0);
     }
 }
 
@@ -116,19 +123,16 @@ async fn readiness_does_not_wait_for_a_slow_depgraph_load() {
     register_context(&first.state, work.path());
     first.shutdown().await;
 
-    let delay = std::time::Duration::from_millis(1500);
-    let _delay = LoadDelay::set(delay.as_millis() as u64);
-    let started = std::time::Instant::now();
+    // The load cannot finish while held. If readiness waited for it, `start`
+    // would not return until the hold's cap and the load would be complete;
+    // no wall-clock budget is involved, so a slow runner cannot flake this.
+    let hold = LoadHold::hold(tmp.path());
     let second = start(&cache_dir).await;
-    let ready = started.elapsed();
-    assert!(
-        ready < delay,
-        "readiness took {ready:?}; it must not wait for the {delay:?} depgraph load"
-    );
     assert!(
         !second.state.dep_graph_load_complete.load(Ordering::Acquire),
-        "compiles must still see the load as pending"
+        "readiness must not wait for the depgraph load; compiles must still see it pending"
     );
+    drop(hold);
 
     // Shutdown joins the load, so the restored graph is what gets saved.
     assert!(super::super::embedded_bringup::await_depgraph_load(&second.state).await);
@@ -157,9 +161,17 @@ async fn early_flush_keeps_the_graph_the_load_is_restoring() {
     register_context(&first.state, work.path());
     first.shutdown().await;
 
-    let _delay = LoadDelay::set(500);
+    // Held, so the flush below is issued before the load installs; the flush
+    // waits for the load, and a releaser lets it through shortly after.
+    let hold = LoadHold::hold(tmp.path());
     let second = start(&cache_dir).await;
+    assert!(!second.state.dep_graph_load_complete.load(Ordering::Acquire));
+    let releaser = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        drop(hold);
+    });
     let report = second.flush().await;
+    releaser.await.unwrap();
     assert!(report.is_complete(), "{report:?}");
     assert_eq!(second.state.dep_graph.load().stats().context_count, 1);
     second.shutdown().await;
