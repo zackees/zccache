@@ -135,7 +135,23 @@ def test_cleanup_allowlist_preserves_foundation_cache_families() -> None:
     assert '"solo-toolchain-v3-' in planner
     assert '"setup-soldr-buildcache-v2-macos-arm64-6d40444a3fc5e4d0-' in planner
     assert '"setup-soldr-buildcache-v2-macos-arm64-032744c531163905-' in planner
+    assert "setup-soldr-buildcache-v2-linux-x64-032744c531163905" not in planner
     assert "no current shape or foundation cache was deleted" in workflow
+
+
+def test_perf_guard_build_cache_profile_is_not_retired() -> None:
+    planner_script = (
+        "const {RETIRED_MAIN_PATTERNS}=require(process.argv[1]);"
+        "const key='setup-soldr-buildcache-v2-linux-x64-032744c531163905-27ed8f2e0ba4ca9d';"
+        "process.stdout.write(String(RETIRED_MAIN_PATTERNS.some((p)=>p.test(key))));"
+    )
+    result = subprocess.run(
+        ["node", "-e", planner_script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout == "false"
 
 
 def test_retired_cache_families_are_main_only_and_exactly_scoped() -> None:
@@ -264,8 +280,9 @@ def test_measured_retired_cache_shapes_are_exact_and_main_only() -> None:
     plan = json.loads(result.stdout)
     # Linux x64 f9e7 remains the native-Python release cook profile; only the
     # measured disabled cook/build-cache identities retire automatically.
-    assert set(plan["stale"]) == {61, 62, 63, 64, 65, 69, 70, 71}
+    assert set(plan["stale"]) == {61, 62, 64, 65, 69, 71}
     assert 60 not in plan["stale"]
+    assert {63, 70}.isdisjoint(plan["stale"])
     assert {66, 67, 68}.isdisjoint(plan["stale"])
 
 

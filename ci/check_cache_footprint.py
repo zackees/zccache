@@ -98,7 +98,6 @@ WINDOWS_TEST_BUILD_CACHE = (
     "${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' "
     "&& inputs.os != 'windows-11-arm' }}"
 )
-
 SHAPE_INPUTS = (
     "toolchain",
     "prebuild-deps",
@@ -247,9 +246,68 @@ def _local_action_errors(root: Path) -> list[str]:
     return errors
 
 
+def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
+    """Enforce the measured Windows FS cache shape and disabled build layer."""
+    path = root / ".github/workflows/fs-matrix.yml"
+    if not path.exists():
+        return []
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    steps = (workflow.get("jobs") or {}).get("matrix", {}).get("steps") or []
+    setup = [
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith(f"{ACTION}@")
+    ]
+    windows = [step for step in setup if step.get("if") == "matrix.os == 'windows-latest'"]
+    other = [step for step in setup if step.get("if") == "matrix.os != 'windows-latest'"]
+    if len(setup) != 2 or len(windows) != 1 or len(other) != 1:
+        return [
+            (
+                "fs-matrix.yml:matrix must split the measured Windows cache profile "
+                "from the other OS setup"
+            )
+        ]
+
+    errors: list[str] = []
+    windows_with = windows[0].get("with") or {}
+    expected_save = (
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
+        "&& 'auto' || 'false' }}"
+    )
+    expected_windows = {
+        "build-cache": False,
+        "cargo-registry-cache": True,
+        "prebuild-deps": "soldr-cook",
+        "prebuild-deps-flags": "",
+    }
+    for key, expected in expected_windows.items():
+        if windows_with.get(key) != expected:
+            errors.append(
+                f"fs-matrix.yml:matrix Windows setup must keep {key}={expected!r}; "
+                "this lane shares the fnone cook base and does not save build-cache"
+            )
+    if windows_with.get("save-cache") != expected_save:
+        errors.append(
+            "fs-matrix.yml:matrix Windows setup must retain the main-push-only "
+            "save-cache policy"
+        )
+
+    other_with = other[0].get("with") or {}
+    expected_other_build = "${{ matrix.os != 'macos-15' }}"
+    if _normal_expression(other_with.get("build-cache", "true")) != _normal_expression(
+        expected_other_build
+    ):
+        errors.append(
+            "fs-matrix.yml:matrix non-Windows setup must preserve the measured "
+            "Linux build-cache and macOS no-build-cache policy"
+        )
+    return errors
+
+
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     errors.extend(_local_action_errors(root))
+    errors.extend(_fs_matrix_windows_profile_errors(root))
     steps = collect(root)
 
     refs = sorted({s.ref for s in steps})
@@ -330,6 +388,10 @@ def check(root: Path = ROOT) -> list[str]:
         expected = _normal_expression(f"${{{{ {os_context} != 'macos-15' }}}}")
         for step in target_steps:
             actual = _normal_expression(step.inputs.get("build-cache", "true"))
+            # The guarded Windows-only Filesystem Matrix step is validated by
+            # _fs_matrix_windows_profile_errors above.
+            if target == "fs-matrix.yml:matrix" and actual == "false":
+                continue
             if actual != expected:
                 errors.append(
                     f"{step.where} must disable build-cache on macos-15 "

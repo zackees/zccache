@@ -14,29 +14,33 @@ const RETIRED_MAIN_PREFIXES = [
 const RETIRED_MAIN_PATTERNS = [
   /^cook-base-v2-windows-x64-msvc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
   /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23-xdylint$/i,
-  /^setup-soldr-buildcache-v2-linux-x64-032744c531163905-[0-9a-f]{16}$/i,
   /^setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
   /^setup-soldr-buildcache-v2-windows-arm64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
 ];
 
-const LOCK_TRANSITION_TARGET_BYTES = 9_100_000_000;
+const LOCK_TRANSITION_TARGET_BYTES = 9_200_000_000;
 // Latest measured native-Python release cook archive was 1,093,942,322 B.
 // Reserve 1,120,000,000 B so small payload growth does not make the forecast
 // depend on that one archive being exactly repeatable.
 const NATIVE_PYTHON_F9_RESERVE_BYTES = 1_120_000_000;
 
 // Old-lock fallbacks deliberately retired at a lock transition. These are
-// the three measured large profiles selected to keep the full replacement
-// peak below the pre-prune target while retaining both 100%-hit musl caches.
+// the four measured profiles selected to keep the replacement peak below
+// the pre-prune target while retaining both 100%-hit musl caches.
 const TRANSITION_BUILD_CACHE_FALLBACKS = [
   { os: "linux", arch: "x64", digest: "6d40444a3fc5e4d0", suffix: "" },
   { os: "windows", arch: "x64", digest: "0a12db972fd789a0", suffix: "" },
   { os: "linux", arch: "arm64", digest: "6d40444a3fc5e4d0", suffix: "" },
+  { os: "linux", arch: "x64", digest: "032744c531163905", suffix: "" },
 ];
 const TRANSITION_BUILD_CACHE_PROFILES = [
   { os: "linux", arch: "x64", digest: "6d40444a3fc5e4d0", suffix: "", minimumBytes: 695_272_185 },
   { os: "windows", arch: "x64", digest: "0a12db972fd789a0", suffix: "", minimumBytes: 563_360_821 },
   { os: "linux", arch: "arm64", digest: "6d40444a3fc5e4d0", suffix: "", minimumBytes: 326_918_007 },
+  // Perf Guard both restores this active build-cache family and recreates it
+  // after cleanup; reserve a larger-than-observed payload even if the current
+  // listing is temporarily missing it.
+  { os: "linux", arch: "x64", digest: "032744c531163905", suffix: "", minimumBytes: 400_000_000 },
   { os: "linux", arch: "x64", digest: "67ddfadb5b3c0042", suffix: "check-linux-x86-musl", minimumBytes: 222_818_750 },
   { os: "linux", arch: "x64", digest: "f19152cfbd9e4599", suffix: "check-linux-arm-musl", minimumBytes: 214_577_067 },
 ];
@@ -55,6 +59,7 @@ const MAIN_CACHE_WRITER_WORKFLOW_NAMES = [
   "Integration",
   "Coverage",
   "Python Tests",
+  "Perf Guard",
   "Filesystem Matrix",
   "Soldr Broker Stress",
   "Test zccache-action",

@@ -140,6 +140,27 @@ def test_rejects_macos_build_cache_reintroduction(tmp_path: Path) -> None:
     )
 
 
+def test_windows_fs_matrix_cache_profile_is_guarded_red_green(tmp_path: Path) -> None:
+    source = guard.ROOT / ".github/workflows/fs-matrix.yml"
+    path = tmp_path / ".github/workflows/fs-matrix.yml"
+    path.parent.mkdir(parents=True)
+    content = source.read_text(encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
+
+    assert guard.check(tmp_path) == []
+
+    # Re-enabling the no-hit Windows build cache must fail the producer guard.
+    path.write_text(content.replace("build-cache: false", "build-cache: true", 1))
+    errors = guard.check(tmp_path)
+    assert any("Windows setup must keep build-cache=False" in error for error in errors)
+
+    # So must emitting the measured 1 GiB release-profile cook instead of the
+    # already-warm fnone base.
+    path.write_text(content.replace('prebuild-deps-flags: ""', 'prebuild-deps-flags: "--release"', 1))
+    errors = guard.check(tmp_path)
+    assert any("Windows setup must keep prebuild-deps-flags=''" in error for error in errors)
+
+
 def test_rejects_distinct_suffixes_for_same_shape(tmp_path: Path) -> None:
     _workflow(
         tmp_path,

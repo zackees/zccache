@@ -123,6 +123,9 @@ def test_transition_pre_prune_uses_live_usage_and_fails_before_any_delete_on_ove
     assert "if (!plan.ok)" in script
     assert script.index("if (!plan.ok)") < script.index("deleteActionsCacheById")
     assert "convergeInventory(stale.map((cache) => cache.id))" in script
+    # The planner's fixed profile allowlist, rather than row count, bounds
+    # selection: one profile may have several stale lock generations.
+    assert "plan.selectedBuildCacheIds.length > 4" not in script
 
 
 def test_debug_cook_producers_use_fnone_and_native_python_keeps_release_profile() -> None:
@@ -167,6 +170,8 @@ def test_lock_transition_forecast_selects_only_measured_buildcache_fallbacks() -
         {"id": 6, "key": "setup-soldr-buildcache-v2-linux-x64-67ddfadb5b3c0042-check-linux-x86-musl-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 222_818_750, "created_at": "2026-01-01T00:00:00Z"},
         {"id": 7, "key": "setup-soldr-buildcache-v2-linux-x64-f19152cfbd9e4599-check-linux-arm-musl-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 214_577_067, "created_at": "2026-01-01T00:00:00Z"},
         {"id": 8, "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-2222222222222222", "ref": "refs/pull/123/merge", "size_in_bytes": 695_272_185, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 9, "key": "setup-soldr-buildcache-v2-linux-x64-032744c531163905-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 366_602_514, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 10, "key": "setup-soldr-buildcache-v2-linux-x64-032744c531163905-4444444444444444", "ref": "refs/heads/main", "size_in_bytes": 366_602_514, "created_at": "2026-01-02T00:00:00Z"},
     ]
     script = (
         "const fs=require('node:fs');"
@@ -184,10 +189,27 @@ def test_lock_transition_forecast_selects_only_measured_buildcache_fallbacks() -
     plan = json.loads(result.stdout)
 
     assert plan["ok"] is True
-    assert set(plan["deleteIds"]) == {1, 2, 3, 4, 5}
-    assert plan["selectedBuildCacheIds"] == [3, 4, 5]
-    assert plan["projectedPeakBytes"] <= 9_100_000_000
-    assert plan["projectedPeakBytes"] == 9_066_453_867
+    assert set(plan["deleteIds"]) == {1, 2, 3, 4, 5, 9, 10}
+    assert plan["selectedBuildCacheIds"] == [3, 4, 5, 9, 10]
+    assert plan["projectedPeakBytes"] <= 9_200_000_000
+    assert plan["projectedPeakBytes"] == 8_733_248_839
+
+
+def test_transition_forecast_reserves_perf_guard_profile_when_row_is_absent() -> None:
+    script = (
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const p=planLockTransitionPrePrune([],{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},1_000_000_000,1_000_000_000);"
+        "process.stdout.write(JSON.stringify(p));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["ok"] is True
+    assert plan["estimatedNewBytes"] >= 400_000_000
 
 
 def test_lock_transition_forecast_fails_closed_for_unknown_buildcache_key() -> None:
@@ -276,7 +298,7 @@ def test_transition_forecast_keeps_case_sensitive_cook_suffix_profiles_distinct(
     plan = json.loads(result.stdout)
     assert plan["ok"] is True
     assert plan["staleCookIds"] == [1]
-    assert plan["estimatedNewBytes"] == 3_142_946_930
+    assert plan["estimatedNewBytes"] == 3_542_946_930
 
 
 def test_windows_lf_cache_is_stale_when_main_writers_normalize_to_crlf() -> None:
@@ -431,6 +453,7 @@ def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> No
         "Soldr Broker Stress",
         "Test zccache-action",
         "Feature Matrix Check",
+        "Perf Guard",
         "Auto-Release",
     }
     script = (
@@ -459,6 +482,16 @@ def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> No
         if str(step.get("uses", "")).startswith("zackees/setup-soldr@")
     ]
     assert setup_steps and all(step.get("with", {}).get("cache") is False for step in setup_steps)
+    assert all(
+        step.get("with", {}).get("save-cache") == expression for step in setup_steps
+    )
+    # `cache: false` disables setup/cook and registry, but build-cache is an
+    # independent layer. The benchmark builder still writes this key and must
+    # stay inside the writer barrier.
+    assert any(
+        step.get("with", {}).get("build-cache", True) is not False
+        for step in setup_steps
+    )
     assert not any(
         str(step.get("uses", "")).startswith("actions/cache@")
         or "gha-cache save" in str(step.get("run", ""))

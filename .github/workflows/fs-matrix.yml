@@ -61,6 +61,7 @@ jobs:
       - name: Wait for current-main cache pre-prune
         uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        if: matrix.os != 'windows-latest'
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
@@ -71,6 +72,22 @@ jobs:
           # The filesystem contract test had 245 compiler misses and no hits;
           # don't persist a macOS archive that this lane cannot reuse (#1677).
           build-cache: ${{ matrix.os != 'macos-15' }}
+          linker: fast
+      - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        if: matrix.os == 'windows-latest'
+        with:
+          cook-delta: false # per-commit delta layer off (setup-soldr#528)
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          zccache-seed-strict: true
+          toolchain: 1.95.0
+          cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
+          # Windows Test/CI already maintains this reusable debug-profile base.
+          # The FS contract lane records no build-cache compiler hits.
+          build-cache: false
+          cargo-registry-cache: true
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
           linker: fast
       - name: Install Linux filesystem tools
         if: runner.os == 'Linux'

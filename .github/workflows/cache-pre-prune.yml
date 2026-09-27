@@ -2,7 +2,7 @@ name: Cache Pre-prune
 
 # On each main push, forecast the full lock-transition peak using converged
 # cache usage/list views, then retire old-lock cook/registry entries and the
-# three measured fallback build-cache profiles before producers start. Main
+# four measured fallback build-cache profiles before producers start. Main
 # cache-writing workflows wait for this exact-SHA run through the read-only
 # composite action. The forecast reserves measured payload headroom but is not
 # an upload-time hard cap; trailing Cache Cleanup verifies the settled live
@@ -205,9 +205,6 @@ jobs:
               `${plan.staleRegistryIds.length} old-lock registries, and ` +
               `${plan.selectedBuildCacheIds.length} measured build-cache fallbacks selected.`,
             );
-            if (plan.selectedBuildCacheIds.length > 3) {
-              throw new Error("transition planner selected more than the three reviewed fallback profiles");
-            }
             if (await branchHead() !== expectedSha) {
               throw new Error("main advanced before old-lock deletes; refusing stale plan");
             }
