@@ -62,19 +62,32 @@ jobs:
                 core.setOutput("ready", "false");
                 return;
               }
-              const runs = await github.paginate(
-                github.rest.actions.listWorkflowRunsForRepo,
-                { ...context.repo, branch: "main", per_page: 100 },
-              );
-              const olderWriters = runs.filter((run) =>
+              // Query only nonterminal workflow runs instead of paging
+              // through the repository's entire history on every poll. These
+              // statuses can still transition into jobs that write caches;
+              // completed runs cannot race this pre-prune.
+              const activeStatuses = ["queued", "in_progress", "requested", "waiting", "pending"];
+              const activeStatusSet = new Set(activeStatuses);
+              const activeRuns = [];
+              for (const status of activeStatuses) {
+                activeRuns.push(...await github.paginate(
+                  github.rest.actions.listWorkflowRunsForRepo,
+                  { ...context.repo, branch: "main", event: "push", status, per_page: 100 },
+                ));
+              }
+              for (const run of activeRuns) {
+                if (!activeStatusSet.has(run.status)) {
+                  throw new Error(`unexpected workflow run status ${run.status}; refusing to prune`);
+                }
+              }
+              const olderWriters = activeRuns.filter((run) =>
                 run.head_branch === "main" &&
                 run.event === "push" &&
                 run.head_sha !== expectedSha &&
                 producerNames.has(run.name),
               );
-              const active = olderWriters.filter((run) => run.status !== "completed");
               const runIds = olderWriters.map((run) => run.id).sort((a, b) => a - b).join(",");
-              const allSettled = active.length === 0;
+              const allSettled = olderWriters.length === 0;
               if (!allSettled || runIds !== priorRunIds) {
                 quietSince = 0;
               } else if (!quietSince) {

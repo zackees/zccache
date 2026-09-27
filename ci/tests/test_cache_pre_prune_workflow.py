@@ -154,6 +154,11 @@ def test_pre_prune_is_push_only_and_waiter_is_read_only_and_exact_sha() -> None:
     assert 'run.event === "push"' in barrier["with"]["script"]
     assert "MAIN_CACHE_WRITER_WORKFLOW_NAMES" in barrier["with"]["script"]
     assert "maxAttempts = 640" in barrier["with"]["script"]
+    assert 'const activeStatuses = ["queued", "in_progress", "requested", "waiting", "pending"]' in barrier["with"]["script"]
+    assert "if (!activeStatusSet.has(run.status))" in barrier["with"]["script"]
+    assert '"completed"' not in barrier["with"]["script"]
+    assert "completed runs cannot race" in barrier["with"]["script"]
+    assert "const active = olderWriters.filter" not in barrier["with"]["script"]
     assert workflow["jobs"]["pre-prune"]["timeout-minutes"] == 360
     assert "maxAttempts = 1420" in scripts
     # 320m barrier + 20m max convergence + 15m API/delete allowance stays
