@@ -58,6 +58,9 @@ jobs:
           toolchain: 1.95.0
           cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
+          # The filesystem contract test had 245 compiler misses and no hits;
+          # don't persist a macOS archive that this lane cannot reuse (#1677).
+          build-cache: ${{ matrix.os != 'macos-15' }}
           linker: fast
       - name: Install Linux filesystem tools
         if: runner.os == 'Linux'

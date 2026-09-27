@@ -82,6 +82,7 @@ MACOS_BUILD_CACHE_JOBS = {
     "ci-check.yml:check": ("inputs.os", "macOS Check"),
     "ci-check.yml:test": ("inputs.os", "macOS Test"),
     "wrapper-e2e.yml:wrapper-e2e": ("matrix.os", "macOS wrapper-e2e"),
+    "fs-matrix.yml:matrix": ("matrix.os", "macOS filesystem matrix"),
 }
 
 SHAPE_INPUTS = (

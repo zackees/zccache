@@ -62,12 +62,25 @@ def test_rejects_macos_build_cache_reintroduction(tmp_path: Path) -> None:
             **{"build-cache": "true", "prebuild-deps": "soldr-cook"},
         ),
     )
+    _workflow(
+        tmp_path,
+        "fs-matrix.yml",
+        _job(
+            "matrix",
+            os="${{ matrix.os }}",
+            **{"build-cache": "true"},
+        ),
+    )
 
     errors = guard.check(tmp_path)
     assert any("macOS Check" in error and "disable build-cache" in error for error in errors)
     assert any("macOS Test" in error and "disable build-cache" in error for error in errors)
     assert any(
         "macOS wrapper-e2e" in error and "disable build-cache" in error
+        for error in errors
+    )
+    assert any(
+        "macOS filesystem matrix" in error and "disable build-cache" in error
         for error in errors
     )
 
