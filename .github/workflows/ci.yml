@@ -257,6 +257,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cargo-registry-cache: false
+          cache-key-suffix: dylint
           linker: fast
           prebuild-deps: soldr-cook
           ci-tests: true
