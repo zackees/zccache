@@ -8,22 +8,15 @@ import pytest
 from ci import lint
 
 
-def test_dylint_covers_every_published_target_in_ordinary_pr_ci():
+def test_one_linux_dylint_job_gates_ordinary_pr_ci():
     workflow = (lint.SCRIPT_DIR / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    for target in (
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-        "aarch64-pc-windows-msvc",
-        "x86_64-apple-darwin",
-        "aarch64-apple-darwin",
-    ):
-        assert target in workflow.split("\n  dylint:", 1)[1].split("\n  msrv:", 1)[0]
-    assert "dylint-coverage:" in workflow
-    assert workflow.count("working-directory: ci/dylint-target-fixture") == 2
-    assert workflow.count("grep -Fq 'use zccache_core::path::NormalizedPath instead of std::path::PathBuf'") == 2
+    job = workflow.split("\n  dylint:", 1)[1].split("\n  msrv:", 1)[0]
+    assert "name: Dylint" in job
+    assert "runs-on: ubuntu-latest" in job
+    assert "dylint-platforms:" not in workflow
+    assert "dylint-coverage:" not in workflow
+    assert workflow.count("working-directory: ci/dylint-target-fixture") == 1
+    assert "soldr dylint prepare" in job
 
 
 def test_windows_local_dylint_cannot_return_a_green_skip(monkeypatch):
