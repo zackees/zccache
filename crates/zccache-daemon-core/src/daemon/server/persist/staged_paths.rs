@@ -174,7 +174,7 @@ pub(in crate::daemon::server) fn canonicalize_logical_depfile(
         );
     }
     if rewritten != bytes {
-        atomic_replace_bytes(path, &rewritten)?;
+        atomic_replace_bytes(path, &rewritten, true)?;
     }
     Ok(())
 }
@@ -186,7 +186,10 @@ pub(in crate::daemon::server) fn rehydrate_logical_depfile(
     let bytes = std::fs::read(path)?;
     let rewritten = rehydrate_logical_depfile_bytes(&bytes, requested_outputs);
     if rewritten != bytes {
-        atomic_replace_bytes(path, &rewritten)?;
+        // This is a compiler-visible output, not the durable staged copy.
+        // The compiler would not fsync its depfile either; only the rename is
+        // needed to keep readers from observing a partial rewrite.
+        atomic_replace_bytes(path, &rewritten, false)?;
     }
     Ok(())
 }
@@ -263,10 +266,12 @@ pub(in crate::daemon::server) fn rehydrate_rustc_out_dir_depfile(
             "rustc dep-info OUT_DIR rebase was incomplete",
         ));
     }
-    atomic_replace_bytes(path, &rewritten)
+    // Compiler-visible dep-info for the current build, not durable cache
+    // state: only the rename is needed (see `rehydrate_logical_depfile`).
+    atomic_replace_bytes(path, &rewritten, false)
 }
 
-fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+fn atomic_replace_bytes(path: &Path, bytes: &[u8], durable: bool) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -287,7 +292,9 @@ fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
             .write(true)
             .open(&temporary)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if durable {
+            file.sync_all()?;
+        }
         drop(file);
         // The destination depfile is often the COW-lite hardlink materialized
         // for the current build's output (persist/hardlink.rs marks
@@ -312,8 +319,10 @@ fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
             let _ = break_output_hardlink_before_compile(path);
         }
         replace_path(&temporary, path)?;
-        if let Ok(directory) = std::fs::File::open(parent) {
-            let _ = directory.sync_all();
+        if durable {
+            if let Ok(directory) = std::fs::File::open(parent) {
+                let _ = directory.sync_all();
+            }
         }
         Ok(())
     })();
@@ -646,6 +655,35 @@ mod tests {
                 .count(),
             1,
             "temporary replacement files must not remain visible"
+        );
+    }
+
+    /// Requested depfiles are compiler outputs, not durable cache metadata.
+    /// Rehydrating a Rust-sized batch must not pay a file + directory fsync
+    /// per output; that used to dominate cold rustc-check misses.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn depfile_rehydration_batch_stays_under_sync_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let depfile = temp.path().join("fixture.d");
+        let output: NormalizedPath = temp.path().join("fixture.rmeta").into();
+        let canonical = format!("{STAGED_OUTPUT_REMAP_ROOT}/fixture.rmeta: fixture.rs\n");
+        let mut elapsed = std::time::Duration::ZERO;
+
+        for _ in 0..50 {
+            std::fs::write(&depfile, &canonical).unwrap();
+            let started = std::time::Instant::now();
+            rehydrate_logical_depfile(&depfile, std::slice::from_ref(&output)).unwrap();
+            elapsed += started.elapsed();
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(&depfile).unwrap(),
+            format!("{}: fixture.rs\n", output.to_string_lossy())
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "50 depfile rehydrations took {elapsed:?}; requested outputs must not be synced"
         );
     }
 
