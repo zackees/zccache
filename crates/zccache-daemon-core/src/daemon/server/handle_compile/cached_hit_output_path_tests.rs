@@ -129,10 +129,14 @@ async fn perf_rustc_out_dir_hit_materializes_b_depinfo_without_a_paths() {
     let source_path: NormalizedPath = dir.path().join("b/src/lib.rs").into();
     let a_out = dir.path().join("a/target/build/libsqlite3-sys/out");
     let b_out = dir.path().join("b/target/build/libsqlite3-sys/out");
+    let old_generated = a_out.join("bindgen.rs");
+    let old_generated = crate::daemon::server::persist::quote_make_depfile_path(
+        old_generated.to_string_lossy().as_bytes(),
+    );
     let dep_payload = format!(
-        "{}: {}/bindgen.rs\n# env-dep:OUT_DIR={}\n",
+        "{}: {}\n# env-dep:OUT_DIR={}\n",
         depfile_dest.display(),
-        a_out.display(),
+        String::from_utf8_lossy(&old_generated),
         a_out.display(),
     );
     let archive = state.artifact_dir.join("out-dir-key_0");
@@ -194,7 +198,11 @@ async fn perf_rustc_out_dir_hit_materializes_b_depinfo_without_a_paths() {
         Ok(Response::CompileResult { cached: true, .. })
     ));
     let rebased = std::fs::read_to_string(&depfile_dest).expect("B dep-info");
-    assert!(rebased.contains(&format!("{}/bindgen.rs", b_out.display())));
+    let new_generated = b_out.join("bindgen.rs");
+    let new_generated = crate::daemon::server::persist::quote_make_depfile_path(
+        new_generated.to_string_lossy().as_bytes(),
+    );
+    assert!(rebased.contains(&String::from_utf8_lossy(&new_generated).into_owned()));
     assert!(rebased.contains(&format!("# env-dep:OUT_DIR={}", b_out.display())));
     assert!(!rebased.contains(&a_out.to_string_lossy().into_owned()));
     assert_eq!(
