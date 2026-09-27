@@ -247,10 +247,9 @@ fn run_server(args: Args) {
     // OS-level signal/exception handlers. Bind it for the whole
     // `run_server` lifetime by storing it in this stack frame.
     //
-    // #1649: native capture is opt-in. Its pre-crash sampler takes a resolved
-    // all-thread snapshot every 50 ms for the life of the process, so an idle
-    // daemon burned 85-90% of a core indefinitely and took that core from
-    // the compilers during every build. The panic hook and dumps stay armed.
+    // #1720: the upstream bounded sampler makes native capture affordable by
+    // default for the daemon. ZCCACHE_NATIVE_CRASH_CAPTURE=0 temporarily
+    // disables it without removing panic dumps.
     let _crash_guard = if crate::core::config::native_crash_capture_enabled() {
         crate::core::crash::install("zccache-daemon")
     } else {

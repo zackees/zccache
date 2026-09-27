@@ -254,15 +254,12 @@ pub fn install(bin_stem: &'static str) -> CrashGuard {
 
 /// [`install`] without native signal capture, for hot-path processes (#1649).
 ///
-/// kernal-api's native capture runs an all-thread pre-crash sampler that
-/// takes a full resolved snapshot every 50 ms, about 300 ms of CPU each, for
-/// the whole life of the process, and joins an in-flight capture on exit. A
-/// compiler-wrapper process lives for its entire compile, so every concurrent
-/// compile carried a sampler burning most of a core: a cold `cargo build` of
-/// this workspace took 131-146 s instead of 41 s, and each `rustc -vV` probe
-/// 358 ms instead of 52 ms. Wrapper processes keep the panic hook, spool
-/// drain and last-run marker; the daemon, which does the compile work, keeps
-/// native capture.
+/// kernal-api 0.1.23 bounds and backs off its native pre-crash sampler, but
+/// wrapper capture remains disabled until median passthrough latency is at
+/// most 250 ms. Before that fix, concurrent wrappers burned most of a core
+/// each: a cold workspace build took 131-146 s instead of 41 s, and a
+/// `rustc -vV` probe took 358 ms instead of 52 ms. Wrappers keep the panic
+/// hook, spool drain and last-run marker; the daemon keeps native capture.
 pub fn install_without_native_capture(bin_stem: &'static str) -> CrashGuard {
     install_with(bin_stem, false)
 }

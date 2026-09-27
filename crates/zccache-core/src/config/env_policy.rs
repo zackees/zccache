@@ -1,9 +1,8 @@
 //! Registered environment-variable policy for zccache-owned boolean switches.
 //!
-//! This deliberately covers only the coherent `{1, true}` family. Foreign
-//! variables retain their denylist semantics, parsing errors remain errors,
-//! and diagnostic presence switches remain presence based; those are separate
-//! policies and must not be normalized accidentally.
+//! Most registered switches use the coherent `{1, true}` grammar. Native
+//! crash capture is a documented, temporary default-on exception with `=0`
+//! opt-out. Foreign variables retain their own parsing semantics.
 
 use std::ffi::OsStr;
 
@@ -12,6 +11,8 @@ use std::ffi::OsStr;
 pub enum EnvironmentVariableKind {
     /// A zccache-owned boolean: only `1` or case-insensitive `true` enables.
     OwnedBoolean,
+    /// Enabled by default; `0` is a temporary explicit opt-out.
+    DefaultOnBoolean,
 }
 
 /// One registered zccache environment variable and its documented policy.
@@ -33,10 +34,10 @@ pub const NO_SPAWN_ENV: &str = "ZCCACHE_NO_SPAWN";
 const ZCCACHE_PROBE_BYPASS_ENV: &str = "ZCCACHE_PROBE_BYPASS";
 /// Set this to allow caching Rust `--test` harness links.
 pub const CACHE_TEST_BINS_ENV: &str = "ZCCACHE_CACHE_TEST_BINS";
-/// Set this to arm kernal-api's native crash capture in the daemon.
+/// Set this to `0` to opt out of daemon native crash capture temporarily.
 pub const NATIVE_CRASH_CAPTURE_ENV: &str = "ZCCACHE_NATIVE_CRASH_CAPTURE";
 
-/// The complete registry for the owned-boolean policy family.
+/// The complete registry for zccache-owned boolean switches.
 ///
 /// New entries require a typed accessor below. The `ban_registered_env_read`
 /// Dylint rejects direct `std::env::{var,var_os}` reads of these names outside
@@ -64,8 +65,8 @@ pub const ENVIRONMENT_VARIABLES: &[EnvironmentVariableDeclaration] = &[
     },
     EnvironmentVariableDeclaration {
         name: NATIVE_CRASH_CAPTURE_ENV,
-        kind: EnvironmentVariableKind::OwnedBoolean,
-        help: "Arm native crash capture in the daemon (its sampler costs most of a core).",
+        kind: EnvironmentVariableKind::DefaultOnBoolean,
+        help: "Temporarily disable default-on daemon native crash capture with 0.",
     },
 ];
 
@@ -75,7 +76,6 @@ enum OwnedBoolean {
     NoSpawn,
     ProbeBypass,
     CacheTestBinaries,
-    NativeCrashCapture,
 }
 
 impl OwnedBoolean {
@@ -85,7 +85,6 @@ impl OwnedBoolean {
             Self::NoSpawn => NO_SPAWN_ENV,
             Self::ProbeBypass => ZCCACHE_PROBE_BYPASS_ENV,
             Self::CacheTestBinaries => CACHE_TEST_BINS_ENV,
-            Self::NativeCrashCapture => NATIVE_CRASH_CAPTURE_ENV,
         }
     }
 
@@ -146,13 +145,15 @@ pub fn cache_test_binaries_enabled() -> bool {
     OwnedBoolean::CacheTestBinaries.enabled()
 }
 
-/// True when `ZCCACHE_NATIVE_CRASH_CAPTURE` arms native crash capture in the
-/// daemon. Off by default since #1649: kernal-api's pre-crash sampler takes a
-/// resolved all-thread snapshot every 50 ms, so an idle daemon burned most of
-/// a core for its whole life.
+/// True unless `ZCCACHE_NATIVE_CRASH_CAPTURE=0` temporarily opts the daemon
+/// out of native crash capture for one zccache release after re-enablement.
 #[must_use]
 pub fn native_crash_capture_enabled() -> bool {
-    OwnedBoolean::NativeCrashCapture.enabled()
+    native_crash_capture_from_env_value(std::env::var(NATIVE_CRASH_CAPTURE_ENV).ok().as_deref())
+}
+
+fn native_crash_capture_from_env_value(value: Option<&str>) -> bool {
+    !value.is_some_and(|raw| raw.trim() == "0")
 }
 
 /// Testable core of [`daemon_spawn_disabled`] — no environment access.
@@ -177,11 +178,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_contains_only_owned_boolean_switches() {
+    fn registry_records_native_capture_as_default_on() {
         assert_eq!(ENVIRONMENT_VARIABLES.len(), 5);
         assert!(ENVIRONMENT_VARIABLES
             .iter()
-            .all(|declaration| { declaration.kind == EnvironmentVariableKind::OwnedBoolean }));
+            .filter(|declaration| declaration.name != NATIVE_CRASH_CAPTURE_ENV)
+            .all(|declaration| declaration.kind == EnvironmentVariableKind::OwnedBoolean));
+        assert_eq!(
+            ENVIRONMENT_VARIABLES[4].kind,
+            EnvironmentVariableKind::DefaultOnBoolean
+        );
     }
 
     #[test]
@@ -195,6 +201,13 @@ mod tests {
                 declaration.name,
             );
         }
+    }
+
+    #[test]
+    fn native_capture_is_default_on_with_zero_opt_out() {
+        assert!(native_crash_capture_from_env_value(None));
+        assert!(!native_crash_capture_from_env_value(Some("0")));
+        assert!(native_crash_capture_from_env_value(Some("1")));
     }
 
     #[test]

@@ -525,32 +525,30 @@ is about to be installed (issue #798).
 Both `zccache-cli` and `zccache-daemon` call `zccache_core::crash::install(<bin-stem>)` at the top of `main`. That call wires up:
 
 1. A Rust panic hook that writes `<cache>/crashes/crash-<ts>-<bin>-panic.txt` (full backtrace; runs in normal context so `Backtrace::force_capture()` is safe).
-2. A native signal / SEH handler (via the `crash-handler` crate) that catches SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT on Unix and structured exceptions on Windows. Writes `crash-<ts>-<bin>-<sig>.txt` with siginfo and the OS-supplied register state. No in-handler stack walking — async-signal-unsafe.
+2. A native signal / SEH handler (via kernal-api) that catches SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT on Unix and structured exceptions on Windows. It writes a bounded binary spool record with fault metadata and the latest all-thread, module-attributed pre-crash snapshot. On the next start, zccache converts the record to `crash-<ts>-<bin>-<sig>.txt`. No stack walking or formatting runs in the fatal handler.
 
 Auto-surfacing: every successful `install()` refreshes `<cache>/last_run_<bin>.txt`. The CLI then calls `zccache_core::crash::note_previous_crashes()` which emits one stderr line per CLI invocation if any dump in `<cache>/crashes/` is newer than that marker. The daemon uses `check_previous_crashes()` instead, which logs via `tracing::warn` and writes `.reported` sentinels to suppress duplicates across daemon restarts.
 
 The dumper is intentionally text-only for v1 — minidumps via `MiniDumpWriteDump` / `minidump-writer` are out of scope (see issue #313).
 
-**Compiler-wrapper processes skip native capture (#1649).** kernal-api's
-native capture runs an all-thread pre-crash sampler that takes a resolved
-snapshot every 50 ms (about 300 ms of CPU each) for the life of the process
-and joins an in-flight capture on exit. A wrapper process lives for its whole
-compile, so arming it put a sampler on every concurrent compile: a cold
-`cargo build -p zccache -j4` took 131-146 s instead of 41 s, and each
-`rustc -vV` probe 358 ms instead of 41 ms. The `zccache` binary therefore calls
+**Compiler-wrapper processes still skip native capture (#1649, #1720).** A
+wrapper process lives for the whole compile, so the old 50 ms sampler put a
+large steady cost on every concurrent compile. The `zccache` binary calls
 `install_without_native_capture` when argv is a compiler invocation
 (`zccache <compiler> ...`, `zccache cc|c++ ...`; see
 `is_compiler_wrapper_invocation`). It keeps the panic hook, spool drain and
-last-run marker. Short-lived subcommands keep full native capture.
-`cli_wrapper_startup_budget` guards the wrapper's cost.
+last-run marker. Short-lived subcommands keep full native capture. Re-enabling
+wrapper capture requires a measured median passthrough of at most 250 ms;
+`cli_wrapper_startup_budget` guards that ceiling.
 
-**The daemon arms native capture only on request (#1649).** The daemon lives
-for the whole build and beyond, so the same sampler made an *idle* daemon burn
-85-90% of a core indefinitely and took that core from the compilers during
-every build. `ZCCACHE_NATIVE_CRASH_CAPTURE=1` restores it, for example while
-chasing a native fault. Without it the daemon keeps the panic hook and
-previous-crash reporting. `daemon_idle_cpu_budget_test` guards the daemon's
-idle cost. The crash-trigger fixtures still exercise native capture directly.
+**The daemon arms native capture by default (#1720).** kernal-api 0.1.23
+reuses its module inventory and resolved frames, backs off unchanged samples,
+and limits per-tick unwind and CPU cost. `ZCCACHE_NATIVE_CRASH_CAPTURE=0`
+temporarily opts out for one release; unset or any other value leaves capture
+on. `daemon_idle_cpu_budget_test` measures the daemon with capture forced on
+against a 15%-of-one-core budget and also checks that a native fault on the
+default path produces a dump. The crash-trigger fixtures retain direct
+signal coverage.
 
 **Development namespaces are memoized (#1649).** An unstamped build derives
 its daemon namespace from a blake3 hash of its own executable (#1394). Cargo
