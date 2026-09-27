@@ -1,6 +1,8 @@
 import shutil
 from pathlib import Path
 
+import yaml
+
 from ci import check_cache_footprint as guard
 
 CURRENT = next(iter(guard.SAVE_CACHE_REFS))
@@ -30,6 +32,49 @@ def _job(
 
 def test_repository_workflows_pass() -> None:
     assert guard.check() == []
+
+
+def test_fs_matrix_windows_probe_is_exact_and_restore_only(tmp_path: Path) -> None:
+    workflow = yaml.safe_load(
+        (guard.ROOT / ".github/workflows/fs-matrix.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["matrix"]["steps"]
+    setup = [
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith("zackees/setup-soldr@")
+    ]
+    assert len(setup) == 2
+
+    normal, probe = setup
+    assert normal["if"].startswith("!(")
+    assert "probe/fs-matrix-windows-cache" in normal["if"]
+    assert "probe/fs-matrix-windows-cache" in probe["if"]
+    assert "matrix.os == 'windows-latest'" in probe["if"]
+    assert probe["with"]["save-cache"] is False
+    assert probe["with"]["build-cache"] is False
+    assert probe["with"]["cargo-registry-cache"] is True
+    assert probe["with"]["prebuild-deps-flags"] == ""
+
+    # The standard Windows lane retains its original producer policy; only
+    # the exact-head probe is allowed to turn off these layers.
+    assert normal["with"]["build-cache"] == "${{ matrix.os != 'macos-15' }}"
+    assert "prebuild-deps-flags" not in normal["with"]
+
+    # The repository guard must catch accidental durable writes in the probe.
+    path = tmp_path / ".github/workflows/fs-matrix.yml"
+    path.parent.mkdir(parents=True)
+    text = (guard.ROOT / ".github/workflows/fs-matrix.yml").read_text(encoding="utf-8")
+    assert "save-cache: false\n          zccache-seed-strict: true" in text
+    path.write_text(
+        text.replace(
+            "save-cache: false\n          zccache-seed-strict: true",
+            "save-cache: true\n          zccache-seed-strict: true",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    assert any("JUSTIFIED_PR_SAVES" in error for error in guard.check(tmp_path))
 
 
 def test_measured_cache_cuts_cannot_be_reintroduced(tmp_path: Path) -> None:

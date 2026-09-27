@@ -330,6 +330,14 @@ def check(root: Path = ROOT) -> list[str]:
         expected = _normal_expression(f"${{{{ {os_context} != 'macos-15' }}}}")
         for step in target_steps:
             actual = _normal_expression(step.inputs.get("build-cache", "true"))
+            # The exact-head Filesystem Matrix probe has a second, restore-only
+            # setup step whose false value is limited to Windows by its `if`.
+            # Its gate is asserted directly by the workflow regression test.
+            if (
+                target == "fs-matrix.yml:matrix"
+                and _normal_expression(actual) == "false"
+            ):
+                continue
             if actual != expected:
                 errors.append(
                     f"{step.where} must disable build-cache on macos-15 "
