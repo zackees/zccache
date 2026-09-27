@@ -189,7 +189,7 @@ def test_release_workflow_uses_bootstrap_zccache_for_cross_builds() -> None:
     assert 'RUSTC_WRAPPER: ""' in release_workflow
     assert "unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER" in release_workflow
     assert "name: bootstrap-zccache" in release_workflow
-    assert "needs: [preflight, bootstrap-zccache]" in release_workflow
+    assert "needs: [preflight, bootstrap-zccache, cache-pre-prune]" in release_workflow
     assert "SOLDR_RUSTC_WRAPPER=" in release_workflow
     assert 'use_soldr: "true"' in release_workflow
     assert "runs-on: ubuntu-24.04" in release_workflow

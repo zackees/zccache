@@ -36,6 +36,7 @@ on:
 # (job-level permissions replace, not merge) because it needs
 # actions: write for cache eviction.
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -47,16 +48,26 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   fmt:
     name: Formatting
+    needs: cache-pre-prune
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -77,6 +88,7 @@ jobs:
 
   dylint:
     name: Dylint
+    needs: cache-pre-prune
     runs-on: ubuntu-latest
     env:
       # Dylint removes RUSTUP_TOOLCHAIN before its nested driver build. The
@@ -86,11 +98,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
       - id: setup-soldr
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -230,6 +244,7 @@ jobs:
 
   msrv:
     name: MSRV (1.95.0)
+    needs: cache-pre-prune
     runs-on: ubuntu-latest
     # setup-soldr#347: opt this job into post-step cache eviction.
     # actions: write is required for cache.deleteActionsCacheById.
@@ -242,10 +257,12 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           cache: true
           toolchain: 1.95.0
@@ -268,21 +285,25 @@ jobs:
 
   reflink-e2e:
     name: Reflink e2e
+    needs: cache-pre-prune
     # ZCCACHE_MODE on a real btrfs volume: parent/child worktree hits per
     # mode, extent-sharing evidence, cross-device fallback (#1683).
     uses: ./.github/workflows/reflink-e2e.yml
 
   docs:
     name: Documentation
+    needs: cache-pre-prune
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -297,6 +318,7 @@ jobs:
 
   miss-overhead:
     name: Miss overhead budget
+    needs: cache-pre-prune
     # zccache#1670: gate per-TU cache-miss overhead (request wall time minus
     # the compiler child's run time). The test needs clang++, which the
     # hosted Ubuntu image provides; the same fixture backs the
@@ -305,10 +327,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true

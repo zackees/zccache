@@ -39,7 +39,7 @@ def test_cache_cleanup_runs_daily_on_main_before_budget_check() -> None:
     assert "github.event.workflow_run.event == 'push'" in job["if"]
 
 
-def test_producer_completion_cleanup_waits_for_quiescence_and_skips_stale_sha() -> None:
+def test_producer_completion_cleanup_follows_trailing_main_head_and_waits_for_quiescence() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/cache-cleanup.yml").read_text(encoding="utf-8")
     )
@@ -47,34 +47,29 @@ def test_producer_completion_cleanup_waits_for_quiescence_and_skips_stale_sha() 
     barrier = next(step for step in steps if step.get("id") == "producer-barrier")
     script = barrier["with"]["script"]
     assert "listWorkflowRunsForRepo" in script
+    assert 'workflow_id: "cache-pre-prune.yml"' in script
+    assert "prePruneReady" in script
+    assert "MAIN_CACHE_WRITER_WORKFLOW_NAMES" in script
     assert 'run.head_branch === "main"' in script
+    assert "run.head_sha === expectedSha" in script
+    assert 'run.event === "push"' in script
     assert 'run.status !== "completed"' in script
     assert "quietSince && Date.now() - quietSince >= 120_000" in script
     assert "Workflow-run delivery can lag" in script
-    assert "maxAttempts = 60" in script
-    assert "context.payload.workflow_run" in script
-    assert "runEvent.head_sha" in script
+    assert "maxAttempts = 120" in script
+    assert "head !== expectedSha" in script
+    assert "syncCheckout(expectedSha)" in script
     assert "branchHead() !== expectedSha" in script
+    assert "expected-main-sha" in script
+    assert "skipping this stale inventory" not in script
     assert '"Cache Cleanup"' not in script
-    for producer in (
-        '"CI"',
-        '"Linux"',
-        '"macOS"',
-        '"Windows"',
-        '"Wrapper end-to-end"',
-        '"Clippy"',
-        '"Integration"',
-        '"Coverage"',
-        '"Python Tests"',
-        '"Filesystem Matrix"',
-        '"Soldr Broker Stress"',
-        '"Perf Guard"',
-        '"Test zccache-action"',
-        '"Feature Matrix Check"',
-        '"Auto-Release"',
-        '"Build Native Binaries"',
-    ):
-        assert producer in script
+    for step_id in ("gate", "count-prune", "hard-cap"):
+        step = next(step for step in steps if step.get("id") == step_id)
+        assert "EXPECTED_MAIN_SHA" in step.get("env", {})
+    count_prune = next(step for step in steps if step.get("id") == "count-prune")
+    hard_cap = next(step for step in steps if step.get("id") == "hard-cap")
+    assert "stopping stale deletes" in count_prune["with"]["script"]
+    assert "stopping stale deletes" in hard_cap["with"]["script"]
 
 
 def test_cache_cleanup_uses_a_scoped_cache_write_permission() -> None:

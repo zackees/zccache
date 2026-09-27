@@ -32,6 +32,7 @@ on:
 # key on run_id so each gets its own group -- GitHub keeps only ONE pending
 # run per group, so a shared group silently drops queued main-push SHAs.
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -39,11 +40,21 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   check:
+    needs: cache-pre-prune
     name: Feature matrix is rendered
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       - uses: actions/setup-python@v6
         with:

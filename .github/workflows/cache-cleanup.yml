@@ -9,8 +9,9 @@ name: Cache Cleanup
 # release-and-cascade work. It runs before cache-budget.yml so stale
 # per-commit generations are retired before the budget check. It does not run
 # directly from push or pull-request events, where cache saves could race with
-# pruning. A code push is handled after Integration completes; the barrier then
-# waits for all same-SHA main producer workflows before pruning lock generations.
+# pruning. A code push is handled after Integration completes. That delayed
+# delivery follows the current main head (not the triggering SHA), waits for
+# its exact pre-prune and producer cycle, and restarts if main advances.
 #
 # Strategy: keep the newest entry for each distinct reusable cache shape and
 # retire older generations. Shapes retain platform, architecture, target and
@@ -59,52 +60,79 @@ jobs:
         with:
           ref: main
 
-      - name: Wait for the main producer cycle to settle
+      - name: Follow current main until its producer cycle settles
         id: producer-barrier
         uses: actions/github-script@v7
         with:
           script: |
             const repo = context.repo;
-            const runEvent = context.payload.workflow_run;
-            const expectedSha = runEvent ? runEvent.head_sha : context.sha;
-            if (!expectedSha) throw new Error("cannot determine the main producer SHA");
-
-            const checkoutSha = require("node:child_process")
-              .execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
             const branchHead = async () => (await github.rest.repos.getBranch({
               ...repo,
               branch: "main",
             })).data.commit.sha;
-            if (checkoutSha !== expectedSha || await branchHead() !== expectedSha) {
-              core.notice("Main advanced since this cleanup was queued; skipping this stale inventory.");
-              core.setOutput("ready", "false");
-              return;
-            }
-
-            const producerNames = new Set([
-              "CI", "Linux", "macOS", "Windows", "Wrapper end-to-end", "Clippy",
-              "Integration", "Coverage", "Python Tests", "Filesystem Matrix",
-              "Soldr Broker Stress", "Perf Guard", "Test zccache-action",
-              "Feature Matrix Check", "Auto-Release", "Build Native Binaries",
-            ]);
+            const { MAIN_CACHE_WRITER_WORKFLOW_NAMES } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
+            );
+            const producerNames = new Set(MAIN_CACHE_WRITER_WORKFLOW_NAMES);
+            const childProcess = require("node:child_process");
+            const syncCheckout = async (sha) => {
+              childProcess.execFileSync("git", ["fetch", "origin", "main", "--quiet"]);
+              if (await branchHead() !== sha) return false;
+              childProcess.execFileSync("git", ["checkout", "--quiet", "--detach", sha]);
+              return true;
+            };
+            const prePruneFor = async (sha) => {
+              const response = await github.rest.actions.listWorkflowRuns({
+                ...repo,
+                workflow_id: "cache-pre-prune.yml",
+                branch: "main",
+                head_sha: sha,
+                per_page: 100,
+              });
+              return response.data.workflow_runs
+                .filter((run) => run.event === "push" && run.head_branch === "main")
+                .sort((a, b) =>
+                  (b.run_attempt || 1) - (a.run_attempt || 1) ||
+                  Date.parse(b.created_at) - Date.parse(a.created_at),
+                )[0];
+            };
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             let priorRunIds = "";
             let quietSince = 0;
-            const maxAttempts = 60;
+            let expectedSha = "";
+            const maxAttempts = 120;
             for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+              const head = await branchHead();
+              if (head !== expectedSha) {
+                expectedSha = head;
+                if (!(await syncCheckout(expectedSha))) {
+                  expectedSha = "";
+                  continue;
+                }
+                core.info(`Following current main ${expectedSha} (attempt ${attempt + 1}/${maxAttempts}).`);
+                priorRunIds = "";
+                quietSince = 0;
+              }
+              const prePrune = await prePruneFor(expectedSha);
+              const prePruneReady = prePrune?.status === "completed" &&
+                prePrune.conclusion === "success";
+              if (prePrune?.status === "completed" && !prePruneReady) {
+                if (await branchHead() !== expectedSha) continue;
+                throw new Error(`current-main pre-prune ${prePrune.id} failed; refusing cleanup`);
+              }
               const runs = await github.paginate(
                 github.rest.actions.listWorkflowRunsForRepo,
                 { ...repo, branch: "main", per_page: 100 },
               );
               const producers = runs.filter((run) =>
-                run.head_branch === "main" && producerNames.has(run.name),
+                run.head_branch === "main" &&
+                run.head_sha === expectedSha &&
+                run.event === "push" &&
+                producerNames.has(run.name),
               );
-              if (runEvent && !producers.some((run) => run.id === runEvent.id)) {
-                throw new Error("the Integration completion run was not visible in the main producer inventory");
-              }
               const active = producers.filter((run) => run.status !== "completed");
               const runIds = producers.map((run) => run.id).sort((a, b) => a - b).join(",");
-              const allSettled = active.length === 0;
+              const allSettled = active.length === 0 && prePruneReady;
               if (!allSettled || runIds !== priorRunIds) {
                 quietSince = 0;
               } else if (!quietSince) {
@@ -112,29 +140,40 @@ jobs:
               }
               priorRunIds = runIds;
               // Workflow-run delivery can lag the Integration completion
-              // event. Require a two-minute quiet window after every visible
-              // main producer has completed before treating fan-out as done.
+              // event. Require a two-minute quiet window after the latest
+              // main-SHA pre-prune and every visible producer has completed.
               if (allSettled && quietSince && Date.now() - quietSince >= 120_000) {
                 if (await branchHead() !== expectedSha) {
-                  core.notice("Main advanced while waiting for producers; skipping this stale inventory.");
-                  core.setOutput("ready", "false");
-                  return;
+                  priorRunIds = "";
+                  quietSince = 0;
+                  continue;
                 }
-                core.info(`Producer barrier settled for ${expectedSha}: ${producers.length} main runs.`);
+                core.info(`Current main producer barrier settled for ${expectedSha}: ${producers.length} runs.`);
+                core.setOutput("expected-main-sha", expectedSha);
                 core.setOutput("ready", "true");
                 return;
               }
               if (attempt + 1 < maxAttempts) await sleep(30_000);
             }
-            throw new Error(`main producer runs for ${expectedSha} did not settle; refusing cleanup`);
+            throw new Error("current main did not settle within the cleanup window; refusing stale cleanup");
 
       - name: Hash the current root Cargo.lock in both checkout forms
         id: cargo-lock-hashes
         if: steps.producer-barrier.outputs.ready == 'true'
         uses: actions/github-script@v7
+        env:
+          EXPECTED_MAIN_SHA: ${{ steps.producer-barrier.outputs.expected-main-sha }}
         with:
           script: |
             const fs = require("node:fs");
+            const expectedSha = process.env.EXPECTED_MAIN_SHA;
+            const currentSha = (await github.rest.repos.getBranch({
+              ...context.repo,
+              branch: "main",
+            })).data.commit.sha;
+            if (!expectedSha || currentSha !== expectedSha) {
+              throw new Error("main advanced after producer barrier; refusing stale lock hashes");
+            }
             const { cargoLockHashes } = require(
               `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
             );
@@ -147,6 +186,8 @@ jobs:
         id: gate
         if: steps.producer-barrier.outputs.ready == 'true'
         uses: actions/github-script@v7
+        env:
+          EXPECTED_MAIN_SHA: ${{ steps.producer-barrier.outputs.expected-main-sha }}
         with:
           script: |
             // Skip the cleanup when cache usage is under the high-water
@@ -155,6 +196,13 @@ jobs:
             // headroom for in-flight workflow saves to complete
             // without forcing eviction of small long-lived caches.
             const HIGH_WATER_GB = 8;
+            const currentSha = (await github.rest.repos.getBranch({
+              ...context.repo,
+              branch: "main",
+            })).data.commit.sha;
+            if (currentSha !== process.env.EXPECTED_MAIN_SHA) {
+              throw new Error("main advanced after producer barrier; refusing stale cleanup inventory");
+            }
             const usage = await github.rest.actions.getActionsCacheUsage(context.repo);
             const caches = await github.paginate(
               github.rest.actions.getActionsCacheList,
@@ -187,6 +235,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           DRY_RUN: ${{ inputs['dry-run'] }}
+          EXPECTED_MAIN_SHA: ${{ steps.producer-barrier.outputs.expected-main-sha }}
           ROOT_LOCK_HASH_LF: ${{ steps.cargo-lock-hashes.outputs.lf }}
           ROOT_LOCK_HASH_CRLF: ${{ steps.cargo-lock-hashes.outputs.crlf }}
         with:
@@ -211,6 +260,14 @@ jobs:
               throw new Error("current root Cargo.lock hashes are unavailable; refusing cleanup");
             }
             const repo = context.repo;
+            const branchHead = async () => (await github.rest.repos.getBranch({
+              ...repo,
+              branch: "main",
+            })).data.commit.sha;
+            const expectedSha = process.env.EXPECTED_MAIN_SHA;
+            if (!expectedSha || await branchHead() !== expectedSha) {
+              throw new Error("main advanced before count-prune; refusing stale cache targets");
+            }
             const caches = await github.paginate(
               github.rest.actions.getActionsCacheList,
               { ...repo, per_page: 100, sort: "created_at", direction: "desc" }
@@ -223,6 +280,9 @@ jobs:
             const { keep, stale } = planCountPrune(caches, 1, currentRootLockHashes);
             console.log(`${keep.length} current shapes; ${stale.length} stale generations.`);
             for (const c of stale) {
+                if (await branchHead() !== expectedSha) {
+                  throw new Error("main advanced during count-prune; stopping stale deletes");
+                }
                 if (dryRun) {
                   prunedIds.push(c.id);
                   totalBytes += c.size_in_bytes;
@@ -270,6 +330,7 @@ jobs:
         env:
           DRY_RUN: ${{ inputs['dry-run'] }}
           COUNT_PRUNED_IDS: ${{ steps.count-prune.outputs.pruned-cache-ids }}
+          EXPECTED_MAIN_SHA: ${{ steps.producer-barrier.outputs.expected-main-sha }}
         with:
           script: |
             // Never delete the newest cache for a live restore shape or an
@@ -282,6 +343,14 @@ jobs:
               `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`
             );
             const repo = context.repo;
+            const branchHead = async () => (await github.rest.repos.getBranch({
+              ...repo,
+              branch: "main",
+            })).data.commit.sha;
+            const expectedSha = process.env.EXPECTED_MAIN_SHA;
+            if (!expectedSha || await branchHead() !== expectedSha) {
+              throw new Error("main advanced before hard-cap planning; refusing stale cache targets");
+            }
             let caches = await github.paginate(
               github.rest.actions.getActionsCacheList,
               { ...repo, per_page: 100, sort: "created_at", direction: "desc" }
@@ -305,6 +374,9 @@ jobs:
             let extraPruned = 0;
             let extraBytes = 0;
             for (const c of plan.selected) {
+              if (await branchHead() !== expectedSha) {
+                throw new Error("main advanced during hard-cap cleanup; stopping stale deletes");
+              }
               if (dryRun) {
                 plannedIds.add(c.id);
                 projectedBytes -= c.size_in_bytes;

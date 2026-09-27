@@ -29,6 +29,7 @@ on:
       - "tasks/**"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -38,17 +39,27 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   x86:
+    needs: cache-pre-prune
     uses: ./.github/workflows/ci-check.yml
     with:
       os: ubuntu-latest
 
   arm:
+    needs: cache-pre-prune
     uses: ./.github/workflows/ci-check.yml
     with:
       os: ubuntu-24.04-arm
 
   x86-musl:
+    needs: cache-pre-prune
     uses: ./.github/workflows/ci-check-cross.yml
     with:
       os: ubuntu-latest
@@ -56,6 +67,7 @@ jobs:
       label: linux-x86-musl
 
   arm-musl:
+    needs: cache-pre-prune
     uses: ./.github/workflows/ci-check-cross.yml
     with:
       # setup-soldr's aarch64-musl cross compiler is an x86_64 host tool.

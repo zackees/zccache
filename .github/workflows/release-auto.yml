@@ -35,6 +35,13 @@ env:
   RUSTUP_HOME: ${{ github.workspace }}/.rustup
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   detect-bump:
     name: Detect version bump
     runs-on: ubuntu-latest
@@ -289,7 +296,7 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     runs-on: ubuntu-24.04
-    needs: [preflight, bootstrap-zccache]
+    needs: [preflight, bootstrap-zccache, cache-pre-prune]
     strategy:
       fail-fast: false
       matrix:
@@ -385,6 +392,7 @@ jobs:
           binary_ext: ${{ matrix.binary_ext }}
           cache_key: release-${{ matrix.target }}
           use_soldr: "true"
+          save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           cross_compile: "true"
           prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}
           clear_target_after_setup: ${{ matrix.clear_target_after_setup || 'false' }}

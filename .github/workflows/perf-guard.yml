@@ -26,21 +26,32 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   cow-materialization-budget:
     name: COW materialization hit budget
+    needs: cache-pre-prune
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           cache: false
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
@@ -61,17 +72,20 @@ jobs:
 
   build-perf-benchmark:
     name: Build perf benchmark binary
+    needs: cache-pre-prune
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           cache: false
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
@@ -111,7 +125,7 @@ jobs:
   perf-guard:
     name: ${{ matrix.label }} speed floor
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    needs: build-perf-benchmark
+    needs: [build-perf-benchmark, cache-pre-prune]
     runs-on: ubuntu-24.04
     # The watchdog terminates one command at 75 minutes. Leave room for job
     # setup, earlier matrix tests, summaries, and always-run artifact uploads.
@@ -137,12 +151,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
       - uses: astral-sh/setup-uv@v6
 
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           cache: false
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.

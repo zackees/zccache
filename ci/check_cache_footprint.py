@@ -85,13 +85,13 @@ MACOS_BUILD_CACHE_JOBS = {
 # Measured steady-state cuts. These are exact workflow call sites so a new or
 # defaulted producer cannot silently recreate a retired cache identity.
 COOK_OFF_CALLS = {
-    "wrapper-e2e.yml:wrapper-e2e#1": "${{ matrix.os == 'macos-15' && 'soldr-cook' || 'none' }}",
-    "wrapper-e2e.yml:wrapper-e2e#2": "none",
-    "ci.yml:dylint#2": "none",
+    "wrapper-e2e.yml:wrapper-e2e#2": "${{ matrix.os == 'macos-15' && 'soldr-cook' || 'none' }}",
+    "wrapper-e2e.yml:wrapper-e2e#3": "none",
+    "ci.yml:dylint#3": "none",
 }
 REGISTRY_RESTORE_CALLS = {
-    "wrapper-e2e.yml:wrapper-e2e#1": True,
     "wrapper-e2e.yml:wrapper-e2e#2": True,
+    "wrapper-e2e.yml:wrapper-e2e#3": True,
 }
 LINUX_WRAPPER_BUILD_CACHE = "false"
 WINDOWS_TEST_BUILD_CACHE = (
@@ -203,9 +203,11 @@ def _shape(step: Step) -> tuple[str, ...]:
 
 def _cannot_save_on_pr(step: Step) -> bool:
     value = str(step.inputs.get("save-cache", "")).strip().replace(" ", "")
+    main_push_only = "${{github.event_name=='push'&&github.ref=='refs/heads/main'&&'auto'||'false'}}"
+    main_push_boolean = "${{github.event_name=='push'&&github.ref=='refs/heads/main'}}"
     if step.ref in SAVE_CACHE_REFS and value.lower() in {"", "auto"}:
         return True
-    return value.lower() == "false" or value in {
+    return value.lower() == "false" or value in {main_push_only, main_push_boolean} or value in {
         "${{github.event_name!='pull_request'}}",
         "${{github.event_name=='push'}}",
         "${{github.ref=='refs/heads/main'}}",
@@ -298,7 +300,7 @@ def check(root: Path = ROOT) -> list[str]:
                 f"{where} must keep cargo-registry-cache: true for warm parity"
             )
 
-    linux_wrapper = by_location.get("wrapper-e2e.yml:wrapper-e2e#1")
+    linux_wrapper = by_location.get("wrapper-e2e.yml:wrapper-e2e#2")
     if linux_wrapper and _normal_expression(
         linux_wrapper.inputs.get("build-cache", "true")
     ) != _normal_expression(LINUX_WRAPPER_BUILD_CACHE):
@@ -306,7 +308,7 @@ def check(root: Path = ROOT) -> list[str]:
             "wrapper-e2e.yml:wrapper-e2e#1 must disable Linux build-cache "
             "while retaining the Windows wrapper cache"
         )
-    windows_test = by_location.get("ci-check.yml:test#1")
+    windows_test = by_location.get("ci-check.yml:test#2")
     if windows_test and _normal_expression(
         windows_test.inputs.get("build-cache", "true")
     ) != _normal_expression(WINDOWS_TEST_BUILD_CACHE):

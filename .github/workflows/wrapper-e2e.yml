@@ -48,7 +48,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   wrapper-e2e:
+    needs: cache-pre-prune
     strategy:
       fail-fast: false
       matrix:
@@ -66,13 +74,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       - name: setup soldr with cook prebuild (Unix)
         if: runner.os != 'Windows'
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           # Release compilation includes zccache-daemon-core, which can exceed
           # the hosted Linux memory budget at Cargo's default parallelism.
           # Keep this CI compile in the prescribed bounded resource domain.
@@ -95,7 +105,7 @@ jobs:
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           # Match the Unix release-build resource contract above.
           ci-tests: true
           zccache-seed-strict: true

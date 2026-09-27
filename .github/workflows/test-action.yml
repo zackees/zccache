@@ -27,6 +27,13 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   target-snapshot-gc:
     name: "Target snapshot GC unit tests"
     runs-on: ubuntu-24.04
@@ -39,6 +46,7 @@ jobs:
 
   test-action:
     name: "${{ matrix.name }}"
+    needs: cache-pre-prune
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -64,6 +72,8 @@ jobs:
             target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -82,7 +92,7 @@ jobs:
           shared-key: test-${{ matrix.target }}
           # Keep PR runs warm from shared caches without writing a private
           # per-PR generation. Main continues to seed the reusable caches.
-          save-cache: ${{ github.ref == 'refs/heads/main' }}
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Verify RUSTC_WRAPPER is set
         shell: bash
@@ -317,9 +327,12 @@ jobs:
   # Test gha-cache subcommand (issue #11)
   test-gha-cache:
     name: "gha-cache (Linux)"
+    needs: cache-pre-prune
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -352,6 +365,7 @@ jobs:
       # The GHA cache API env vars are only available with actions/cache.
       # Use actions/cache to prime the environment, then test our CLI.
       - name: "Prime GHA cache environment"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache@v5
         with:
           path: /tmp/gha-cache-primer
@@ -359,6 +373,7 @@ jobs:
           restore-keys: zccache-test-primer-
 
       - name: "gha-cache save: upload test data"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           ACTIONS_CACHE_URL: ${{ env.ACTIONS_CACHE_URL }}
@@ -380,6 +395,7 @@ jobs:
           echo "OK: save completed"
 
       - name: "gha-cache restore: download and verify"
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           ACTIONS_CACHE_URL: ${{ env.ACTIONS_CACHE_URL }}

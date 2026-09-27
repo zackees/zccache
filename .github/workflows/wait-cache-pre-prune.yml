@@ -1,0 +1,21 @@
+name: Wait for cache pre-prune (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  wait:
+    name: Wait for exact-SHA cache pre-prune
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/wait-cache-pre-prune
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'

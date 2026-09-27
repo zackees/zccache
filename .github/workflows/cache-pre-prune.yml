@@ -1,0 +1,195 @@
+name: Cache Pre-prune
+
+# On each main push, retire old-lock cook bases before producers start. Main
+# cache-writing workflows wait for this exact-SHA run through the read-only
+# composite action. This workflow waits only for older-SHA producers, never
+# same-SHA runs that are waiting here.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cache-pre-prune-main
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  pre-prune:
+    name: Retire old-lock cook bases before producers
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Wait for older main cache writers
+        id: writer-barrier
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const expectedSha = context.sha;
+            if (!expectedSha) throw new Error("missing push SHA; refusing cache pruning");
+            const { MAIN_CACHE_WRITER_WORKFLOW_NAMES } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
+            );
+            const producerNames = new Set(MAIN_CACHE_WRITER_WORKFLOW_NAMES);
+            const branchHead = async () => (await github.rest.repos.getBranch({
+              ...context.repo,
+              branch: "main",
+            })).data.commit.sha;
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            let priorRunIds = "";
+            let quietSince = 0;
+            // Reserve time inside the six-hour job limit for inventory
+            // convergence and the final delete verification.
+            // Bound producer waiting to 320 minutes. The remaining 40-minute
+            // job budget covers two 10-minute inventory convergence phases,
+            // API/delete overhead, and a safety margin. The 2-minute quiet
+            // window is inside this bound. Longer producer runs fail closed
+            // rather than consuming the cleanup job's entire Actions timeout.
+            const maxAttempts = 640;
+
+            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+              if (await branchHead() !== expectedSha) {
+                core.notice("Main advanced before pre-prune; leaving caches untouched.");
+                core.setOutput("ready", "false");
+                return;
+              }
+              const runs = await github.paginate(
+                github.rest.actions.listWorkflowRunsForRepo,
+                { ...context.repo, branch: "main", per_page: 100 },
+              );
+              const olderWriters = runs.filter((run) =>
+                run.head_branch === "main" &&
+                run.event === "push" &&
+                run.head_sha !== expectedSha &&
+                producerNames.has(run.name),
+              );
+              const active = olderWriters.filter((run) => run.status !== "completed");
+              const runIds = olderWriters.map((run) => run.id).sort((a, b) => a - b).join(",");
+              const allSettled = active.length === 0;
+              if (!allSettled || runIds !== priorRunIds) {
+                quietSince = 0;
+              } else if (!quietSince) {
+                quietSince = Date.now();
+              }
+              if (allSettled && quietSince && Date.now() - quietSince >= 120_000) {
+                if (await branchHead() !== expectedSha) {
+                  core.notice("Main advanced while waiting; leaving caches untouched.");
+                  core.setOutput("ready", "false");
+                  return;
+                }
+                core.info(`No older main cache writers remain for ${expectedSha}.`);
+                core.setOutput("ready", "true");
+                return;
+              }
+              if (attempt + 1 < maxAttempts) await sleep(30_000);
+            }
+            throw new Error(`older main cache writers did not settle for ${expectedSha}`);
+
+      - name: Hash root Cargo.lock in native and checkout-normalized forms
+        id: lock-hashes
+        if: steps.writer-barrier.outputs.ready == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { cargoLockHashes } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
+            );
+            const hashes = cargoLockHashes(fs.readFileSync("Cargo.lock"));
+            core.setOutput("lf", hashes.lf);
+            core.setOutput("crlf", hashes.crlf);
+            core.info(`Current Cargo.lock hashes: LF=${hashes.lf}, CRLF=${hashes.crlf}`);
+
+      - name: Retire old-lock cook bases
+        if: steps.writer-barrier.outputs.ready == 'true'
+        uses: actions/github-script@v7
+        env:
+          ROOT_LOCK_HASH_LF: ${{ steps.lock-hashes.outputs.lf }}
+          ROOT_LOCK_HASH_CRLF: ${{ steps.lock-hashes.outputs.crlf }}
+        with:
+          script: |
+            const repo = context.repo;
+            const expectedSha = context.sha;
+            const { planCookBasePrune } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
+            );
+            const branchHead = async () => (await github.rest.repos.getBranch({
+              ...repo,
+              branch: "main",
+            })).data.commit.sha;
+            const readInventory = async () => {
+              const [usage, caches] = await Promise.all([
+                github.rest.actions.getActionsCacheUsage(repo),
+                github.paginate(github.rest.actions.getActionsCacheList, {
+                  ...repo,
+                  per_page: 100,
+                }),
+              ]);
+              const listedBytes = caches.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
+              return { usageBytes: usage.data.active_caches_size_in_bytes, listedBytes, caches };
+            };
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            const lockHashes = {
+              linux: process.env.ROOT_LOCK_HASH_LF,
+              macos: process.env.ROOT_LOCK_HASH_LF,
+              windows: [process.env.ROOT_LOCK_HASH_LF, process.env.ROOT_LOCK_HASH_CRLF],
+            };
+            if (!lockHashes.linux || !lockHashes.macos || lockHashes.windows.some((hash) => !hash)) {
+              throw new Error("current Cargo.lock hashes unavailable; refusing pre-prune");
+            }
+
+            const convergeInventory = async (mustBeAbsent = []) => {
+              let priorSignature = "";
+              for (let attempt = 0; attempt < 40; attempt += 1) {
+                if (await branchHead() !== expectedSha) {
+                  throw new Error("main advanced during pre-prune; refusing stale inventory");
+                }
+                const inventory = await readInventory();
+                const signature = `${inventory.usageBytes}:${inventory.listedBytes}`;
+                const closeEnough = Math.abs(inventory.usageBytes - inventory.listedBytes) <= 1_000_000;
+                const targetsAbsent = mustBeAbsent.every((id) =>
+                  inventory.caches.every((cache) => cache.id !== id),
+                );
+                if (closeEnough && signature === priorSignature && targetsAbsent) return inventory;
+                priorSignature = signature;
+                await sleep(15_000);
+              }
+              throw new Error("cache usage/list did not converge; refusing producer release");
+            };
+
+            const before = await convergeInventory();
+            const plan = planCookBasePrune(before.caches, lockHashes);
+            const stale = plan.stale.filter((cache) => cache.ref === "refs/heads/main");
+            core.info(
+              `Converged inventory: ${before.caches.length} entries, ${before.listedBytes} bytes; ` +
+              `${stale.length} old-lock cook bases selected.`,
+            );
+            if (await branchHead() !== expectedSha) {
+              throw new Error("main advanced before old-lock deletes; refusing stale plan");
+            }
+            for (const cache of stale) {
+              if (await branchHead() !== expectedSha) {
+                throw new Error("main advanced during deletes; stopping pre-prune");
+              }
+              core.info(`Delete old-lock main cook base: ${cache.key} (id ${cache.id}, ${cache.size_in_bytes} bytes)`);
+              try {
+                await github.rest.actions.deleteActionsCacheById({ ...repo, cache_id: cache.id });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                core.info(`Old-lock cache id ${cache.id} disappeared before deletion; verifying absence below.`);
+              }
+            }
+            const after = await convergeInventory(stale.map((cache) => cache.id));
+            core.info(
+              `Pre-prune verified for ${expectedSha}: ${after.caches.length} entries, ` +
+              `${after.listedBytes} bytes; cache writers may proceed.`,
+            );

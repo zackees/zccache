@@ -44,12 +44,20 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   # macos-15 is Apple Silicon. This was previously two jobs, `x86` and `arm`,
   # both pinned to the same arm64 image, byte-identical duplicates that also derived the
   # same cache-key-suffix and so raced each other on cache save. Real Intel
   # coverage would mean macos-13, which is deliberately avoided: see
   # wrapper-e2e.yml, where that pool cost 15+ minutes of queue wait per run.
   macos:
+    needs: cache-pre-prune
     uses: ./.github/workflows/ci-check.yml
     with:
       os: macos-15

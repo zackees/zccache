@@ -20,6 +20,27 @@ const RETIRED_MAIN_PATTERNS = [
   /^setup-soldr-buildcache-v2-windows-arm64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
 ];
 
+// Top-level workflow names which can persist cache data on a main push.
+// Keep this list in sync with the writer/event contract tests. Reusable
+// workflows run as part of their top-level caller and are represented by the
+// caller's name here.
+const MAIN_CACHE_WRITER_WORKFLOW_NAMES = [
+  "CI",
+  "Linux",
+  "macOS",
+  "Windows",
+  "Wrapper end-to-end",
+  "Clippy",
+  "Integration",
+  "Coverage",
+  "Python Tests",
+  "Filesystem Matrix",
+  "Soldr Broker Stress",
+  "Test zccache-action",
+  "Feature Matrix Check",
+  "Auto-Release",
+];
+
 const CACHE_PREFIXES = [
   ...RETIRED_MAIN_PREFIXES,
   "cook-delta-v2-",
@@ -90,6 +111,62 @@ function cargoLockHashes(contents) {
   const sha16 = (value) =>
     createHash("sha256").update(value, "utf8").digest("hex").slice(0, 16);
   return { lf: sha16(lfText), crlf: sha16(crlfText) };
+}
+
+function parseCookBaseKey(key) {
+  // Treat every dimension around the Cargo.lock hash as opaque profile data.
+  // The regex is intentionally strict about the known v2 layout; unknown key
+  // formats stay protected until their restore semantics are reviewed.
+  const match =
+    /^cook-base-v2-(linux|macos|windows)-(x64|arm64)-([a-z0-9]+)-rustc([0-9.]+)-f([a-z0-9]+)-l([0-9a-f]{16})-soldrv([0-9.]+)(?:-([a-z0-9][a-z0-9._-]*))?$/i.exec(
+      key,
+    );
+  if (!match) return null;
+  return {
+    os: match[1].toLowerCase(),
+    arch: match[2].toLowerCase(),
+    libc: match[3].toLowerCase(),
+    rustc: match[4],
+    flags: match[5].toLowerCase(),
+    lockHash: match[6].toLowerCase(),
+    soldr: match[7],
+    suffix: (match[8] || "").toLowerCase(),
+  };
+}
+
+function currentLockHashesByOs(currentRootLockHashes) {
+  if (!currentRootLockHashes) return null;
+  const result = new Map();
+  for (const os of ["linux", "macos", "windows"]) {
+    const configured = currentRootLockHashes[os];
+    const values = Array.isArray(configured) ? configured : [configured];
+    const hashes = values
+      .filter((value) => typeof value === "string" && /^[0-9a-f]{16}$/i.test(value))
+      .map((value) => value.toLowerCase());
+    if (hashes.length === 0) return null;
+    result.set(os, new Set(hashes));
+  }
+  return result;
+}
+
+function planCookBasePrune(caches, currentRootLockHashes) {
+  const currentHashes = currentLockHashesByOs(currentRootLockHashes);
+  if (!currentHashes) return { keep: caches.slice(), stale: [] };
+  const keep = [];
+  const stale = [];
+  for (const cache of caches) {
+    const parts = typeof cache.key === "string" ? parseCookBaseKey(cache.key) : null;
+    const supportedMainCook =
+      cache.ref === "refs/heads/main" && parts &&
+      currentHashes.has(parts.os);
+    if (supportedMainCook && !currentHashes.get(parts.os).has(parts.lockHash)) {
+      stale.push(cache);
+    } else {
+      keep.push(cache);
+    }
+  }
+  stale.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  return { keep, stale };
 }
 
 function setupSoldrCargoRegistryKeyParts(key) {
@@ -203,6 +280,7 @@ function planHardCap(caches, currentBytes, targetBytes, alreadyPlannedIds = []) 
 
 module.exports = {
   CACHE_PREFIXES,
+  MAIN_CACHE_WRITER_WORKFLOW_NAMES,
   RETIRED_MAIN_PREFIXES,
   RETIRED_MAIN_PATTERNS,
   cacheShape,
@@ -211,5 +289,7 @@ module.exports = {
   isEligible,
   planCountPrune,
   planHardCap,
+  parseCookBaseKey,
+  planCookBasePrune,
   setupSoldrCargoRegistryKeyParts,
 };

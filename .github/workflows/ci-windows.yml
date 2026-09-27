@@ -29,6 +29,7 @@ on:
       - "tasks/**"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -38,13 +39,22 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   x86:
+    needs: cache-pre-prune
     uses: ./.github/workflows/ci-check.yml
     with:
       os: windows-latest
       run_check: false
 
   arm:
+    needs: cache-pre-prune
     uses: ./.github/workflows/ci-check.yml
     with:
       os: windows-11-arm

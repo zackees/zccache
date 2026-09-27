@@ -40,6 +40,7 @@ on:
     branches: [main]
 
 permissions:
+  actions: read
   contents: read
 
 # Auto-cancel superseded PR runs: pushing again to a feature branch
@@ -51,8 +52,16 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   pytest:
     name: ci/tests
+    needs: cache-pre-prune
     runs-on: ubuntu-latest
     # Observed wall time is ~90s; this only has to catch a genuine hang.
     # test_perf_watchdog spawns real child processes and one test shells out
@@ -60,6 +69,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -85,10 +96,13 @@ jobs:
 
   native-pytest:
     name: native Python suites (Linux)
+    needs: cache-pre-prune
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
 
       # The PyO3 modules use abi3-py310, and 3.13 is the canonical workflow
       # interpreter. setup-python also supplies the interpreter PYO3 probes.
@@ -105,7 +119,7 @@ jobs:
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true

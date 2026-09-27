@@ -23,6 +23,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -34,16 +35,26 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  cache-pre-prune:
+    name: Cache pre-prune barrier
+    uses: ./.github/workflows/wait-cache-pre-prune.yml
+    permissions:
+      actions: read
+      contents: read
+
   broker-stress:
+    needs: cache-pre-prune
     name: Broker stress (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
+      - name: Wait for current-main cache pre-prune
+        uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
