@@ -1,6 +1,8 @@
 import shutil
 from pathlib import Path
 
+import yaml
+
 from ci import check_cache_footprint as guard
 
 CURRENT = next(iter(guard.SAVE_CACHE_REFS))
@@ -87,6 +89,50 @@ def test_measured_cache_cuts_cannot_be_reintroduced(tmp_path: Path) -> None:
     )
     registry_errors = guard.check(registry_root)
     assert sum("cargo-registry-cache: true" in error for error in registry_errors) == 2
+
+
+def test_cook_profile_probe_is_exact_branch_scoped_restore_only() -> None:
+    cases = (
+        ("ci.yml", "miss-overhead", "soldr-cook", ""),
+        ("reflink-e2e.yml", "btrfs", "soldr-cook", ""),
+        ("python-tests.yml", "native-pytest", "none", None),
+    )
+    probe_gate = (
+        "${{ github.event_name == 'pull_request' && "
+        "github.head_ref == 'probe/cache-cook-profile' }}"
+    )
+    normal_gate = (
+        "${{ github.event_name != 'pull_request' || "
+        "github.head_ref != 'probe/cache-cook-profile' }}"
+    )
+
+    for filename, job_name, expected_deps, expected_flags in cases:
+        workflow = yaml.safe_load(
+            (guard.ROOT / ".github" / "workflows" / filename).read_text(
+                encoding="utf-8"
+            )
+        )
+        steps = workflow["jobs"][job_name]["steps"]
+        normal = next(
+            step
+            for step in steps
+            if step.get("uses", "").startswith(guard.ACTION)
+            and step.get("if") == normal_gate
+        )
+        probe = next(
+            step
+            for step in steps
+            if step.get("uses", "").startswith(guard.ACTION)
+            and step.get("if") == probe_gate
+        )
+
+        assert normal["if"] == normal_gate
+        assert probe["if"] == probe_gate
+        assert probe["with"]["save-cache"] is False
+        assert probe["with"]["cargo-registry-cache"] is True
+        assert probe["with"]["prebuild-deps"] == expected_deps
+        if expected_flags is not None:
+            assert probe["with"]["prebuild-deps-flags"] == expected_flags
 
 
 def test_rejects_solo_toolchain_cache_producer(tmp_path: Path) -> None:

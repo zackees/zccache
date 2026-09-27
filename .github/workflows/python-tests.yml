@@ -116,7 +116,8 @@ jobs:
           enable-cache: true
           cache-dependency-glob: ".github/workflows/python-tests.yml"
 
-      - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+      - if: ${{ github.event_name != 'pull_request' || github.head_ref != 'probe/cache-cook-profile' }}
+        uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
@@ -126,6 +127,20 @@ jobs:
           linker: fast
           prebuild-deps: soldr-cook
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
+
+      - if: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cache-cook-profile' }}
+        name: Probe native Python without cook save/write (registry restore only)
+        uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        with:
+          cook-delta: false
+          save-cache: false
+          zccache-seed-strict: true
+          toolchain: 1.95.0
+          cache: true
+          cargo-registry-cache: true
+          linker: fast
+          prebuild-deps: none
+          solo-toolchain-cache: false
 
       - name: Build native Python test artifacts
         shell: bash
