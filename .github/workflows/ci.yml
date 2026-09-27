@@ -247,6 +247,7 @@ jobs:
         with:
           enable-cache: false
       - name: Set up stable toolchain without cache layers
+        id: setup_stable
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cache: false
@@ -269,6 +270,8 @@ jobs:
           target-dir: target
           flags: --release
           rustc-release: 1.95.0
+          soldr-version: v${{ steps.setup_stable.outputs.soldr-version }}
+          delta-cache: false
           save-cache: false
       - name: Install Dylint nightly toolchain and fallback tools
         run: |
