@@ -84,6 +84,7 @@ jobs:
           linker: fast
           prebuild-deps: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}
           prebuild-deps-flags: "--release"
+          cargo-registry-cache: true
 
       - name: setup soldr with cook prebuild (Windows)
         if: runner.os == 'Windows'
@@ -100,6 +101,7 @@ jobs:
           linker: fast
           prebuild-deps: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}
           prebuild-deps-flags: "--release"
+          cargo-registry-cache: true
 
       - name: restore source tree after dependency cook
         shell: bash

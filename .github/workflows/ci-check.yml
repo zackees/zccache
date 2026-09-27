@@ -81,6 +81,7 @@ jobs:
           linker: fast
           prebuild-deps: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && (inputs.os == 'windows-latest' || inputs.os == 'windows-11-arm') && 'none' || 'soldr-cook' }}
           prebuild-deps-flags: ""
+          cargo-registry-cache: true
           # #240: seed the isolated test SOLDR_CACHE_DIR (per-OS) from the
           # restored build-cache so the daemon-isolated test phase starts warm
           # across Linux/macOS/Windows.
