@@ -1,5 +1,7 @@
 "use strict";
 
+const { createHash } = require("node:crypto");
+
 // Cache families whose old generations are safe to retire after a newer
 // generation for the same restore shape exists. Keep one generation per
 // shape; the shape functions below intentionally retain OS, architecture,
@@ -31,10 +33,10 @@ const CACHE_PREFIXES = [
   "cargo-target-macos-arm64-bench-",
 ];
 
-// setup-soldr Cargo-registry keys are content-addressed: after the platform,
-// the key includes Cargo.lock identity and an archive digest. Distinct keys
-// may therefore represent separate lockfile/dependency snapshots; they are
-// not old generations of one reusable shape and stay outside retention.
+// setup-soldr Cargo-registry keys include both the root Cargo.lock identity
+// and a toolchain-signature digest. Only a prior lock hash with a same-ref,
+// same-format/platform/architecture/digest replacement for the checked-out
+// lock is retired; digest profiles and unknown namespaces stay protected.
 
 function cacheShape(key) {
   if (/^cargo-registry-.+-test-/.test(key)) {
@@ -70,9 +72,66 @@ function effectiveCacheBytes(usageBytes, listedBytes) {
   return Math.max(Number(usageBytes) || 0, Number(listedBytes) || 0);
 }
 
-function planCountPrune(caches, keepPerShape = 1) {
+function cargoLockHashes(contents) {
+  const text = Buffer.isBuffer(contents) ? contents.toString("utf8") : String(contents);
+  const lfText = text.replace(/\r\n/g, "\n");
+  const crlfText = lfText.replace(/\n/g, "\r\n");
+  const sha16 = (value) =>
+    createHash("sha256").update(value, "utf8").digest("hex").slice(0, 16);
+  return { lf: sha16(lfText), crlf: sha16(crlfText) };
+}
+
+function setupSoldrCargoRegistryKeyParts(key) {
+  // Production keys contain no validation namespace. Unknown formats and
+  // namespaced keys are deliberately not eligible for automatic retirement.
+  const match =
+    /^setup-soldr-cargoregistry-(v[12])-(linux|macos|windows)-(x64|arm64)-([0-9a-f]{16})-([0-9a-f]{16})$/i.exec(
+      key,
+    );
+  if (!match) return null;
+  return {
+    format: match[1].toLowerCase(),
+    os: match[2].toLowerCase(),
+    arch: match[3].toLowerCase(),
+    lockHash: match[4].toLowerCase(),
+    digest: match[5].toLowerCase(),
+  };
+}
+
+function supersededCargoRegistryIds(caches, currentRootLockHashes) {
+  if (!currentRootLockHashes) return new Set();
+  const hashesForOs = (os) => {
+    const configured = currentRootLockHashes[os];
+    if (Array.isArray(configured)) {
+      return new Set(configured.map((value) => String(value).toLowerCase()));
+    }
+    return configured ? new Set([String(configured).toLowerCase()]) : new Set();
+  };
+  const rows = caches
+    .filter((cache) => cache.ref === "refs/heads/main" && typeof cache.key === "string")
+    .map((cache) => ({ cache, parts: setupSoldrCargoRegistryKeyParts(cache.key) }))
+    .filter((row) => row.parts);
+  const currentShapes = new Set();
+  for (const { parts } of rows) {
+    if (hashesForOs(parts.os).has(parts.lockHash)) {
+      currentShapes.add(`${parts.format}\u0000${parts.os}\u0000${parts.arch}\u0000${parts.digest}`);
+    }
+  }
+  const stale = new Set();
+  for (const { cache, parts } of rows) {
+    const shape = `${parts.format}\u0000${parts.os}\u0000${parts.arch}\u0000${parts.digest}`;
+    if (!hashesForOs(parts.os).has(parts.lockHash) && currentShapes.has(shape)) {
+      stale.add(cache.id);
+    }
+  }
+  return stale;
+}
+
+function planCountPrune(caches, keepPerShape = 1, currentRootLockHashes = null) {
   const shapes = new Map();
-  const stale = [];
+  const stale = [...supersededCargoRegistryIds(caches, currentRootLockHashes)]
+    .map((id) => caches.find((cache) => cache.id === id))
+    .filter(Boolean);
   for (const cache of caches) {
     if (!cache.key || !isEligible(cache.key)) continue;
     if (
@@ -133,8 +192,10 @@ function planHardCap(caches, currentBytes, targetBytes, alreadyPlannedIds = []) 
 module.exports = {
   CACHE_PREFIXES,
   cacheShape,
+  cargoLockHashes,
   effectiveCacheBytes,
   isEligible,
   planCountPrune,
   planHardCap,
+  setupSoldrCargoRegistryKeyParts,
 };

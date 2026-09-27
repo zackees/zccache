@@ -28,10 +28,50 @@ def test_cache_cleanup_runs_daily_on_main_before_budget_check() -> None:
     budget_hour, budget_minute = int(budget_hour), int(budget_minute)
     assert cleanup_hour * 60 + cleanup_minute < budget_hour * 60 + budget_minute
     assert "workflow_dispatch" in triggers
+    assert triggers["workflow_run"] == {"workflows": ["Integration"], "types": ["completed"]}
     assert not {"push", "pull_request", "pull_request_target"} & set(triggers)
-    assert workflow["jobs"]["prune-per-commit-caches"]["if"] == (
-        "github.ref == 'refs/heads/main'"
+    job = workflow["jobs"]["prune-per-commit-caches"]
+    assert "github.ref == 'refs/heads/main'" in job["if"]
+    assert "github.event.workflow_run.head_branch == 'main'" in job["if"]
+    assert "github.event.workflow_run.event == 'push'" in job["if"]
+
+
+def test_producer_completion_cleanup_waits_for_quiescence_and_skips_stale_sha() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/cache-cleanup.yml").read_text(encoding="utf-8")
     )
+    steps = workflow["jobs"]["prune-per-commit-caches"]["steps"]
+    barrier = next(step for step in steps if step.get("id") == "producer-barrier")
+    script = barrier["with"]["script"]
+    assert "listWorkflowRunsForRepo" in script
+    assert 'run.head_branch === "main"' in script
+    assert 'run.status !== "completed"' in script
+    assert "quietSince && Date.now() - quietSince >= 120_000" in script
+    assert "Workflow-run delivery can lag" in script
+    assert "maxAttempts = 60" in script
+    assert "context.payload.workflow_run" in script
+    assert "runEvent.head_sha" in script
+    assert "branchHead() !== expectedSha" in script
+    assert '"Cache Cleanup"' not in script
+    for producer in (
+        '"CI"',
+        '"Linux"',
+        '"macOS"',
+        '"Windows"',
+        '"Wrapper end-to-end"',
+        '"Clippy"',
+        '"Integration"',
+        '"Coverage"',
+        '"Python Tests"',
+        '"Filesystem Matrix"',
+        '"Soldr Broker Stress"',
+        '"Perf Guard"',
+        '"Test zccache-action"',
+        '"Feature Matrix Check"',
+        '"Auto-Release"',
+        '"Build Native Binaries"',
+    ):
+        assert producer in script
 
 
 def test_cache_cleanup_uses_a_scoped_cache_write_permission() -> None:
@@ -68,6 +108,11 @@ def test_manual_cleanup_defaults_to_dry_run_and_lists_exact_targets() -> None:
     assert "getActionsCacheUsage(repo)" in hard_cap["with"]["script"]
     assert "const maxAttempts = dryRun ? 1 : 6" in hard_cap["with"]["script"]
     assert "effectiveCacheBytes" in gate["with"]["script"]
+    lock_hash_step = next(step for step in steps if step.get("id") == "cargo-lock-hashes")
+    assert "cargoLockHashes" in lock_hash_step["with"]["script"]
+    count_env = next(step for step in steps if step.get("id") == "count-prune")["env"]
+    assert "ROOT_LOCK_HASH_LF" in count_env
+    assert "ROOT_LOCK_HASH_CRLF" in count_env
 
 
 def test_cleanup_allowlist_preserves_foundation_cache_families() -> None:
@@ -146,6 +191,52 @@ def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
     assert 16 not in plan["capSelected"]
     assert 26 in plan["capSelected"]
     assert plan["capWithinBudget"] is False
+
+
+def test_cargo_registry_lock_generations_require_exact_same_profile_replacement() -> None:
+    fixture = ROOT / "ci/tests/fixtures/cache_cleanup_shapes.json"
+    script = (
+        "const fs=require('node:fs');"
+        "const {planCountPrune}=require(process.argv[1]);"
+        "const caches=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "const plan=planCountPrune(caches,1,{"
+        "linux:'3bf5d54592e41b8a',macos:'3bf5d54592e41b8a',"
+        "windows:['3bf5d54592e41b8a','f2415904ed1de43f']});"
+        "process.stdout.write(JSON.stringify({"
+        "keep:plan.keep.map(c=>c.id),stale:plan.stale.map(c=>c.id)}));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=fixture.read_text(encoding="utf-8"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    stale = set(plan["stale"])
+    # All ten currently observed cache profiles remain protected. Old lock
+    # generations are retired only when an exact digest/platform replacement
+    # exists on main; a different digest, architecture, OS or ref is not proof.
+    assert set(range(35, 45)).isdisjoint(stale)
+    assert {45, 47, 50, 51} <= stale
+    assert {46, 48, 49, 52, 53, 54, 55, 56, 57, 58}.isdisjoint(stale)
+
+
+def test_cargo_lock_hash_helper_covers_lf_and_crlf_checkouts() -> None:
+    script = (
+        "const {cargoLockHashes}=require(process.argv[1]);"
+        "process.stdout.write(JSON.stringify(cargoLockHashes('version = 4\\r\\n[[package]]\\n')));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(result.stdout) == {
+        "lf": "2eb705d50759188a",
+        "crlf": "7a6b15d9081fcc9f",
+    }
 
 
 def test_hard_cap_fails_when_only_unique_protected_shapes_remain() -> None:
