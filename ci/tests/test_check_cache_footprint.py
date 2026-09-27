@@ -85,6 +85,41 @@ def test_rejects_macos_build_cache_reintroduction(tmp_path: Path) -> None:
     )
 
 
+def test_accepts_only_exact_linux_wrapper_build_cache_probe(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "wrapper-e2e.yml",
+        _job(
+            "wrapper-e2e",
+            os="${{ matrix.os }}",
+            **{
+                "build-cache": guard.LINUX_WRAPPER_BUILD_CACHE_PROBE,
+                "prebuild-deps": "soldr-cook",
+            },
+        ),
+    )
+    assert guard.check(tmp_path) == []
+
+
+def test_rejects_unrecognized_linux_wrapper_build_cache_probe(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "wrapper-e2e.yml",
+        _job(
+            "wrapper-e2e",
+            os="${{ matrix.os }}",
+            **{
+                "build-cache": "${{ github.head_ref == 'probe/cook-off-matrix' && 'false' || matrix.os != 'macos-15' }}",
+                "prebuild-deps": "soldr-cook",
+            },
+        ),
+    )
+    assert any(
+        "must disable build-cache on macos-15" in error
+        for error in guard.check(tmp_path)
+    )
+
+
 def test_rejects_distinct_suffixes_for_same_shape(tmp_path: Path) -> None:
     _workflow(
         tmp_path,

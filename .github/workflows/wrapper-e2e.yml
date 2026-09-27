@@ -80,7 +80,7 @@ jobs:
           zccache-seed-strict: true
           cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
-          build-cache: ${{ matrix.os != 'macos-15' }}
+          build-cache: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && matrix.os == 'ubuntu-latest' && 'false' || matrix.os != 'macos-15' }}
           linker: fast
           prebuild-deps: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}
           prebuild-deps-flags: "--release"
@@ -97,7 +97,7 @@ jobs:
           zccache-seed-strict: true
           cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
-          build-cache: ${{ matrix.os != 'macos-15' }}
+          build-cache: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && matrix.os == 'ubuntu-latest' && 'false' || matrix.os != 'macos-15' }}
           linker: fast
           prebuild-deps: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}
           prebuild-deps-flags: "--release"

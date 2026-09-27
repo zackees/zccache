@@ -104,6 +104,12 @@ WINDOWS_COOK_OFF_PROBE_SAVE = (
     "(inputs.os == 'windows-latest' || inputs.os == 'windows-11-arm') && "
     "'false' || 'auto' }}"
 )
+LINUX_WRAPPER_BUILD_CACHE_PROBE = (
+    "${{ github.event_name == 'pull_request' && "
+    "github.head_ref == 'probe/cook-off-matrix' && "
+    "matrix.os == 'ubuntu-latest' && 'false' || "
+    "matrix.os != 'macos-15' }}"
+)
 COOK_OFF_PROBE_INPUTS = {
     "${{ github.event_name == 'pull_request' && "
     "github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}",
@@ -312,6 +318,11 @@ def check(root: Path = ROOT) -> list[str]:
         )
         for step in target_steps:
             actual = _normal_expression(step.inputs.get("build-cache", "true"))
+            if (
+                target == "wrapper-e2e.yml:wrapper-e2e"
+                and actual == _normal_expression(LINUX_WRAPPER_BUILD_CACHE_PROBE)
+            ):
+                actual = expected
             if actual != expected:
                 errors.append(
                     f"{step.where} must disable build-cache on macos-15 "
