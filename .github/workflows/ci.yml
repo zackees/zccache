@@ -90,7 +90,7 @@ jobs:
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: auto
+          save-cache: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && 'false' || 'auto' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -101,7 +101,7 @@ jobs:
           # ci/check_cache_footprint.py JUSTIFIED_SUFFIXES.
           cache-key-suffix: dylint
           linker: fast
-          prebuild-deps: soldr-cook
+          prebuild-deps: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}
           # The prescribed profile materializes the exact nightly, driver,
           # and tool binaries once; the Dylint stages below only consume it.
           ci-tests: true

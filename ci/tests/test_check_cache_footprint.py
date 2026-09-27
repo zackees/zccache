@@ -142,6 +142,54 @@ def test_new_pin_auto_or_unset_is_green(tmp_path: Path) -> None:
     assert guard.check(tmp_path) == []
 
 
+def test_exact_cook_off_probe_gate_is_pr_safe_and_keeps_base_shape(
+    tmp_path: Path,
+) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        _job(
+            "dylint",
+            **{
+                "save-cache": guard.COOK_OFF_PROBE_SAVE,
+                "prebuild-deps": next(
+                    item
+                    for item in guard.COOK_OFF_PROBE_INPUTS
+                    if "inputs.os" not in item
+                ),
+            },
+        )
+        + _job(
+            "windows-test",
+            os="${{ inputs.os }}",
+            **{
+                "save-cache": guard.WINDOWS_COOK_OFF_PROBE_SAVE,
+                "prebuild-deps": next(
+                    item
+                    for item in guard.COOK_OFF_PROBE_INPUTS
+                    if "inputs.os" in item
+                ),
+            },
+        ),
+    )
+    assert guard.check(tmp_path) == []
+    assert all(guard._shape(step)[1] == "soldr-cook" for step in guard.collect(tmp_path))
+
+
+def test_unrecognized_probe_save_expression_is_red(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        _job(
+            "probe",
+            **{
+                "save-cache": "${{ github.head_ref == 'probe/cook-off-matrix' && 'false' || 'auto' }}",
+            },
+        ),
+    )
+    assert any("can save caches on pull_request" in e for e in guard.check(tmp_path))
+
+
 def test_local_action_must_disable_pr_saves(tmp_path: Path) -> None:
     _workflow(
         tmp_path,

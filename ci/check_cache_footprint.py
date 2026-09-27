@@ -94,6 +94,24 @@ SHAPE_INPUTS = (
 )
 OS_EXPR = re.compile(r"\$\{\{\s*(inputs|matrix)\.(os|label)\s*\}\}")
 ANY_OS = "*"
+COOK_OFF_PROBE_SAVE = (
+    "${{ github.event_name == 'pull_request' && "
+    "github.head_ref == 'probe/cook-off-matrix' && 'false' || 'auto' }}"
+)
+WINDOWS_COOK_OFF_PROBE_SAVE = (
+    "${{ github.event_name == 'pull_request' && "
+    "github.head_ref == 'probe/cook-off-matrix' && "
+    "(inputs.os == 'windows-latest' || inputs.os == 'windows-11-arm') && "
+    "'false' || 'auto' }}"
+)
+COOK_OFF_PROBE_INPUTS = {
+    "${{ github.event_name == 'pull_request' && "
+    "github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}",
+    "${{ github.event_name == 'pull_request' && "
+    "github.head_ref == 'probe/cook-off-matrix' && "
+    "(inputs.os == 'windows-latest' || inputs.os == 'windows-11-arm') && "
+    "'none' || 'soldr-cook' }}",
+}
 
 
 @dataclass(frozen=True)
@@ -184,7 +202,21 @@ def _normal_suffix(step: Step) -> str:
 
 
 def _shape(step: Step) -> tuple[str, ...]:
-    return tuple(str(step.inputs.get(k, "<default>")).strip() for k in SHAPE_INPUTS)
+    return tuple(
+        "soldr-cook"
+        if k == "prebuild-deps" and _is_cook_off_probe_input(step.inputs.get(k, ""))
+        else str(step.inputs.get(k, "<default>")).strip()
+        for k in SHAPE_INPUTS
+    )
+
+
+def _normal_expression(value: object) -> str:
+    return re.sub(r"\s+", "", str(value).strip()).replace('"', "'")
+
+
+def _is_cook_off_probe_input(value: object) -> bool:
+    normalized = _normal_expression(value)
+    return normalized in {_normal_expression(item) for item in COOK_OFF_PROBE_INPUTS}
 
 
 def _cannot_save_on_pr(step: Step) -> bool:
@@ -195,11 +227,9 @@ def _cannot_save_on_pr(step: Step) -> bool:
         "${{github.event_name!='pull_request'}}",
         "${{github.event_name=='push'}}",
         "${{github.ref=='refs/heads/main'}}",
+        _normal_expression(COOK_OFF_PROBE_SAVE),
+        _normal_expression(WINDOWS_COOK_OFF_PROBE_SAVE),
     }
-
-
-def _normal_expression(value: object) -> str:
-    return re.sub(r"\s+", "", str(value).strip()).replace('"', "'")
 
 
 def _local_action_errors(root: Path) -> list[str]:
@@ -268,6 +298,7 @@ def check(root: Path = ROOT) -> list[str]:
             and (
                 target != "wrapper-e2e.yml:wrapper-e2e"
                 or step.inputs.get("prebuild-deps") == "soldr-cook"
+                or _is_cook_off_probe_input(step.inputs.get("prebuild-deps", ""))
             )
         ]
         if not target_steps:
