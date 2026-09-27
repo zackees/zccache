@@ -264,6 +264,7 @@ jobs:
             /home/runner/work/_temp/dylint-drivers
           key: setup-soldr-dylint-v1-linux-x64-x86_64-unknown-linux-gnu-bfb7dde76ff4f61f-dylint
       - name: Restore generic main cook base and run cook without saving
+        id: shared_cook
         uses: zackees/setup-soldr/cook@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
           workspace: .
@@ -271,8 +272,13 @@ jobs:
           flags: --release
           rustc-release: 1.95.0
           soldr-version: v${{ steps.setup_stable.outputs.soldr-version }}
-          delta-cache: false
+          delta-cache: true
           save-cache: false
+      - name: Report shared cook probe result
+        run: |
+          echo "cache-hit=${{ steps.shared_cook.outputs.cache-hit }}"
+          echo "ran=${{ steps.shared_cook.outputs.ran }}"
+          echo "save-layer=${{ steps.shared_cook.outputs.save-layer }}"
       - name: Install Dylint nightly toolchain and fallback tools
         run: |
           soldr rustup toolchain install nightly-2026-05-26 --component llvm-tools-preview --component rust-src --component rustc-dev --target x86_64-unknown-linux-gnu --profile minimal
