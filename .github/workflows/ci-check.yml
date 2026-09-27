@@ -73,13 +73,13 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
-          build-cache: ${{ inputs.os != 'macos-15' }}
+          build-cache: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && (inputs.os == 'windows-latest' || inputs.os == 'windows-11-arm') && 'false' || inputs.os != 'macos-15' }}
           # Bound compile and test concurrency for the 8-GB ARM runner. This
           # is the prescribed ci-tests resource contract; the Test step below
           # remains the only lib/bin test-profile compilation.
           ci-tests: true
           linker: fast
-          prebuild-deps: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/cook-off-matrix' && (inputs.os == 'windows-latest' || inputs.os == 'windows-11-arm') && 'none' || 'soldr-cook' }}
+          prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           cargo-registry-cache: true
           # #240: seed the isolated test SOLDR_CACHE_DIR (per-OS) from the

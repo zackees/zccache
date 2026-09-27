@@ -120,6 +120,45 @@ def test_rejects_unrecognized_linux_wrapper_build_cache_probe(tmp_path: Path) ->
     )
 
 
+def test_accepts_only_exact_windows_test_build_cache_probe(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "ci-check.yml",
+        _job(
+            "test",
+            os="${{ inputs.os }}",
+            **{
+                "save-cache": guard.WINDOWS_COOK_OFF_PROBE_SAVE,
+                "build-cache": guard.WINDOWS_TEST_BUILD_CACHE_PROBE,
+                "prebuild-deps": "soldr-cook",
+                "cargo-registry-cache": "true",
+            },
+        ),
+    )
+    assert guard.check(tmp_path) == []
+
+
+def test_rejects_unrecognized_windows_test_build_cache_probe(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "ci-check.yml",
+        _job(
+            "test",
+            os="${{ inputs.os }}",
+            **{
+                "save-cache": guard.WINDOWS_COOK_OFF_PROBE_SAVE,
+                "build-cache": "${{ github.head_ref == 'probe/cook-off-matrix' && 'false' || inputs.os != 'macos-15' }}",
+                "prebuild-deps": "soldr-cook",
+                "cargo-registry-cache": "true",
+            },
+        ),
+    )
+    assert any(
+        "macOS Test" in error and "disable build-cache" in error
+        for error in guard.check(tmp_path)
+    )
+
+
 def test_rejects_distinct_suffixes_for_same_shape(tmp_path: Path) -> None:
     _workflow(
         tmp_path,

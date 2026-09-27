@@ -110,6 +110,12 @@ LINUX_WRAPPER_BUILD_CACHE_PROBE = (
     "matrix.os == 'ubuntu-latest' && 'false' || "
     "matrix.os != 'macos-15' }}"
 )
+WINDOWS_TEST_BUILD_CACHE_PROBE = (
+    "${{ github.event_name == 'pull_request' && "
+    "github.head_ref == 'probe/cook-off-matrix' && "
+    "(inputs.os == 'windows-latest' || inputs.os == 'windows-11-arm') && "
+    "'false' || inputs.os != 'macos-15' }}"
+)
 COOK_OFF_PROBE_INPUTS = {
     "${{ github.event_name == 'pull_request' && "
     "github.head_ref == 'probe/cook-off-matrix' && 'none' || 'soldr-cook' }}",
@@ -321,6 +327,11 @@ def check(root: Path = ROOT) -> list[str]:
             if (
                 target == "wrapper-e2e.yml:wrapper-e2e"
                 and actual == _normal_expression(LINUX_WRAPPER_BUILD_CACHE_PROBE)
+            ):
+                actual = expected
+            if (
+                target == "ci-check.yml:test"
+                and actual == _normal_expression(WINDOWS_TEST_BUILD_CACHE_PROBE)
             ):
                 actual = expected
             if actual != expected:
