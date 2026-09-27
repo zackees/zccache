@@ -246,39 +246,30 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: false
-      - name: Set up stable toolchain without cache layers
-        id: setup_stable
+      - name: Set up Dylint lane on shared cook base (save-disabled probe)
+        id: setup_probe
         uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         with:
-          cache: false
-          toolchain: 1.95.0
-          prebuild-deps: none
-      - name: Restore existing Dylint tools (restore-only)
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            /home/runner/.cargo/bin/cargo-dylint*
-            /home/runner/.cargo/bin/dylint-link*
-            /home/runner/.cargo/.crates.toml
-            /home/runner/.cargo/.crates2.json
-            /home/runner/work/_temp/dylint-drivers
-          key: setup-soldr-dylint-v1-linux-x64-x86_64-unknown-linux-gnu-bfb7dde76ff4f61f-dylint
-      - name: Restore generic main cook base and run cook without saving
-        id: shared_cook
-        uses: zackees/setup-soldr/cook@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
-        with:
-          workspace: .
-          target-dir: target
-          flags: --release
-          rustc-release: 1.95.0
-          soldr-version: v${{ steps.setup_stable.outputs.soldr-version }}
-          delta-cache: true
+          cache: true
           save-cache: false
+          cook-delta: false
+          zccache-seed-strict: true
+          toolchain: 1.95.0
+          cargo-registry-cache: false
+          linker: fast
+          prebuild-deps: soldr-cook
+          ci-tests: true
+          dylint-cache: true
+          dylint-toolchain: nightly-2026-05-26
+          cargo-dylint-version: 6.0.1
+          dylint-link-version: 6.0.1
       - name: Report shared cook probe result
         run: |
-          echo "cache-hit=${{ steps.shared_cook.outputs.cache-hit }}"
-          echo "ran=${{ steps.shared_cook.outputs.ran }}"
-          echo "save-layer=${{ steps.shared_cook.outputs.save-layer }}"
+          echo "cache-hit=${{ steps.setup_probe.outputs.cook-cache-hit }}"
+          echo "base-hit=${{ steps.setup_probe.outputs.cook-cache-base-hit }}"
+          echo "delta-hit=${{ steps.setup_probe.outputs.cook-cache-delta-hit }}"
+          echo "status=${{ steps.setup_probe.outputs.cook-cache-status }}"
+          echo 'load-report=${{ steps.setup_probe.outputs.cook-cache-load-report-json }}'
       - name: Install Dylint nightly toolchain and fallback tools
         run: |
           soldr rustup toolchain install nightly-2026-05-26 --component llvm-tools-preview --component rust-src --component rustc-dev --target x86_64-unknown-linux-gnu --profile minimal
