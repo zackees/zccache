@@ -1,0 +1,3 @@
+# Dylint requires the toolchain-suffixed cdylib name on every host.
+[target.'cfg(all())']
+rustflags = ["-C", "linker=dylint-link"]

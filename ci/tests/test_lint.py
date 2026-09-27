@@ -8,6 +8,29 @@ import pytest
 from ci import lint
 
 
+def test_dylint_covers_every_published_target_in_ordinary_pr_ci():
+    workflow = (lint.SCRIPT_DIR / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    for target in (
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ):
+        assert target in workflow.split("\n  dylint:", 1)[1].split("\n  msrv:", 1)[0]
+    assert "dylint-coverage:" in workflow
+    assert workflow.count("working-directory: ci/dylint-target-fixture") == 2
+    assert workflow.count("grep -Fq 'use zccache_core::path::NormalizedPath instead of std::path::PathBuf'") == 2
+
+
+def test_windows_local_dylint_cannot_return_a_green_skip(monkeypatch):
+    monkeypatch.setattr(lint, "os", SimpleNamespace(name="nt"))
+    assert not lint.skip_dylint_on_windows()
+
+
 def test_dylint_sources_do_not_set_a_dated_toolchain_globally():
     forbidden = re.compile(
         r"""set_var\s*\(\s*["']RUSTUP_TOOLCHAIN["']\s*,\s*["']nightly-\d{4}-\d{2}-\d{2}"""
@@ -81,18 +104,13 @@ def test_ensure_dylint_aliases_copies_each_bare_library_once(monkeypatch, tmp_pa
     assert not lint.ensure_dylint_aliases()
 
 
-def test_lint_dylint_only_retries_after_creating_aliases(monkeypatch):
-    monkeypatch.setattr(lint, "skip_dylint_on_windows", lambda: False)
-    monkeypatch.setattr(lint, "which", lambda _: "/tools/cargo-dylint")
-    monkeypatch.setattr(lint, "ensure_dylint_components", lambda: 0)
-    monkeypatch.setattr(lint, "dylint_command", lambda: ["cargo-dylint", "dylint"])
-    monkeypatch.setattr(lint, "dylint_env", lambda: {"PATH": "/tools"})
-    alias_results = iter([True])
-    monkeypatch.setattr(lint, "ensure_dylint_aliases", lambda: next(alias_results))
+def test_lint_dylint_only_uses_managed_fast_path_and_fails_closed(monkeypatch):
+    monkeypatch.setattr(lint, "which", lambda _: "/tools/soldr")
+    monkeypatch.setattr(lint, "self_build_env", lambda: {"RUSTFLAGS": "-D warnings", "RUSTUP_TOOLCHAIN": "1.95.0"})
     attempts = iter(
         [
-            SimpleNamespace(returncode=1, stdout="", stderr="missing alias\n"),
             SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=1, stdout="", stderr="finding\n"),
         ]
     )
     calls = []
@@ -103,8 +121,12 @@ def test_lint_dylint_only_retries_after_creating_aliases(monkeypatch):
 
     monkeypatch.setattr(lint.subprocess, "run", fake_run)
 
-    assert lint.lint_dylint_only() == 0
+    assert lint.lint_dylint_only() == 1
     assert len(calls) == 2
+    assert calls[0][0] == ["soldr", "dylint", "prepare"]
+    assert calls[1][0] == ["soldr", "dylint", "--all", "--", "--workspace", "--lib", "--bins"]
+    assert "RUSTFLAGS" not in calls[1][1]["env"]
+    assert "RUSTUP_TOOLCHAIN" not in calls[1][1]["env"]
 
 
 def test_dylint_command_keeps_the_plugin_subcommand(monkeypatch):

@@ -11,13 +11,20 @@ Custom Rust lints used by this workspace.
 - `ban_dashmap_guard_across_blocking`: bans holding a `DashMap::get` guard across awaits, filesystem/process work, or a mutation of the same map.
 - `ban_discarded_write_result`: bans discarding the `Result` of a write-ish call (`let _ = …` / statement-position `.ok();`) in the daemon's persistence modules (#1163 / #1177).
 - `enforce_platform_boundary`: confines host-platform cfg/native APIs to approved product adapters over kernal-api, pre-expansion, with a ratcheting exact-occurrence baseline (#1365 / #1366).
+- `ban_registered_env_read`: confines environment access to registered, auditable call sites.
 
-All nine libraries use the published Dylint 6.0.1 crates and the pinned
-`nightly-2026-05-26` toolchain. The supported `cargo-dylint` driver is used
-directly; no custom driver checkout or library alias repair is required.
+All ten libraries use Dylint 6.0.3 and the pinned `nightly-2026-05-28`
+toolchain. Soldr downloads the published tools and driver. Each crate uses
+`dylint-link` to emit the toolchain-suffixed library Dylint expects.
 
 Run from the repository root:
 
 ```bash
-cargo dylint --all --workspace
+env -u RUSTUP_TOOLCHAIN -u RUSTFLAGS SOLDR_DYLINT_TOOLCHAIN=nightly-2026-05-28 soldr dylint prepare
+./lint
 ```
+
+Full `./lint` runs formatting, Clippy, workspace library/binary Dylint, and docs checks on
+the current host. `./lint <file.rs>` checks formatting and Clippy for that
+file's crate, but not Dylint; `./lint --fix` formats and runs Clippy, but does
+not run Dylint. CI runs Dylint for all eight published target triples.

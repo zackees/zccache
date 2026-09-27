@@ -1,0 +1,13 @@
+[package]
+name = "zccache-dylint-target-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[workspace.metadata.dylint]
+libraries = [{ path = "../../dylints/ban_std_pathbuf" }]
+
+[features]
+violate = []

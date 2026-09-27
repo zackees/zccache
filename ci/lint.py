@@ -20,11 +20,8 @@ from ci.release_checks import ReleaseCheckError, validate_release_metadata
 from ci.soldr import cargo_command, rust_tool_command, self_build_env
 
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
-DYLINT_TOOLCHAIN = "nightly-2026-05-26"
+DYLINT_TOOLCHAIN = "nightly-2026-05-28"
 DYLINT_COMPONENTS = ["llvm-tools-preview", "rust-src", "rustc-dev"]
-DYLINT_WINDOWS_SKIP = (
-    "Skipping Dylint on Windows; the dedicated Dylint CI job runs on Ubuntu."
-)
 
 
 def dylint_manifests() -> list[str]:
@@ -180,61 +177,36 @@ def ensure_dylint_components():
 
 
 def skip_dylint_on_windows():
-    if os.name != "nt":
-        return False
-    print(DYLINT_WINDOWS_SKIP, file=sys.stderr)
-    return True
+    # Retained as a routing seam for callers and tests; every native host now
+    # runs the custom late lint, including Windows.
+    return False
 
 
 def lint_dylint_only():
-    """Run workspace dylint, retrying after alias repair if cargo-dylint misses it."""
-    if skip_dylint_on_windows():
-        return 0
-
-    if which("cargo-dylint") is None:
-        print(
-            "cargo-dylint is required for workspace linting. Install with "
-            "'cargo install cargo-dylint dylint-link'.",
-            file=sys.stderr,
-        )
+    """Run the pinned, published Dylint toolchain on this native host."""
+    if which("soldr") is None:
+        print("soldr is required for Dylint; install it globally", file=sys.stderr)
         return 1
-
-    result = ensure_dylint_components()
-    if result != 0:
-        return result
-
-    dylint_cmd = dylint_command()
-
-    # cargo-dylint expects libraries on disk as `<name>@<toolchain>.<ext>` but
-    # cargo emits them as bare `<name>.<ext>`. Each freshly-built library
-    # therefore fails the first time it runs. After every build cycle we
-    # alias the just-built libraries and retry. With N dylints in the
-    # workspace the worst case is N+1 invocations — each retry compiles the
-    # next library fresh, so we loop until no new aliases need creating.
-    max_attempts = len(dylint_manifests()) + 1
-    last_result = None
-    for attempt in range(1, max_attempts + 1):
-        capture = attempt < max_attempts
+    env = self_build_env()
+    env.pop("RUSTFLAGS", None)  # Preserve each lint crate's dylint-link config.
+    env.pop("RUSTUP_TOOLCHAIN", None)  # setup-soldr exports stable for CI.
+    env["SOLDR_DYLINT_TOOLCHAIN"] = DYLINT_TOOLCHAIN
+    env["SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS"] = "1"
+    for command in (
+        ["soldr", "dylint", "prepare"],
+        ["soldr", "dylint", "--all", "--", "--workspace", "--lib", "--bins"],
+    ):
         result = subprocess.run(
-            dylint_cmd,
+            command,
             text=True,
             encoding="utf-8",
             errors="replace",
             cwd=str(SCRIPT_DIR),
-            env=dylint_env(),
-            capture_output=capture,
+            env=env,
         )
-        if capture:
-            sys.stdout.write(result.stdout or "")
-            sys.stderr.write(result.stderr or "")
-        last_result = result
-        if result.returncode == 0:
-            break
-        if not ensure_dylint_aliases():
-            # No new aliases to create — the failure isn't a missing-alias
-            # one, so further retries won't help.
-            break
-    return last_result.returncode if last_result is not None else 1
+        if result.returncode != 0:
+            return result.returncode
+    return 0
 
 
 def detect_crate(file_path):
@@ -278,7 +250,7 @@ def lint_single_file(file_path):
 
 
 def lint_workspace():
-    """Full workspace lint: fmt check + clippy + doc check."""
+    """Full workspace lint: fmt check, clippy, Dylint, and doc check."""
     result = run_cmd(cargo_command("fmt", "--all", "--check"))
     if result.returncode != 0:
         print("Formatting issues found. Run './lint --fix' to auto-fix.", file=sys.stderr)
