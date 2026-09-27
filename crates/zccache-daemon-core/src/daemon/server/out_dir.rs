@@ -17,6 +17,7 @@ struct PathOnlyCertificate<'a> {
     version: &'a str,
     sources: SourceAttestation<'a>,
     generated_name: &'a str,
+    generated_sha256: &'a str,
     required_includes: &'a [&'a str],
     cache_value: &'a str,
 }
@@ -47,6 +48,7 @@ const LIBSQLITE3_SYS_CERTIFICATE: PathOnlyCertificate<'static> = PathOnlyCertifi
     version: "0.30.1",
     sources: SourceAttestation::Listed(LIBSQLITE3_SYS_SOURCES),
     generated_name: "bindgen.rs",
+    generated_sha256: "8a77e8d566d1637a551ab4e35837e016f6132aa64e9c92fd07b1039898734559",
     required_includes: &["src/error.rs"],
     cache_value: PATH_ONLY_OUT_DIR_VALUE,
 };
@@ -57,6 +59,7 @@ const SERDE_CORE_CERTIFICATE: PathOnlyCertificate<'static> = PathOnlyCertificate
         "cee65f0f50fc6839a93d386652a2c5b75ad44df80c80541b9dba892749042ba1",
     ),
     generated_name: "private.rs",
+    generated_sha256: "27ad1b5fb4eebeb1da6419cbfad3ac1922ed1d817fcbab0a1dae1bdfd38d8307",
     required_includes: &[],
     cache_value: "zccache:path-only-out-dir:serde_core-1.0.228:v1",
 };
@@ -67,6 +70,7 @@ const SERDE_CERTIFICATE: PathOnlyCertificate<'static> = PathOnlyCertificate {
         "1e12c2c58a2c172af6b651a6e10e1837259adffdb3e4f44fdab39123562b540b",
     ),
     generated_name: "private.rs",
+    generated_sha256: "f8e9470772811a1bdcd201fb21e14cbf37a57d192b38cd98f66bd4a83442c26b",
     required_includes: &[],
     cache_value: "zccache:path-only-out-dir:serde-1.0.228:v1",
 };
@@ -187,7 +191,34 @@ fn path_only_certificate_matches(
         return false;
     }
     let generated = out_dir.join(certificate.generated_name);
-    if !resolved_includes.contains(&NormalizedPath::new(&generated)) {
+    let generated_path = NormalizedPath::new(&generated);
+    if !resolved_includes.contains(&generated_path) {
+        return false;
+    }
+    // The generated file can include another module without spelling OUT_DIR.
+    // The dep-info rebase handles only the generated path, so every other
+    // resolved include must be covered by the attested package sources.
+    if resolved_includes.iter().any(|include| {
+        if include == &generated_path {
+            return false;
+        }
+        let attested = match &certificate.sources {
+            SourceAttestation::Listed(files) => files.iter().any(|(relative, _)| {
+                include == &NormalizedPath::new(manifest.join(relative))
+            }),
+            SourceAttestation::RustTreeSha256(_) => include
+                .as_path()
+                .strip_prefix(manifest)
+                .ok()
+                .is_some_and(|relative| {
+                    relative.extension().is_some_and(|extension| extension == "rs")
+                        && !relative.components().any(|component| {
+                            matches!(component, std::path::Component::Normal(name) if name == "target" || name == ".git")
+                        })
+                }),
+        };
+        !attested
+    }) {
         return false;
     }
     if certificate
@@ -200,6 +231,11 @@ fn path_only_certificate_matches(
     let Ok(generated_bytes) = std::fs::read(&generated) else {
         return false;
     };
+    // Exact generated output attestation closes lexical bypasses such as
+    // `env ! ("OUT\u{5f}DIR")` that a byte blacklist cannot recognize.
+    if format!("{:x}", Sha256::digest(&generated_bytes)) != certificate.generated_sha256 {
+        return false;
+    }
     // The build script may select/generate different bindings. Their bytes
     // remain in the depgraph key, but refuse a generated macro that could
     // read or embed OUT_DIR independently of the audited source line.
@@ -283,7 +319,7 @@ mod tests {
     #[test]
     fn serde_style_source_tree_certificate_rejects_modified_source() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path();
+        let root = temp.path().join("crate");
         let source = root.join("src/lib.rs");
         let generated = root.join("target/out/private.rs");
         write(
@@ -292,12 +328,14 @@ mod tests {
         );
         write(&root.join("build.rs"), "fn main() {}\n");
         write(&generated, "pub const PRIVATE: u32 = 7;\n");
-        let tree_digest = rust_source_tree_sha256(root).expect("source tree digest");
+        let generated_digest = format!("{:x}", Sha256::digest(b"pub const PRIVATE: u32 = 7;\n"));
+        let tree_digest = rust_source_tree_sha256(&root).expect("source tree digest");
         let certificate = PathOnlyCertificate {
             package_name: "serde-style-test",
             version: "0.1.0",
             sources: SourceAttestation::RustTreeSha256(&tree_digest),
             generated_name: "private.rs",
+            generated_sha256: &generated_digest,
             required_includes: &[],
             cache_value: "zccache:path-only-out-dir:serde-style-test:v1",
         };
@@ -325,6 +363,47 @@ mod tests {
             &includes,
             &certificate,
         ));
+        let sibling = root.join("target/out/sibling.rs");
+        write(&generated, "mod sibling;\n");
+        write(&sibling, "pub const SIBLING: u32 = 9;\n");
+        assert!(
+            !path_only_certificate_matches(
+                Some(&env),
+                &source,
+                &[
+                    NormalizedPath::new(&generated),
+                    NormalizedPath::new(&sibling)
+                ],
+                &certificate,
+            ),
+            "a sibling include under OUT_DIR cannot be rebased by this certificate"
+        );
+        let external = temp.path().join("shared.rs");
+        write(&external, "pub const PATH: &str = env!(\"OUT_DIR\");\n");
+        write(
+            &generated,
+            &format!("#[path = \"{}\"] mod shared;\n", external.display()),
+        );
+        assert!(
+            !path_only_certificate_matches(
+                Some(&env),
+                &source,
+                &[
+                    NormalizedPath::new(&generated),
+                    NormalizedPath::new(&external)
+                ],
+                &certificate,
+            ),
+            "an unaudited external module may embed OUT_DIR"
+        );
+        write(
+            &generated,
+            r#"pub const PATH: &str = env ! ("OUT\u{5f}DIR");"#,
+        );
+        assert!(
+            !path_only_certificate_matches(Some(&env), &source, &includes, &certificate),
+            "generated Rust can spell env! and OUT_DIR without literal substrings"
+        );
         write(&source, "pub const PATH: &str = env!(\"OUT_DIR\");\n");
         assert!(!path_only_certificate_matches(
             Some(&env),
@@ -346,6 +425,7 @@ mod tests {
         let source_digest = format!("{:x}", Sha256::digest(source.as_bytes()));
         let error_digest = format!("{:x}", Sha256::digest(error.as_bytes()));
         let build_digest = format!("{:x}", Sha256::digest(build.as_bytes()));
+        let generated_digest = format!("{:x}", Sha256::digest(b"pub const GENERATED: u32 = 7;\n"));
         let sources = [
             ("src/lib.rs", source_digest.as_str()),
             ("src/error.rs", error_digest.as_str()),
@@ -356,6 +436,7 @@ mod tests {
             version: "0.1.0",
             sources: SourceAttestation::Listed(&sources),
             generated_name: "generated.rs",
+            generated_sha256: &generated_digest,
             required_includes: &["src/error.rs"],
             cache_value: "zccache:path-only-out-dir:test:v1",
         };

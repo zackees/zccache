@@ -222,6 +222,12 @@ pub(in crate::daemon::server) fn rehydrate_rustc_out_dir_depfile(
     })?;
     let old_out_dir = std::str::from_utf8(old_out_dir)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if !Path::new(old_out_dir).is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rustc dep-info OUT_DIR is not absolute",
+        ));
+    }
     let current = current_out_dir.to_string_lossy();
     if old_out_dir == current {
         return Ok(());
@@ -231,6 +237,7 @@ pub(in crate::daemon::server) fn rehydrate_rustc_out_dir_depfile(
     let old_generated = old_generated.to_string_lossy();
     let new_generated = new_generated.to_string_lossy();
     let mut rewritten = Vec::with_capacity(bytes.len() + current.len());
+    let mut saw_generated_path = false;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
         if line.starts_with(PREFIX) {
             rewritten.extend_from_slice(PREFIX);
@@ -241,18 +248,16 @@ pub(in crate::daemon::server) fn rehydrate_rustc_out_dir_depfile(
                 rewritten.push(b'\n');
             }
         } else {
-            rewritten.extend_from_slice(&replace_make_depfile_path(
-                line,
-                old_generated.as_bytes(),
-                new_generated.as_bytes(),
-            ));
+            let rebased_line =
+                replace_make_depfile_path(line, old_generated.as_bytes(), new_generated.as_bytes());
+            saw_generated_path |= rebased_line != line;
+            rewritten.extend_from_slice(&rebased_line);
         }
     }
-    if rewritten == bytes
-        || rewritten
-            .windows(old_out_dir.len())
-            .any(|w| w == old_out_dir.as_bytes())
-    {
+    // The certificate attests that this generated include is the only
+    // OUT_DIR-dependent input. The new physical path may itself contain the
+    // old directory's text, so a raw substring search is not a valid check.
+    if !saw_generated_path || rewritten == bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "rustc dep-info OUT_DIR rebase was incomplete",
@@ -407,6 +412,45 @@ mod tests {
         assert!(text.contains(&format!("{b}/bindgen.rs")));
         assert!(text.contains(&format!("# env-dep:OUT_DIR={b}")));
         assert!(!text.contains(a), "no A path may leak into B dep-info");
+    }
+
+    #[test]
+    fn out_dir_depinfo_rebase_allows_new_path_containing_old_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let depfile = temp.path().join("libsqlite3_sys.d");
+        let a = "/checkout/target/build/libsqlite3-sys/out";
+        let b = "/checkout/target/build/libsqlite3-sys/out/child";
+        std::fs::write(
+            &depfile,
+            format!("libsqlite3_sys.d: {a}/bindgen.rs\n# env-dep:OUT_DIR={a}\n"),
+        )
+        .expect("dep-info fixture");
+        rehydrate_rustc_out_dir_depfile(&depfile, Path::new(b), "bindgen.rs")
+            .expect("overlapping path should still rebase");
+        let text = std::fs::read_to_string(&depfile).expect("rebased dep-info");
+        assert_eq!(
+            text,
+            format!("libsqlite3_sys.d: {b}/bindgen.rs\n# env-dep:OUT_DIR={b}\n")
+        );
+    }
+
+    #[test]
+    fn out_dir_depinfo_rebase_fails_closed_without_generated_dependency() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let depfile = temp.path().join("libsqlite3_sys.d");
+        let original =
+            b"libsqlite3_sys.d: /checkout/src/lib.rs\n# env-dep:OUT_DIR=/checkout-a/out\n";
+        std::fs::write(&depfile, original).expect("dep-info fixture");
+        assert!(rehydrate_rustc_out_dir_depfile(
+            &depfile,
+            Path::new("/checkout-b/out"),
+            "bindgen.rs"
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read(&depfile).expect("original dep-info"),
+            original
+        );
     }
 
     #[test]
