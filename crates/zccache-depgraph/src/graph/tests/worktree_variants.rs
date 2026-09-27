@@ -158,7 +158,7 @@ fn equivalent_rustc_worktree_rebases_env_dependencies() {
 /// should reuse the already-compiled artifact, rather than treating the
 /// physical `OUT_DIR` spelling as a changed output input.
 #[test]
-fn perf_out_dir_include_only_reuses_equivalent_worktree() {
+fn perf_out_dir_include_only_reuses_equivalent_worktree_with_certificate() {
     let temp = tempfile::tempdir().expect("tempdir");
     let graph = DepGraph::new();
     let logical_key = ContextKey::from_raw([0x49; 32]);
@@ -186,6 +186,11 @@ fn perf_out_dir_include_only_reuses_equivalent_worktree() {
         out_dirs.push(out_dir.to_string_lossy().into_owned());
         roots.push(root);
     }
+    assert_ne!(out_dirs[0], out_dirs[1]);
+
+    // The daemon supplies this stable value only after validating an audited
+    // include-only crate. The graph must still key generated input bytes.
+    let certified_out_dir = || Some("zccache:path-only-out-dir:test:v1".to_string());
 
     let hash_file = |path: &Path| Some(hash_bytes(&std::fs::read(path).expect("input file")));
     let a = graph.register_rustc_with_key_and_root_result(
@@ -208,7 +213,7 @@ fn perf_out_dir_include_only_reuses_equivalent_worktree() {
             },
             hash_file,
             &["OUT_DIR".to_string()],
-            |_| Some(out_dirs[0].clone()),
+            |_| certified_out_dir(),
         )
         .expect("A must become warm");
     let b = graph.register_rustc_with_key_and_root_result(
@@ -225,21 +230,14 @@ fn perf_out_dir_include_only_reuses_equivalent_worktree() {
     assert_eq!(b.state, ContextState::Warm);
 
     assert!(matches!(
-        graph.check_with_env(&b.map_key, |_| true, hash_file, |_| {
-            Some(out_dirs[1].clone())
-        }),
+        graph.check_with_env(&b.map_key, |_| true, hash_file, |_| certified_out_dir()),
         CacheVerdict::Hit { artifact_key } if artifact_key == artifact_a
     ));
 
     std::fs::write(&generated_paths[1], "pub const BINDING: u32 = 8;\n")
         .expect("change generated input");
     assert!(matches!(
-        graph.check_with_env(
-            &b.map_key,
-            |_| true,
-            hash_file,
-            |_| { Some(out_dirs[1].clone()) }
-        ),
+        graph.check_with_env(&b.map_key, |_| true, hash_file, |_| certified_out_dir()),
         CacheVerdict::HeadersChanged { .. }
     ));
 }

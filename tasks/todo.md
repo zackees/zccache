@@ -1248,3 +1248,10 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Add a deterministic cache-hit regression for hardlink-registration failure and keep the safe copy tier observable.
 - [x] Make a failed hardlink registration fall back to an independent copy with an explicit warning; retain digest verification and all hit-output assertions.
 - [ ] Run focused tests, formatting, warnings-denied checks, review, then push a focused PR and verify Windows plus downstream Soldr replay before release/pin/closure.
+# #1749 rustc OUT_DIR cross-worktree reuse
+
+- [x] Capture the baseline A/B artifacts and prove which include-only outputs are byte-equivalent.
+- [x] Add a focused RED test for an include-only `OUT_DIR` compile across two roots, plus negative tests for an embedded path and changed generated file.
+- [ ] Implement a fail-closed proof/opt-in path that restores safe hits without dropping general rustc env-dep soundness.
+- [ ] Confirm the sqlite-link worktree fixture's hits, run the eight-cell Docker matrix and relevant Rust/Windows checks.
+- [ ] Review, push, validate, and merge a PR that resolves #1749.

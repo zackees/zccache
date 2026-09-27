@@ -5,6 +5,28 @@
 //! miss-profile emitters.
 
 use super::super::super::*;
+use crate::daemon::compile_journal::miss_reason;
+
+pub(super) fn miss_reason_for_verdict(
+    verdict: &crate::depgraph::CacheVerdict,
+    diagnostic: &str,
+) -> &'static str {
+    match verdict {
+        crate::depgraph::CacheVerdict::Hit { .. } => miss_reason::NO_ARTIFACT_FOR_KEY,
+        crate::depgraph::CacheVerdict::SourceChanged { .. }
+        | crate::depgraph::CacheVerdict::HeadersChanged { .. }
+        | crate::depgraph::CacheVerdict::NeedsPreprocessor => {
+            miss_reason::INPUT_FINGERPRINT_MISMATCH
+        }
+        crate::depgraph::CacheVerdict::Cold
+            if diagnostic.starts_with("rustc env dependency values changed") =>
+        {
+            // An equivalent warm rustc context exists; its env input changed.
+            miss_reason::INPUT_FINGERPRINT_MISMATCH
+        }
+        crate::depgraph::CacheVerdict::Cold => miss_reason::CONTEXT_NOT_FOUND,
+    }
+}
 
 pub(super) struct HashVerifyOutcome {
     pub(super) hash_map: HashMap<NormalizedPath, ContentHash>,
@@ -96,14 +118,16 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
         verdict = crate::depgraph::CacheVerdict::Cold;
         diag_reason = "cold_skip".to_string();
     } else {
+        let includes = state
+            .dep_graph
+            .load()
+            .get_includes(&context_key)
+            .unwrap_or_default();
         // Hash includes + force-includes in parallel (PCH-aware).
         let headers_count: usize;
         {
             use rayon::prelude::*;
-            let includes = state.dep_graph.load().get_includes(&context_key);
-            let include_iter = includes
-                .iter()
-                .flat_map(|v| v.iter().map(|h| (h, "header_hash_fail")));
+            let include_iter = includes.iter().map(|h| (h, "header_hash_fail"));
             let force_iter = ctx
                 .force_includes
                 .iter()
@@ -169,7 +193,7 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
         // with the stored key.  Skips redundant journal freshness checks
         // and path clones that check_diagnostic performs.
         let env_value = |name: &str| -> Option<String> {
-            rustc_env_dep_value(client_env, name).map(str::to_owned)
+            rustc_env_dep_cache_value(client_env, name, source_path, &includes)
         };
         if let Some(artifact_key) = state.dep_graph.load().try_fast_hit_with_env(
             &context_key,
@@ -197,7 +221,7 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
                     &context_key,
                     is_fresh,
                     get_hash,
-                    |name| rustc_env_dep_value(client_env, name).map(str::to_owned),
+                    |name| rustc_env_dep_cache_value(client_env, name, source_path, &includes),
                 )
             };
             depgraph_check_ns = t4.elapsed().as_nanos() as u64;
@@ -214,4 +238,24 @@ pub(super) fn hash_and_verify(input: HashVerifyInput<'_>) -> HashSourceOutcome {
         verdict,
         diag_reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rustc_env_dependency_change_is_an_input_mismatch() {
+        assert_eq!(
+            miss_reason_for_verdict(
+                &crate::depgraph::CacheVerdict::Cold,
+                "rustc env dependency values changed; recompile forced"
+            ),
+            miss_reason::INPUT_FINGERPRINT_MISMATCH
+        );
+        assert_eq!(
+            miss_reason_for_verdict(&crate::depgraph::CacheVerdict::Cold, "cold_skip"),
+            miss_reason::CONTEXT_NOT_FOUND
+        );
+    }
 }

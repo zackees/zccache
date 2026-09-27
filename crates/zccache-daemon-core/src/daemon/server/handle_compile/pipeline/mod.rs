@@ -34,7 +34,9 @@ use super::hit_branches::{
 use super::request::CompileRequest;
 
 use compile_exec::{run_compile_exec, CompileExecOutcome, CompileExecRequest, CompileExecResult};
-use hash_verify::{hash_and_verify, HashSourceOutcome, HashVerifyInput, HashVerifyOutcome};
+use hash_verify::{
+    hash_and_verify, miss_reason_for_verdict, HashSourceOutcome, HashVerifyInput, HashVerifyOutcome,
+};
 use request_prep::{
     begin_prepared_request, discover_request_system_includes, invalidate_missing_depgraph_artifact,
     parse_single_compile_request, prepare_request_arguments, record_dylint_input_hash,
@@ -503,15 +505,7 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
             diag_path_remap_state(client_env.as_deref(), worktree_root.is_some()),
         ),
     );
-    record_miss_reason(match &verdict {
-        crate::depgraph::CacheVerdict::Hit { .. } => miss_reason::NO_ARTIFACT_FOR_KEY,
-        crate::depgraph::CacheVerdict::SourceChanged { .. }
-        | crate::depgraph::CacheVerdict::HeadersChanged { .. }
-        | crate::depgraph::CacheVerdict::NeedsPreprocessor => {
-            miss_reason::INPUT_FINGERPRINT_MISMATCH
-        }
-        crate::depgraph::CacheVerdict::Cold => miss_reason::CONTEXT_NOT_FOUND,
-    });
+    record_miss_reason(miss_reason_for_verdict(&verdict, &diag_reason));
     match verdict {
         crate::depgraph::CacheVerdict::Hit { artifact_key } => {
             let artifact_key_hex = artifact_key.hash().to_hex();

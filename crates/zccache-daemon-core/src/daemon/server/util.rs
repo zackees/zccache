@@ -198,7 +198,7 @@ pub(super) fn context_files_and_env_fresh(
     since: Clock,
     client_env: Option<&[(String, String)]>,
 ) -> bool {
-    if !context_env_deps_fresh(state, context_key, client_env) {
+    if !context_env_deps_fresh(state, context_key, source_path, client_env) {
         return false;
     }
     context_files_fresh(state, context_key, source_path, since)
@@ -210,14 +210,20 @@ pub(super) fn context_files_and_env_fresh(
 pub(super) fn context_env_deps_fresh(
     state: &SharedState,
     context_key: &ContextKey,
+    source_path: &Path,
     client_env: Option<&[(String, String)]>,
 ) -> bool {
     let Some(deps) = state.dep_graph.load().get_rustc_env_deps(context_key) else {
         return true;
     };
+    let includes = state
+        .dep_graph
+        .load()
+        .get_includes(context_key)
+        .unwrap_or_default();
     deps.iter().all(|(name, recorded_hash)| {
-        let current = rustc_env_dep_value(client_env, name);
-        crate::depgraph::hash_env_dep_value(current) == *recorded_hash
+        let current = rustc_env_dep_cache_value(client_env, name, source_path, &includes);
+        crate::depgraph::hash_env_dep_value(current.as_deref()) == *recorded_hash
     })
 }
 

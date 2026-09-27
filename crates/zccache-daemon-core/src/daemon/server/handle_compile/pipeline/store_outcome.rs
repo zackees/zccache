@@ -369,7 +369,8 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     let rustc_env_dep_values: Vec<(String, Option<String>)> = rustc_env_dep_names
         .iter()
         .map(|name| {
-            let value = rustc_env_dep_value(client_env, name).map(str::to_owned);
+            let value =
+                rustc_env_dep_cache_value(client_env, name, source_path, &scan_result.resolved);
             (name.clone(), value)
         })
         .collect();

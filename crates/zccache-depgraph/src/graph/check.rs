@@ -577,6 +577,7 @@ impl DepGraph {
             }
         }
 
+        let mut rustc_env_changed = false;
         let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
             let Some(mut extern_hashes) = collect_rustc_extern_hashes(externs, &get_hash) else {
                 self.misses.fetch_add(1, Ordering::Relaxed);
@@ -590,6 +591,7 @@ impl DepGraph {
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
             let mut env_hashes = collect_rustc_env_hashes(&entry.rustc_env_deps, &env_value);
+            rustc_env_changed = env_hashes != entry.rustc_env_deps;
             fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
         } else {
             compute_artifact_key_with(
@@ -646,6 +648,14 @@ impl DepGraph {
                          (journal reported fresh; recompile forced to refresh \
                          resolved_includes and store under the write-side key)"
                     ),
+                );
+            }
+
+            if rustc_env_changed {
+                self.misses.fetch_add(1, Ordering::Relaxed);
+                return (
+                    CacheVerdict::Cold,
+                    "rustc env dependency values changed; recompile forced".to_string(),
                 );
             }
 

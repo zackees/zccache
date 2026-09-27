@@ -204,6 +204,7 @@ mod link_helpers;
 mod link_process;
 mod loaders;
 mod maintenance_schedule;
+mod out_dir;
 mod pch;
 mod pending_writes;
 pub(crate) mod persist;
@@ -247,6 +248,7 @@ use link_helpers::*;
 #[cfg(test)]
 use link_process::run_post_link_deploy_hook;
 use maintenance_schedule::*;
+use out_dir::*;
 use pch::*;
 use persist::*;
 
