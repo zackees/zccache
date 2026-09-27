@@ -67,6 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        if: ${{ github.event_name != 'pull_request' || github.head_ref != 'probe/dylint-cook-shared-20260926' || inputs.os != 'macos-15' }}
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: auto
@@ -87,6 +88,23 @@ jobs:
           verify-compile-cache: warn
           # setup-soldr#305: skip ~7-11s `rustup toolchain install` on warm
           # runs by restoring the toolchain from a tiny per-platform cache.
+          solo-toolchain-cache: true
+      - name: Set up macOS test lane without build-cache (restore-only probe)
+        if: ${{ github.event_name == 'pull_request' && github.head_ref == 'probe/dylint-cook-shared-20260926' && inputs.os == 'macos-15' }}
+        uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        with:
+          cook-delta: false # per-commit delta layer off (setup-soldr#528)
+          save-cache: false
+          zccache-seed-strict: true
+          toolchain: 1.95.0
+          cache: true
+          build-cache: false
+          ci-tests: true
+          linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
+          seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
+          verify-compile-cache: warn
           solo-toolchain-cache: true
       # Platform Test runs unit tests in libraries and binaries only — it
       # intentionally does NOT compile the integration test binaries under
