@@ -48,7 +48,7 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     pub(super) current_depfile_dest: Option<NormalizedPath>,
     /// Physical OUT_DIR of the current rustc request; used only to rebase
     /// dep-info after a cross-worktree hit, never to choose artifact bytes.
-    pub(super) current_rustc_out_dir: Option<String>,
+    pub(super) current_rustc_out_dir: Option<CertifiedOutDir>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -74,7 +74,7 @@ pub(super) struct OwnedCachedHitMaterializeRequest {
     pub(super) output_path: NormalizedPath,
     pub(super) secondary_output_dir: NormalizedPath,
     pub(super) current_depfile_dest: Option<NormalizedPath>,
-    pub(super) current_rustc_out_dir: Option<String>,
+    pub(super) current_rustc_out_dir: Option<CertifiedOutDir>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -458,10 +458,12 @@ pub(super) fn materialize_cached_compile_hit(
                 // (soft miss — the shared artifact stays valid).
                 return Err(CachedHitFailure::DestinationWrite);
             }
-            if let Some(current_out_dir) = current_rustc_out_dir.as_deref() {
-                if let Err(error) =
-                    rehydrate_rustc_out_dir_depfile(target.as_path(), Path::new(current_out_dir))
-                {
+            if let Some(current_out_dir) = current_rustc_out_dir.as_ref() {
+                if let Err(error) = rehydrate_rustc_out_dir_depfile(
+                    target.as_path(),
+                    Path::new(&current_out_dir.path),
+                    current_out_dir.generated_name,
+                ) {
                     write_session_log(
                         &state.sessions,
                         sid,
