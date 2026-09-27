@@ -64,3 +64,20 @@ runs:
           throw new Error(
             `no successful cache pre-prune for ${expectedSha} after ${maxAttempts} checks; refusing cache writes`,
           );
+    - name: Normalize Cargo.lock to the Windows cache identity
+      if: runner.os == 'Windows' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      shell: pwsh
+      run: |
+        git config --local core.autocrlf true
+        git checkout-index --force -- Cargo.lock
+        if ($LASTEXITCODE -ne 0) {
+          throw "could not normalize Cargo.lock to the Windows cache identity"
+        }
+        $lock = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes("Cargo.lock"))
+        if ($lock -notmatch "`r`n" -or $lock -match "(?<!`r)`n") {
+          throw "Cargo.lock did not normalize to the required CRLF cache identity"
+        }
+        git diff --exit-code -- Cargo.lock
+        if ($LASTEXITCODE -ne 0) {
+          throw "Cargo.lock normalization changed its tracked contents"
+        }

@@ -125,6 +125,7 @@ jobs:
           cache: true
           linker: fast
           prebuild-deps: soldr-cook
+          prebuild-deps-flags: "--release"
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
 
       - name: Build native Python test artifacts

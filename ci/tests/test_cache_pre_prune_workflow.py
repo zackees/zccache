@@ -109,6 +109,250 @@ def test_cook_prune_fails_closed_when_a_platform_hash_is_missing() -> None:
     assert plan["keep"] == [1]
 
 
+def test_transition_pre_prune_uses_live_usage_and_fails_before_any_delete_on_overrun() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/cache-pre-prune.yml").read_text(encoding="utf-8")
+    )
+    script = next(
+        step["with"]["script"]
+        for step in workflow["jobs"]["pre-prune"]["steps"]
+        if step.get("name") == "Forecast and retire old-lock cache generations"
+    )
+    assert "before.usageBytes" in script and "before.listedBytes" in script
+    assert "planLockTransitionPrePrune" in script
+    assert "if (!plan.ok)" in script
+    assert script.index("if (!plan.ok)") < script.index("deleteActionsCacheById")
+    assert "convergeInventory(stale.map((cache) => cache.id))" in script
+
+
+def test_debug_cook_producers_use_fnone_and_native_python_keeps_release_profile() -> None:
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    miss_steps = ci["jobs"]["miss-overhead"]["steps"]
+    miss_setup = next(
+        step for step in miss_steps if str(step.get("uses", "")).startswith("zackees/setup-soldr@")
+    )
+    assert miss_setup["with"]["prebuild-deps"] == "soldr-cook"
+    assert miss_setup["with"]["prebuild-deps-flags"] == ""
+
+    reflink = yaml.safe_load(
+        (ROOT / ".github/workflows/reflink-e2e.yml").read_text(encoding="utf-8")
+    )
+    reflink_setup = next(
+        step for step in reflink["jobs"]["btrfs"]["steps"]
+        if str(step.get("uses", "")).startswith("zackees/setup-soldr@")
+    )
+    assert reflink_setup["with"]["prebuild-deps"] == "soldr-cook"
+    assert reflink_setup["with"]["prebuild-deps-flags"] == ""
+
+    python = yaml.safe_load(
+        (ROOT / ".github/workflows/python-tests.yml").read_text(encoding="utf-8")
+    )
+    native_setup = next(
+        step for step in python["jobs"]["native-pytest"]["steps"]
+        if str(step.get("uses", "")).startswith("zackees/setup-soldr@")
+    )
+    assert native_setup["with"]["prebuild-deps"] == "soldr-cook"
+    assert native_setup["with"]["prebuild-deps-flags"] == "--release"
+    planner = (ROOT / "ci/cache_cleanup_plan.js").read_text(encoding="utf-8")
+    assert r"^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i" not in planner
+
+
+def test_lock_transition_forecast_selects_only_measured_buildcache_fallbacks() -> None:
+    caches = [
+        {"id": 1, "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l1111111111111111-soldrv0.9.23", "ref": "refs/heads/main", "size_in_bytes": 3_000_000_000, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 2, "key": "setup-soldr-cargoregistry-v1-linux-x64-1111111111111111-aaaaaaaaaaaaaaaa", "ref": "refs/heads/main", "size_in_bytes": 1_000_000_000, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 3, "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 695_272_185, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 4, "key": "setup-soldr-buildcache-v2-windows-x64-0a12db972fd789a0-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 563_360_821, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 5, "key": "setup-soldr-buildcache-v2-linux-arm64-6d40444a3fc5e4d0-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 326_918_007, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 6, "key": "setup-soldr-buildcache-v2-linux-x64-67ddfadb5b3c0042-check-linux-x86-musl-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 222_818_750, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 7, "key": "setup-soldr-buildcache-v2-linux-x64-f19152cfbd9e4599-check-linux-arm-musl-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 214_577_067, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 8, "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-2222222222222222", "ref": "refs/pull/123/merge", "size_in_bytes": 695_272_185, "created_at": "2026-01-01T00:00:00Z"},
+    ]
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const {caches}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(caches,{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},7_509_058_050,7_509_058_050)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps({"caches": caches}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+
+    assert plan["ok"] is True
+    assert set(plan["deleteIds"]) == {1, 2, 3, 4, 5}
+    assert plan["selectedBuildCacheIds"] == [3, 4, 5]
+    assert plan["projectedPeakBytes"] <= 9_100_000_000
+    assert plan["projectedPeakBytes"] == 9_066_453_867
+
+
+def test_lock_transition_forecast_fails_closed_for_unknown_buildcache_key() -> None:
+    caches = [
+        {"id": 1, "key": "setup-soldr-buildcache-v3-linux-x64-unknown", "ref": "refs/heads/main", "size_in_bytes": 100, "created_at": "2026-01-01T00:00:00Z"}
+    ]
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const {caches}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(caches,{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},100,100)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps({"caches": caches}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["ok"] is False
+    assert plan["deleteIds"] == []
+
+
+def test_lock_transition_forecast_fails_closed_above_peak_target() -> None:
+    caches = [
+        {"id": 1, "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l1111111111111111-soldrv0.9.23", "ref": "refs/heads/main", "size_in_bytes": 3_000_000_000, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 2, "key": "setup-soldr-cargoregistry-v1-linux-x64-1111111111111111-aaaaaaaaaaaaaaaa", "ref": "refs/heads/main", "size_in_bytes": 1_000_000_000, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 3, "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 695_272_185, "created_at": "2026-01-01T00:00:00Z"},
+    ]
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const {caches}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(caches,{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},9_100_000_000,9_100_000_000,9_000_000_000)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps({"caches": caches}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["ok"] is False
+    assert plan["deleteIds"] == []
+    assert plan["projectedPeakBytes"] > plan["targetBytes"]
+
+
+def test_transition_forecast_uses_maximum_live_cache_usage_view() -> None:
+    script = (
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const p=planLockTransitionPrePrune([],{linux:'1111111111111111',macos:'1111111111111111',windows:['1111111111111111']},9_200_000_000,7_500_000_000);"
+        "process.stdout.write(JSON.stringify(p));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["ok"] is False
+    assert plan["currentBytes"] == 9_200_000_000
+    assert plan["deleteIds"] == []
+
+
+def test_transition_forecast_keeps_case_sensitive_cook_suffix_profiles_distinct() -> None:
+    caches = [
+        {"id": 1, "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l1111111111111111-soldrv0.9.23-MyJob", "ref": "refs/heads/main", "size_in_bytes": 100, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 2, "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l2222222222222222-soldrv0.9.23-myjob", "ref": "refs/heads/main", "size_in_bytes": 200, "created_at": "2026-01-02T00:00:00Z"},
+    ]
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const {caches}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(caches,{linux:'2222222222222222',macos:'2222222222222222',windows:['2222222222222222']},1000,1000)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps({"caches": caches}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["ok"] is True
+    assert plan["staleCookIds"] == [1]
+    assert plan["estimatedNewBytes"] == 3_142_946_930
+
+
+def test_windows_lf_cache_is_stale_when_main_writers_normalize_to_crlf() -> None:
+    caches = [
+        {"id": 1, "key": "cook-base-v2-windows-x64-msvc-rustc1.95.0-fnone-l1111111111111111-soldrv0.9.23", "ref": "refs/heads/main", "size_in_bytes": 100, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 3, "key": "setup-soldr-buildcache-v2-windows-x64-0a12db972fd789a0-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 300, "created_at": "2026-01-01T00:00:00Z"},
+    ]
+    script = (
+        "const fs=require('node:fs');"
+        "const {planCountPrune,planCookBasePrune,planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const {caches}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "const current={linux:'3333333333333333',macos:'3333333333333333',windows:['2222222222222222']};"
+        "const currentBuild={id:4,key:'setup-soldr-buildcache-v2-windows-x64-0a12db972fd789a0-2222222222222222',ref:'refs/heads/main',size_in_bytes:400,created_at:'2026-01-02T00:00:00Z'};"
+        "process.stdout.write(JSON.stringify({post:planCountPrune([...caches,currentBuild],1,current),cook:planCookBasePrune(caches,current),transition:planLockTransitionPrePrune(caches,current,1000,1000)}));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps({"caches": caches}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plans = json.loads(result.stdout)
+    assert {cache["id"] for cache in plans["post"]["stale"]} == {3}
+    assert {cache["id"] for cache in plans["cook"]["stale"]} == {1}
+    assert plans["transition"]["staleCookIds"] == [1]
+    assert plans["transition"]["deleteIds"] == [1, 3]
+    assert plans["transition"]["estimatedNewBytes"] > 700_000_000
+
+
+def test_windows_main_cache_writer_normalizes_lock_after_waiter_before_writes() -> None:
+    action = yaml.safe_load(
+        (ROOT / ".github/actions/wait-cache-pre-prune/action.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    steps = action["runs"]["steps"]
+    wait_index = next(
+        i for i, step in enumerate(steps)
+        if step.get("name") == "Wait for the exact-SHA cache pre-prune run"
+    )
+    normalize_index = next(
+        i for i, step in enumerate(steps)
+        if step.get("name") == "Normalize Cargo.lock to the Windows cache identity"
+    )
+    normalize = steps[normalize_index]
+    assert wait_index < normalize_index
+    assert normalize["if"] == (
+        "runner.os == 'Windows' && github.event_name == 'push' "
+        "&& github.ref == 'refs/heads/main'"
+    )
+    assert "git config --local core.autocrlf true" in normalize["run"]
+    assert "git checkout-index --force -- Cargo.lock" in normalize["run"]
+    assert '"(?<!`r)`n"' in normalize["run"]
+    assert 'git diff --exit-code -- Cargo.lock' in normalize["run"]
+
+    pre_prune = yaml.safe_load(
+        (ROOT / ".github/workflows/cache-pre-prune.yml").read_text(encoding="utf-8")
+    )
+    cleanup = yaml.safe_load(
+        (ROOT / ".github/workflows/cache-cleanup.yml").read_text(encoding="utf-8")
+    )
+    forecast_step = next(
+        step for step in pre_prune["jobs"]["pre-prune"]["steps"]
+        if step.get("name") == "Forecast and retire old-lock cache generations"
+    )
+    cleanup_steps = [step for job in cleanup["jobs"].values() for step in job.get("steps", [])]
+    planner_step = next(
+        step for step in cleanup_steps
+        if step.get("name") == "Prune stale cache generations (keep newest per shape)"
+    )
+    assert "windows: [process.env.ROOT_LOCK_HASH_CRLF]" in forecast_step["with"]["script"]
+    assert "windows: [process.env.ROOT_LOCK_HASH_CRLF]" in planner_step["with"]["script"]
+
+
+
 def test_pre_prune_is_push_only_and_waiter_is_read_only_and_exact_sha() -> None:
     workflow = yaml.safe_load(
         (ROOT / ".github/workflows/cache-pre-prune.yml").read_text(encoding="utf-8")
@@ -165,7 +409,7 @@ def test_pre_prune_is_push_only_and_waiter_is_read_only_and_exact_sha() -> None:
     # within the 360m job cap; the exact-SHA waiter also exits by 355m.
     assert 640 * 30 / 60 + 2 * 10 + 15 <= 360
     assert 1420 * 15 / 60 < 360
-    retire = next(step for step in pre_prune if step.get("name") == "Retire old-lock cook bases")
+    retire = next(step for step in pre_prune if step.get("name") == "Forecast and retire old-lock cache generations")
     assert "error.status !== 404" in retire["with"]["script"]
     assert "convergeInventory(stale.map((cache) => cache.id))" in retire["with"]["script"]
 

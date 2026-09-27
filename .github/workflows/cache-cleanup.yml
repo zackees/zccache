@@ -241,16 +241,19 @@ jobs:
         with:
           script: |
             // Keep the newest generation of every live restore shape. The
-            // planner also retires two exact disabled families and prior
-            // Cargo.lock generations only after same-profile replacements
-            // exist on main; it never selects PR registry copies.
+            // planner also retires exact disabled families and prior
+            // Cargo.lock registry/build-cache generations only after a
+            // same-profile replacement exists on main; it never selects PR
+            // registry or build-cache copies.
             const { planCountPrune } = require(
               `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`
             );
             const currentRootLockHashes = {
               linux: process.env.ROOT_LOCK_HASH_LF,
               macos: process.env.ROOT_LOCK_HASH_LF,
-              windows: [process.env.ROOT_LOCK_HASH_LF, process.env.ROOT_LOCK_HASH_CRLF],
+              // Windows main cache writers normalize Cargo.lock to CRLF in
+              // the shared pre-prune waiter before setup-soldr runs.
+              windows: [process.env.ROOT_LOCK_HASH_CRLF],
             };
             if (
               !currentRootLockHashes.linux ||

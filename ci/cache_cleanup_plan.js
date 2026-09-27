@@ -12,12 +12,33 @@ const RETIRED_MAIN_PREFIXES = [
 ];
 
 const RETIRED_MAIN_PATTERNS = [
-  /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
   /^cook-base-v2-windows-x64-msvc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
   /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23-xdylint$/i,
   /^setup-soldr-buildcache-v2-linux-x64-032744c531163905-[0-9a-f]{16}$/i,
   /^setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
   /^setup-soldr-buildcache-v2-windows-arm64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
+];
+
+const LOCK_TRANSITION_TARGET_BYTES = 9_100_000_000;
+// Latest measured native-Python release cook archive was 1,093,942,322 B.
+// Reserve 1,120,000,000 B so small payload growth does not make the forecast
+// depend on that one archive being exactly repeatable.
+const NATIVE_PYTHON_F9_RESERVE_BYTES = 1_120_000_000;
+
+// Old-lock fallbacks deliberately retired at a lock transition. These are
+// the three measured large profiles selected to keep the full replacement
+// peak below the pre-prune target while retaining both 100%-hit musl caches.
+const TRANSITION_BUILD_CACHE_FALLBACKS = [
+  { os: "linux", arch: "x64", digest: "6d40444a3fc5e4d0", suffix: "" },
+  { os: "windows", arch: "x64", digest: "0a12db972fd789a0", suffix: "" },
+  { os: "linux", arch: "arm64", digest: "6d40444a3fc5e4d0", suffix: "" },
+];
+const TRANSITION_BUILD_CACHE_PROFILES = [
+  { os: "linux", arch: "x64", digest: "6d40444a3fc5e4d0", suffix: "", minimumBytes: 695_272_185 },
+  { os: "windows", arch: "x64", digest: "0a12db972fd789a0", suffix: "", minimumBytes: 563_360_821 },
+  { os: "linux", arch: "arm64", digest: "6d40444a3fc5e4d0", suffix: "", minimumBytes: 326_918_007 },
+  { os: "linux", arch: "x64", digest: "67ddfadb5b3c0042", suffix: "check-linux-x86-musl", minimumBytes: 222_818_750 },
+  { os: "linux", arch: "x64", digest: "f19152cfbd9e4599", suffix: "check-linux-arm-musl", minimumBytes: 214_577_067 },
 ];
 
 // Top-level workflow names which can persist cache data on a main push.
@@ -93,6 +114,11 @@ function isEligible(key) {
   );
 }
 
+function isRetiredMainKey(key) {
+  return RETIRED_MAIN_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+    RETIRED_MAIN_PATTERNS.some((pattern) => pattern.test(key));
+}
+
 function newestFirst(a, b) {
   const aMain = a.ref === "refs/heads/main";
   const bMain = b.ref === "refs/heads/main";
@@ -130,7 +156,7 @@ function parseCookBaseKey(key) {
     flags: match[5].toLowerCase(),
     lockHash: match[6].toLowerCase(),
     soldr: match[7],
-    suffix: (match[8] || "").toLowerCase(),
+    suffix: match[8] || "",
   };
 }
 
@@ -165,8 +191,9 @@ function planCookBasePrune(caches, currentRootLockHashes) {
       keep.push(cache);
     }
   }
-  stale.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-  return { keep, stale };
+  const uniqueStale = [...new Map(stale.map((cache) => [cache.id, cache])).values()];
+  uniqueStale.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  return { keep, stale: uniqueStale };
 }
 
 function setupSoldrCargoRegistryKeyParts(key) {
@@ -183,6 +210,171 @@ function setupSoldrCargoRegistryKeyParts(key) {
     arch: match[3].toLowerCase(),
     lockHash: match[4].toLowerCase(),
     digest: match[5].toLowerCase(),
+  };
+}
+
+function setupSoldrBuildCacheKeyParts(key) {
+  // The suffix is optional but remains part of the restore shape. The final
+  // 16-hex component is the Cargo.lock identity; unknown formats stay held.
+  const match =
+    /^setup-soldr-buildcache-v2-(linux|macos|windows)-(x64|arm64)-([0-9a-f]{16})(?:-(.+?))?-([0-9a-f]{16})$/i.exec(
+      key,
+    );
+  if (!match) return null;
+  return {
+    os: match[1].toLowerCase(),
+    arch: match[2].toLowerCase(),
+    digest: match[3].toLowerCase(),
+    suffix: match[4] || "",
+    lockHash: match[5].toLowerCase(),
+  };
+}
+
+function buildCacheShape(parts) {
+  return `${parts.os}\u0000${parts.arch}\u0000${parts.digest}\u0000${parts.suffix}`;
+}
+
+function profileBytes(rows, parseParts, currentHashes, shapeFor, requiredProfiles = []) {
+  const groups = new Map();
+  for (const profile of requiredProfiles) {
+    const shape = shapeFor(profile);
+    groups.set(shape, { current: false, maxBytes: profile.minimumBytes });
+  }
+  for (const cache of rows) {
+    const parts = parseParts(cache.key);
+    if (!parts) continue;
+    const shape = shapeFor(parts);
+    const group = groups.get(shape) || { current: false, maxBytes: 0 };
+    group.current ||= currentHashes.get(parts.os).has(parts.lockHash);
+    group.maxBytes = Math.max(group.maxBytes, Number(cache.size_in_bytes) || 0);
+    groups.set(shape, group);
+  }
+  let bytes = 0;
+  for (const group of groups.values()) {
+    if (!group.current) bytes += group.maxBytes;
+  }
+  return bytes;
+}
+
+function planLockTransitionPrePrune(
+  caches,
+  currentRootLockHashes,
+  usageBytes,
+  listedBytes,
+  targetBytes = LOCK_TRANSITION_TARGET_BYTES,
+) {
+  const currentHashes = currentLockHashesByOs(currentRootLockHashes);
+  const currentBytes = effectiveCacheBytes(usageBytes, listedBytes);
+  const fail = (reason) => ({ ok: false, reason, deleteIds: [], selectedBuildCacheIds: [] });
+  if (!currentHashes) return fail("current Cargo.lock hashes unavailable");
+  if (!Number.isFinite(currentBytes) || currentBytes <= 0) return fail("cache inventory bytes unavailable");
+  if (!Number.isFinite(targetBytes) || targetBytes <= 0) return fail("invalid transition target");
+
+  const mainRows = caches.filter((cache) => cache.ref === "refs/heads/main" && typeof cache.key === "string");
+  for (const cache of mainRows) {
+    if (cache.key.startsWith("cook-base-v2-") && !parseCookBaseKey(cache.key)) {
+      return fail(`unknown cook-base key format: ${cache.key}`);
+    }
+    if (cache.key.startsWith("setup-soldr-cargoregistry-") && !setupSoldrCargoRegistryKeyParts(cache.key)) {
+      return fail(`unknown Cargo registry key format: ${cache.key}`);
+    }
+    if (cache.key.startsWith("setup-soldr-buildcache-") && !setupSoldrBuildCacheKeyParts(cache.key)) {
+      return fail(`unknown build-cache key format: ${cache.key}`);
+    }
+  }
+
+  // Root-lock changes invalidate exact cook keys. Prior-lock registry rows
+  // also cannot restore into the new main lock; retiring them can remove a
+  // warm seed for an older open PR, a bounded cache-performance tradeoff only
+  // (the PR remains correct and can rebuild its registry snapshot).
+  const staleCooks = planCookBasePrune(mainRows, currentRootLockHashes).stale;
+  const registryRows = mainRows
+    .filter((cache) => cache.key.startsWith("setup-soldr-cargoregistry-"));
+  const staleRegistries = registryRows.filter((cache) => {
+    const parts = setupSoldrCargoRegistryKeyParts(cache.key);
+    return !currentHashes.get(parts.os).has(parts.lockHash);
+  });
+  const buildRows = mainRows
+    .filter((cache) => cache.key.startsWith("setup-soldr-buildcache-"));
+  const staleBuilds = buildRows.filter((cache) => {
+    const parts = setupSoldrBuildCacheKeyParts(cache.key);
+    return !currentHashes.get(parts.os).has(parts.lockHash);
+  });
+
+  const selectedBuildCacheIds = staleBuilds
+    .filter((cache) => {
+      const parts = setupSoldrBuildCacheKeyParts(cache.key);
+      return TRANSITION_BUILD_CACHE_FALLBACKS.some((candidate) =>
+        candidate.os === parts.os && candidate.arch === parts.arch &&
+        candidate.digest === parts.digest && candidate.suffix === parts.suffix,
+      );
+    })
+    .map((cache) => cache.id)
+    .sort((a, b) => a - b);
+  const selectedBuilds = staleBuilds.filter((cache) => selectedBuildCacheIds.includes(cache.id));
+  const retiredBuilds = staleBuilds.filter((cache) => isRetiredMainKey(cache.key));
+
+  const cookEstimate = profileBytes(
+    mainRows.filter((cache) => cache.key.startsWith("cook-base-v2-") && !isRetiredMainKey(cache.key)),
+    parseCookBaseKey,
+    currentHashes,
+    (parts) => `${parts.os}\u0000${parts.arch}\u0000${parts.libc}\u0000${parts.rustc}\u0000${parts.flags}\u0000${parts.soldr}\u0000${parts.suffix}`,
+  );
+  const registryEstimate = profileBytes(
+    registryRows,
+    setupSoldrCargoRegistryKeyParts,
+    currentHashes,
+    (parts) => `${parts.format}\u0000${parts.os}\u0000${parts.arch}\u0000${parts.digest}`,
+  );
+  const buildEstimate = profileBytes(
+    buildRows.filter((cache) => !isRetiredMainKey(cache.key)),
+    setupSoldrBuildCacheKeyParts,
+    currentHashes,
+    buildCacheShape,
+    TRANSITION_BUILD_CACHE_PROFILES,
+  );
+  const nativePythonF9Rows = mainRows.filter((cache) => {
+    const parts = parseCookBaseKey(cache.key);
+    return parts && parts.os === "linux" && parts.arch === "x64" &&
+      parts.flags === "f9e7e4902" && parts.suffix === "";
+  });
+  const hasCurrentNativePythonF9 = nativePythonF9Rows.some((cache) =>
+    currentHashes.get("linux").has(parseCookBaseKey(cache.key).lockHash),
+  );
+  const nativePythonObservedBytes = Math.max(
+    0,
+    ...nativePythonF9Rows.map((cache) => Number(cache.size_in_bytes) || 0),
+  );
+  // The f9 profile is already counted in cookEstimate when an old generation
+  // exists. Add only the reserve beyond that observed size, not a duplicate.
+  const nativePythonReserve = hasCurrentNativePythonF9
+    ? 0
+    : Math.max(0, NATIVE_PYTHON_F9_RESERVE_BYTES - nativePythonObservedBytes);
+  const deletedCaches = [...staleCooks, ...staleRegistries, ...selectedBuilds, ...retiredBuilds];
+  const deletedBytes = deletedCaches
+    .reduce((sum, cache) => sum + (Number(cache.size_in_bytes) || 0), 0);
+  const newBytes = cookEstimate + registryEstimate + buildEstimate + nativePythonReserve;
+  const projectedPeakBytes = currentBytes - deletedBytes + newBytes;
+  if (projectedPeakBytes > targetBytes) {
+    return {
+      ...fail(`projected peak ${projectedPeakBytes} exceeds transition target ${targetBytes}`),
+      currentBytes,
+      projectedPeakBytes,
+      targetBytes,
+      staleCookIds: staleCooks.map((cache) => cache.id),
+      staleRegistryIds: staleRegistries.map((cache) => cache.id),
+    };
+  }
+  return {
+    ok: true,
+    currentBytes,
+    projectedPeakBytes,
+    targetBytes,
+    deleteIds: [...new Set(deletedCaches.map((cache) => cache.id))].sort((a, b) => a - b),
+    staleCookIds: staleCooks.map((cache) => cache.id),
+    staleRegistryIds: staleRegistries.map((cache) => cache.id),
+    selectedBuildCacheIds,
+    estimatedNewBytes: newBytes,
   };
 }
 
@@ -220,13 +412,12 @@ function planCountPrune(caches, keepPerShape = 1, currentRootLockHashes = null) 
   const stale = [...supersededCargoRegistryIds(caches, currentRootLockHashes)]
     .map((id) => caches.find((cache) => cache.id === id))
     .filter(Boolean);
+  stale.push(...[...supersededBuildCacheIds(caches, currentRootLockHashes)]
+    .map((id) => caches.find((cache) => cache.id === id))
+    .filter(Boolean));
   for (const cache of caches) {
     if (!cache.key || !isEligible(cache.key)) continue;
-    if (
-      cache.ref === "refs/heads/main" &&
-      (RETIRED_MAIN_PREFIXES.some((prefix) => cache.key.startsWith(prefix)) ||
-        RETIRED_MAIN_PATTERNS.some((pattern) => pattern.test(cache.key)))
-    ) {
+    if (cache.ref === "refs/heads/main" && isRetiredMainKey(cache.key)) {
       stale.push(cache);
       continue;
     }
@@ -254,8 +445,29 @@ function planCountPrune(caches, keepPerShape = 1, currentRootLockHashes = null) 
     keep.push(...group.slice(0, keepPerShape));
     stale.push(...group.slice(keepPerShape));
   }
-  stale.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-  return { keep, stale };
+  const uniqueStale = [...new Map(stale.map((cache) => [cache.id, cache])).values()];
+  uniqueStale.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  return { keep, stale: uniqueStale };
+}
+
+function supersededBuildCacheIds(caches, currentRootLockHashes) {
+  const currentHashes = currentLockHashesByOs(currentRootLockHashes);
+  if (!currentHashes) return new Set();
+  const rows = caches
+    .filter((cache) => cache.ref === "refs/heads/main" && typeof cache.key === "string")
+    .map((cache) => ({ cache, parts: setupSoldrBuildCacheKeyParts(cache.key) }))
+    .filter((row) => row.parts);
+  const currentShapes = new Set();
+  for (const { parts } of rows) {
+    if (currentHashes.get(parts.os).has(parts.lockHash)) currentShapes.add(buildCacheShape(parts));
+  }
+  const stale = new Set();
+  for (const { cache, parts } of rows) {
+    if (!currentHashes.get(parts.os).has(parts.lockHash) && currentShapes.has(buildCacheShape(parts))) {
+      stale.add(cache.id);
+    }
+  }
+  return stale;
 }
 
 function planHardCap(caches, currentBytes, targetBytes, alreadyPlannedIds = []) {
@@ -280,16 +492,24 @@ function planHardCap(caches, currentBytes, targetBytes, alreadyPlannedIds = []) 
 
 module.exports = {
   CACHE_PREFIXES,
+  LOCK_TRANSITION_TARGET_BYTES,
   MAIN_CACHE_WRITER_WORKFLOW_NAMES,
+  NATIVE_PYTHON_F9_RESERVE_BYTES,
   RETIRED_MAIN_PREFIXES,
   RETIRED_MAIN_PATTERNS,
+  TRANSITION_BUILD_CACHE_FALLBACKS,
+  TRANSITION_BUILD_CACHE_PROFILES,
   cacheShape,
   cargoLockHashes,
   effectiveCacheBytes,
+  isRetiredMainKey,
   isEligible,
   planCountPrune,
   planHardCap,
   parseCookBaseKey,
   planCookBasePrune,
+  planLockTransitionPrePrune,
   setupSoldrCargoRegistryKeyParts,
+  setupSoldrBuildCacheKeyParts,
+  supersededBuildCacheIds,
 };

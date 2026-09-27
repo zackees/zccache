@@ -120,11 +120,18 @@ def test_cleanup_allowlist_preserves_foundation_cache_families() -> None:
     workflow = (ROOT / ".github/workflows/cache-cleanup.yml").read_text(
         encoding="utf-8"
     )
-    for foundation in (
-        '"soldr-mini-v2-',
-        '"cook-base-v2-',
-    ):
-        assert foundation not in planner
+    assert '"soldr-mini-v2-' not in planner
+    script = (
+        "const {CACHE_PREFIXES}=require(process.argv[1]);"
+        "process.stdout.write(JSON.stringify(CACHE_PREFIXES));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "cook-base-v2-" not in json.loads(result.stdout)
     assert '"solo-toolchain-v3-' in planner
     assert '"setup-soldr-buildcache-v2-macos-arm64-6d40444a3fc5e4d0-' in planner
     assert '"setup-soldr-buildcache-v2-macos-arm64-032744c531163905-' in planner
@@ -255,8 +262,75 @@ def test_measured_retired_cache_shapes_are_exact_and_main_only() -> None:
         text=True,
     )
     plan = json.loads(result.stdout)
-    assert set(plan["stale"]) == {60, 61, 62, 63, 64, 65, 69, 70, 71}
+    # Linux x64 f9e7 remains the native-Python release cook profile; only the
+    # measured disabled cook/build-cache identities retire automatically.
+    assert set(plan["stale"]) == {61, 62, 63, 64, 65, 69, 70, 71}
+    assert 60 not in plan["stale"]
     assert {66, 67, 68}.isdisjoint(plan["stale"])
+
+
+def test_old_buildcache_fallback_is_pruned_only_after_exact_same_shape_replacement() -> None:
+    caches = [
+        {
+            "id": 1,
+            "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-1111111111111111",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 695_000_000,
+            "created_at": "2026-09-01T00:00:00Z",
+        },
+        {
+            "id": 2,
+            "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-2222222222222222",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 700_000_000,
+            "created_at": "2026-09-27T00:00:00Z",
+        },
+        {
+            "id": 3,
+            "key": "setup-soldr-buildcache-v2-linux-x64-67ddfadb5b3c0042-check-linux-x86-musl-1111111111111111",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 222_000_000,
+            "created_at": "2026-09-01T00:00:00Z",
+        },
+        {
+            "id": 4,
+            "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-1111111111111111",
+            "ref": "refs/pull/123/merge",
+            "size_in_bytes": 695_000_000,
+            "created_at": "2026-09-01T00:00:00Z",
+        },
+        {
+            "id": 5,
+            "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-MyJob-1111111111111111",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 100_000_000,
+            "created_at": "2026-09-01T00:00:00Z",
+        },
+        {
+            "id": 6,
+            "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-myjob-2222222222222222",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 100_000_000,
+            "created_at": "2026-09-27T00:00:00Z",
+        },
+    ]
+    script = (
+        "const fs=require('node:fs');"
+        "const {planCountPrune}=require(process.argv[1]);"
+        "const caches=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "const p=planCountPrune(caches,1,{linux:'2222222222222222',macos:'2222222222222222',windows:['2222222222222222','3333333333333333']});"
+        "process.stdout.write(JSON.stringify({stale:p.stale.map(c=>c.id),keep:p.keep.map(c=>c.id)}));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps(caches),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["stale"] == [1]
+    assert {2, 3, 4, 5, 6}.isdisjoint(plan["stale"])
 
 
 def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:

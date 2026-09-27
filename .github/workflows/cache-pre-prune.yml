@@ -1,9 +1,13 @@
 name: Cache Pre-prune
 
-# On each main push, retire old-lock cook bases before producers start. Main
+# On each main push, forecast the full lock-transition peak using converged
+# cache usage/list views, then retire old-lock cook/registry entries and the
+# three measured fallback build-cache profiles before producers start. Main
 # cache-writing workflows wait for this exact-SHA run through the read-only
-# composite action. This workflow waits only for older-SHA producers, never
-# same-SHA runs that are waiting here.
+# composite action. The forecast reserves measured payload headroom but is not
+# an upload-time hard cap; trailing Cache Cleanup verifies the settled live
+# usage after all same-SHA producers finish. This workflow waits only for
+# older-SHA producers, never same-SHA runs that are waiting here.
 on:
   push:
     branches: [main]
@@ -18,7 +22,7 @@ permissions:
 
 jobs:
   pre-prune:
-    name: Retire old-lock cook bases before producers
+    name: Forecast cache transition and prune before producers
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -122,7 +126,7 @@ jobs:
             core.setOutput("crlf", hashes.crlf);
             core.info(`Current Cargo.lock hashes: LF=${hashes.lf}, CRLF=${hashes.crlf}`);
 
-      - name: Retire old-lock cook bases
+      - name: Forecast and retire old-lock cache generations
         if: steps.writer-barrier.outputs.ready == 'true'
         uses: actions/github-script@v7
         env:
@@ -132,7 +136,7 @@ jobs:
           script: |
             const repo = context.repo;
             const expectedSha = context.sha;
-            const { planCookBasePrune } = require(
+            const { planLockTransitionPrePrune } = require(
               `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
             );
             const branchHead = async () => (await github.rest.repos.getBranch({
@@ -154,7 +158,9 @@ jobs:
             const lockHashes = {
               linux: process.env.ROOT_LOCK_HASH_LF,
               macos: process.env.ROOT_LOCK_HASH_LF,
-              windows: [process.env.ROOT_LOCK_HASH_LF, process.env.ROOT_LOCK_HASH_CRLF],
+              // The common waiter normalizes Windows producers to CRLF before
+              // setup-soldr computes any cache key; forecast that one identity.
+              windows: [process.env.ROOT_LOCK_HASH_CRLF],
             };
             if (!lockHashes.linux || !lockHashes.macos || lockHashes.windows.some((hash) => !hash)) {
               throw new Error("current Cargo.lock hashes unavailable; refusing pre-prune");
@@ -180,12 +186,28 @@ jobs:
             };
 
             const before = await convergeInventory();
-            const plan = planCookBasePrune(before.caches, lockHashes);
-            const stale = plan.stale.filter((cache) => cache.ref === "refs/heads/main");
-            core.info(
-              `Converged inventory: ${before.caches.length} entries, ${before.listedBytes} bytes; ` +
-              `${stale.length} old-lock cook bases selected.`,
+            const plan = planLockTransitionPrePrune(
+              before.caches,
+              lockHashes,
+              before.usageBytes,
+              before.listedBytes,
             );
+            if (!plan.ok) {
+              throw new Error(`cache transition forecast failed closed: ${plan.reason}`);
+            }
+            const deleteIds = new Set(plan.deleteIds);
+            const stale = before.caches.filter((cache) => deleteIds.has(cache.id));
+            core.info(
+              `Converged inventory: ${before.caches.length} entries, ` +
+              `${before.listedBytes} listed bytes / ${before.usageBytes} usage bytes. ` +
+              `Transition forecast ${plan.projectedPeakBytes} B (target ${plan.targetBytes} B); ` +
+              `${plan.staleCookIds.length} old-lock cook bases, ` +
+              `${plan.staleRegistryIds.length} old-lock registries, and ` +
+              `${plan.selectedBuildCacheIds.length} measured build-cache fallbacks selected.`,
+            );
+            if (plan.selectedBuildCacheIds.length > 3) {
+              throw new Error("transition planner selected more than the three reviewed fallback profiles");
+            }
             if (await branchHead() !== expectedSha) {
               throw new Error("main advanced before old-lock deletes; refusing stale plan");
             }
@@ -193,7 +215,7 @@ jobs:
               if (await branchHead() !== expectedSha) {
                 throw new Error("main advanced during deletes; stopping pre-prune");
               }
-              core.info(`Delete old-lock main cook base: ${cache.key} (id ${cache.id}, ${cache.size_in_bytes} bytes)`);
+              core.info(`Delete forecasted old-lock cache: ${cache.key} (id ${cache.id}, ${cache.size_in_bytes} bytes)`);
               try {
                 await github.rest.actions.deleteActionsCacheById({ ...repo, cache_id: cache.id });
               } catch (error) {
@@ -204,5 +226,6 @@ jobs:
             const after = await convergeInventory(stale.map((cache) => cache.id));
             core.info(
               `Pre-prune verified for ${expectedSha}: ${after.caches.length} entries, ` +
-              `${after.listedBytes} bytes; cache writers may proceed.`,
+              `${after.listedBytes} listed bytes / ${after.usageBytes} usage bytes. ` +
+              `Forecasted peak remains ${plan.projectedPeakBytes} B; cache writers may proceed.`,
             );

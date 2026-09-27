@@ -337,6 +337,8 @@ jobs:
           toolchain: 1.95.0
           cache: true
           linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Check clang++
         run: clang++ --version

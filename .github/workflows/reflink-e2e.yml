@@ -34,6 +34,8 @@ jobs:
           cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
       - name: Mount a btrfs loop volume
         run: |
           sudo apt-get update
