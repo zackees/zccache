@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import yaml
 
@@ -28,7 +28,10 @@ def test_cache_cleanup_runs_daily_on_main_before_budget_check() -> None:
     budget_hour, budget_minute = int(budget_hour), int(budget_minute)
     assert cleanup_hour * 60 + cleanup_minute < budget_hour * 60 + budget_minute
     assert "workflow_dispatch" in triggers
-    assert triggers["workflow_run"] == {"workflows": ["Integration"], "types": ["completed"]}
+    assert triggers["workflow_run"] == {
+        "workflows": ["Integration"],
+        "types": ["completed"],
+    }
     assert not {"push", "pull_request", "pull_request_target"} & set(triggers)
     job = workflow["jobs"]["prune-per-commit-caches"]
     assert "github.ref == 'refs/heads/main'" in job["if"]
@@ -108,7 +111,9 @@ def test_manual_cleanup_defaults_to_dry_run_and_lists_exact_targets() -> None:
     assert "getActionsCacheUsage(repo)" in hard_cap["with"]["script"]
     assert "const maxAttempts = dryRun ? 1 : 6" in hard_cap["with"]["script"]
     assert "effectiveCacheBytes" in gate["with"]["script"]
-    lock_hash_step = next(step for step in steps if step.get("id") == "cargo-lock-hashes")
+    lock_hash_step = next(
+        step for step in steps if step.get("id") == "cargo-lock-hashes"
+    )
     assert "cargoLockHashes" in lock_hash_step["with"]["script"]
     count_env = next(step for step in steps if step.get("id") == "count-prune")["env"]
     assert "ROOT_LOCK_HASH_LF" in count_env
@@ -117,7 +122,9 @@ def test_manual_cleanup_defaults_to_dry_run_and_lists_exact_targets() -> None:
 
 def test_cleanup_allowlist_preserves_foundation_cache_families() -> None:
     planner = (ROOT / "ci/cache_cleanup_plan.js").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github/workflows/cache-cleanup.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/cache-cleanup.yml").read_text(
+        encoding="utf-8"
+    )
     for foundation in (
         '"soldr-mini-v2-',
         '"cook-base-v2-',
@@ -149,8 +156,112 @@ def test_retired_cache_families_are_main_only_and_exactly_scoped() -> None:
     plan = json.loads(result.stdout)
     assert {30, 31} <= set(plan["stale"])
     assert 32 not in plan["stale"]
-    assert 33 not in plan["stale"]
+    assert 33 in plan["stale"]
     assert 34 not in plan["stale"]
+
+
+def test_measured_retired_cache_shapes_are_exact_and_main_only() -> None:
+    caches = [
+        {
+            "id": 60,
+            "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f9e7e4902-l27ed8f2e0ba4ca9d-soldrv0.9.23",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 824000000,
+            "created_at": "2026-09-27T05:18:00Z",
+        },
+        {
+            "id": 61,
+            "key": "cook-base-v2-windows-x64-msvc-rustc1.95.0-f9e7e4902-l373d63beb34d7b6e-soldrv0.9.23",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 448000000,
+            "created_at": "2026-09-27T05:27:00Z",
+        },
+        {
+            "id": 62,
+            "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f9e7e4902-l27ed8f2e0ba4ca9d-soldrv0.9.23-xdylint",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 599000000,
+            "created_at": "2026-09-27T05:29:00Z",
+        },
+        {
+            "id": 63,
+            "key": "setup-soldr-buildcache-v2-linux-x64-032744c531163905-27ed8f2e0ba4ca9d",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 440000000,
+            "created_at": "2026-09-27T05:30:00Z",
+        },
+        {
+            "id": 64,
+            "key": "setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-373d63beb34d7b6e",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 356000000,
+            "created_at": "2026-09-27T05:31:00Z",
+        },
+        {
+            "id": 65,
+            "key": "setup-soldr-buildcache-v2-windows-arm64-9cc0e23f450b04b3-373d63beb34d7b6e",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 351000000,
+            "created_at": "2026-09-27T05:32:00Z",
+        },
+        {
+            "id": 66,
+            "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f9e7e4902-l27ed8f2e0ba4ca9d-soldrv0.9.23-xdylint",
+            "ref": "refs/pull/1739/merge",
+            "size_in_bytes": 599000000,
+            "created_at": "2026-09-27T05:29:00Z",
+        },
+        {
+            "id": 67,
+            "key": "setup-soldr-buildcache-v2-windows-x64-aaaaaaaaaaaaaaaa-f2415904ed1de43f",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 356000000,
+            "created_at": "2026-09-27T05:31:00Z",
+        },
+        {
+            "id": 68,
+            "key": "setup-soldr-buildcache-v2-linux-arm64-032744c531163905-27ed8f2e0ba4ca9d",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 422000000,
+            "created_at": "2026-09-27T05:30:00Z",
+        },
+        {
+            "id": 69,
+            "key": "setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-f2415904ed1de43f",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 350000000,
+            "created_at": "2026-09-26T05:31:00Z",
+        },
+        {
+            "id": 70,
+            "key": "setup-soldr-buildcache-v2-linux-x64-032744c531163905-1111111111111111",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 440000000,
+            "created_at": "2026-09-25T05:30:00Z",
+        },
+        {
+            "id": 71,
+            "key": "setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-1111111111111111",
+            "ref": "refs/heads/main",
+            "size_in_bytes": 356000000,
+            "created_at": "2026-09-25T05:31:00Z",
+        },
+    ]
+    script = (
+        "const {planCountPrune}=require(process.argv[1]);"
+        "const p=planCountPrune(JSON.parse(require('node:fs').readFileSync(0,'utf8')));"
+        "process.stdout.write(JSON.stringify({stale:p.stale.map(c=>c.id),keep:p.keep.map(c=>c.id)}));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps(caches),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert set(plan["stale"]) == {60, 61, 62, 63, 64, 65, 69, 70, 71}
+    assert {66, 67, 68}.isdisjoint(plan["stale"])
 
 
 def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
@@ -180,7 +291,7 @@ def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
     # caches are not assumed to be mutually restorable. Foundation caches are
     # not candidates.
     assert set(plan["keep"]) == {10, 11, 14, 15, 16, 17, 18, 19, 20}
-    assert set(plan["stale"]) == {12, 13, 25, 26, 29, 30, 31}
+    assert set(plan["stale"]) == {12, 13, 25, 26, 29, 30, 31, 33}
     # setup-soldr registry keys encode both Cargo.lock identity and registry
     # archive digest; these are separate content identities, not generations.
     assert plan["registryEligible"] == [False, False, False, False]
@@ -193,7 +304,9 @@ def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
     assert plan["capWithinBudget"] is False
 
 
-def test_cargo_registry_lock_generations_require_exact_same_profile_replacement() -> None:
+def test_cargo_registry_lock_generations_require_exact_same_profile_replacement() -> (
+    None
+):
     fixture = ROOT / "ci/tests/fixtures/cache_cleanup_shapes.json"
     script = (
         "const fs=require('node:fs');"

@@ -73,7 +73,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
-          build-cache: ${{ inputs.os != 'macos-15' }}
+          build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' }}
           # Bound compile and test concurrency for the 8-GB ARM runner. This
           # is the prescribed ci-tests resource contract; the Test step below
           # remains the only lib/bin test-profile compilation.

@@ -32,10 +32,10 @@ Usage: ``uv run --no-project --with pyyaml python ci/check_cache_footprint.py``
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 import yaml
 
@@ -74,16 +74,30 @@ JUSTIFIED_COOK_DELTA: dict[str, str] = {}
 # a cache a later job in the same run restores).  None today.
 JUSTIFIED_PR_SAVES: dict[str, str] = {}
 
-# #1677 budget policy: retire the standalone Rust toolchain archive globally,
-# and avoid low-reuse build archives for the two macOS lanes whose exact
-# production probes showed zero compile-cache hits. Keep the other platforms'
-# build-cache profiles unchanged.
+# #1677 budget policy: retire low-return archives identified by exact hosted
+# probes. Keep cook bases for core platform tests, cross-checks and macOS
+# wrapper validation; keep Windows wrapper build-cache and all registries.
 MACOS_BUILD_CACHE_JOBS = {
     "ci-check.yml:check": ("inputs.os", "macOS Check"),
-    "ci-check.yml:test": ("inputs.os", "macOS Test"),
-    "wrapper-e2e.yml:wrapper-e2e": ("matrix.os", "macOS wrapper-e2e"),
     "fs-matrix.yml:matrix": ("matrix.os", "macOS filesystem matrix"),
 }
+
+# Measured steady-state cuts. These are exact workflow call sites so a new or
+# defaulted producer cannot silently recreate a retired cache identity.
+COOK_OFF_CALLS = {
+    "wrapper-e2e.yml:wrapper-e2e#1": "${{ matrix.os == 'macos-15' && 'soldr-cook' || 'none' }}",
+    "wrapper-e2e.yml:wrapper-e2e#2": "none",
+    "ci.yml:dylint#2": "none",
+}
+REGISTRY_RESTORE_CALLS = {
+    "wrapper-e2e.yml:wrapper-e2e#1": True,
+    "wrapper-e2e.yml:wrapper-e2e#2": True,
+}
+LINUX_WRAPPER_BUILD_CACHE = "false"
+WINDOWS_TEST_BUILD_CACHE = (
+    "${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' "
+    "&& inputs.os != 'windows-11-arm' }}"
+)
 
 SHAPE_INPUTS = (
     "toolchain",
@@ -199,7 +213,8 @@ def _cannot_save_on_pr(step: Step) -> bool:
 
 
 def _normal_expression(value: object) -> str:
-    return re.sub(r"\s+", "", str(value).strip()).replace('"', "'")
+    text = str(value).lower() if isinstance(value, bool) else str(value)
+    return re.sub(r"\s+", "", text.strip()).replace('"', "'")
 
 
 def _local_action_errors(root: Path) -> list[str]:
@@ -251,34 +266,66 @@ def check(root: Path = ROOT) -> list[str]:
     for step in steps:
         if not step.main_action:
             continue
-        solo_toolchain_cache = str(
-            step.inputs.get("solo-toolchain-cache", "")
-        ).strip().lower()
+        solo_toolchain_cache = (
+            str(step.inputs.get("solo-toolchain-cache", "")).strip().lower()
+        )
         if solo_toolchain_cache != "false":
             errors.append(
                 f"{step.where} must set solo-toolchain-cache: false; "
                 "the standalone toolchain archives are retired by #1677"
             )
 
+    by_location = {step.where: step for step in steps if step.main_action}
+    for where, expected in COOK_OFF_CALLS.items():
+        step = by_location.get(where)
+        if step is None:
+            if root.resolve() == ROOT:
+                errors.append(f"{where} is missing its guarded #1677 producer")
+            continue
+        actual = str(step.inputs.get("prebuild-deps", "<default>")).strip()
+        if _normal_expression(actual) != _normal_expression(expected):
+            errors.append(f"{where} must use the measured cook policy {expected!r}")
+
+    for where, expected in REGISTRY_RESTORE_CALLS.items():
+        step = by_location.get(where)
+        if step is None:
+            if root.resolve() == ROOT:
+                errors.append(f"{where} is missing its guarded registry restore")
+            continue
+        actual = step.inputs.get("cargo-registry-cache", "<default>")
+        if actual is not expected:
+            errors.append(
+                f"{where} must keep cargo-registry-cache: true for warm parity"
+            )
+
+    linux_wrapper = by_location.get("wrapper-e2e.yml:wrapper-e2e#1")
+    if linux_wrapper and _normal_expression(
+        linux_wrapper.inputs.get("build-cache", "true")
+    ) != _normal_expression(LINUX_WRAPPER_BUILD_CACHE):
+        errors.append(
+            "wrapper-e2e.yml:wrapper-e2e#1 must disable Linux build-cache "
+            "while retaining the Windows wrapper cache"
+        )
+    windows_test = by_location.get("ci-check.yml:test#1")
+    if windows_test and _normal_expression(
+        windows_test.inputs.get("build-cache", "true")
+    ) != _normal_expression(WINDOWS_TEST_BUILD_CACHE):
+        errors.append(
+            "ci-check.yml:test#1 must disable Windows x64/ARM64 build-cache "
+            "while retaining Linux Test"
+        )
+
     for target, (os_context, label) in MACOS_BUILD_CACHE_JOBS.items():
         target_steps = [
             step
             for step in steps
             if step.main_action and step.where.startswith(f"{target}#")
-            and (
-                target != "wrapper-e2e.yml:wrapper-e2e"
-                or step.inputs.get("prebuild-deps") == "soldr-cook"
-            )
         ]
         if not target_steps:
             if root.resolve() == ROOT:
-                errors.append(
-                    f"{target} is missing the guarded {label} cache producer"
-                )
+                errors.append(f"{target} is missing the guarded {label} cache producer")
             continue
-        expected = _normal_expression(
-            f"${{{{ {os_context} != 'macos-15' }}}}"
-        )
+        expected = _normal_expression(f"${{{{ {os_context} != 'macos-15' }}}}")
         for step in target_steps:
             actual = _normal_expression(step.inputs.get("build-cache", "true"))
             if actual != expected:

@@ -80,9 +80,14 @@ jobs:
           zccache-seed-strict: true
           cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
-          build-cache: ${{ matrix.os != 'macos-15' }}
+          cargo-registry-cache: true # preserve the measured warm registry restore.
+          # Hosted probes showed no compile-cache benefit in this small
+          # release-wrapper lane; keep the archive for Windows only.
+          build-cache: false
           linker: fast
-          prebuild-deps: soldr-cook
+          # Keep the well-performing Apple Silicon cook base; Linux's
+          # 824 MB release base was low-value for this smoke test.
+          prebuild-deps: ${{ matrix.os == 'macos-15' && 'soldr-cook' || 'none' }}
           prebuild-deps-flags: "--release"
 
       - name: setup soldr without cook prebuild (Windows)
@@ -96,7 +101,11 @@ jobs:
           zccache-seed-strict: true
           cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
+          cargo-registry-cache: true # preserve the measured warm registry restore.
           linker: fast
+          # This lane's 448 MB release cook base costs several minutes and
+          # does not justify its footprint for the wrapper smoke test.
+          prebuild-deps: none
 
       - name: restore source tree after dependency cook
         shell: bash

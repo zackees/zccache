@@ -95,15 +95,14 @@ jobs:
           toolchain: 1.95.0
           cache: true
           cargo-registry-cache: false
-          # Distinct cook base on purpose (#1677): this job materializes the
-          # nightly dylint toolchain/driver and skips the registry cache.
-          # Every other same-shape job shares the unsuffixed base; see
-          # ci/check_cache_footprint.py JUSTIFIED_SUFFIXES.
+          # Distinct cache identity (#1677): the Dylint suffix is retained for
+          # the driver/profile, but its measured cook archive costs 599 MB.
+          # Registry caching is disabled for this lane as before.
           cache-key-suffix: dylint
           linker: fast
-          prebuild-deps: soldr-cook
-          # The prescribed profile materializes the exact nightly, driver,
-          # and tool binaries once; the Dylint stages below only consume it.
+          prebuild-deps: none
+          # The Dylint cache retains its exact nightly driver/tool profile;
+          # this lane skips only the low-return Cargo cook-base archive.
           ci-tests: true
           dylint-cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.

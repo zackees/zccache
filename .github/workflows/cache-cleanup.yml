@@ -2,8 +2,8 @@ name: Cache Cleanup
 
 # zccache#1677: prune obsolete per-commit generations and exact cache
 # families whose producers were disabled after measured low reuse. The
-# standalone solo-toolchain archive and the two measured macOS build-cache
-# key roots are eligible only on refs/heads/main; PR-ref caches remain untouched.
+# retired solo-toolchain, measured low-reuse cook and build-cache identities
+# are eligible only on refs/heads/main; PR-ref caches remain untouched.
 #
 # Runs daily on the default branch and remains manually dispatchable for
 # release-and-cascade work. It runs before cache-budget.yml so stale
@@ -15,7 +15,7 @@ name: Cache Cleanup
 # Strategy: keep the newest entry for each distinct reusable cache shape and
 # retire older generations. Shapes retain platform, architecture, target and
 # feature dimensions; a new generation for one target cannot evict another.
-# The retired prefixes above are the only foundation-family exception. The
+# The retired exact roots/patterns above are the only foundation-family exception. The
 # hard-cap step may remove additional stale generations, never the newest
 # entry for a live shape or any other foundation family.
 #

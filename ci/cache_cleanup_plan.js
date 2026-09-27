@@ -2,14 +2,22 @@
 
 const { createHash } = require("node:crypto");
 
-// Cache families whose old generations are safe to retire after a newer
-// generation for the same restore shape exists. Keep one generation per
-// shape; the shape functions below intentionally retain OS, architecture,
-// target triple, and feature dimensions.
+// Retired producer identities and ordinary families eligible for one-per-shape
+// retention. Keep OS, architecture, target triple, and feature dimensions in
+// the shape functions below; retired patterns are deliberately exact.
 const RETIRED_MAIN_PREFIXES = [
   "solo-toolchain-v3-",
   "setup-soldr-buildcache-v2-macos-arm64-6d40444a3fc5e4d0-",
   "setup-soldr-buildcache-v2-macos-arm64-032744c531163905-",
+];
+
+const RETIRED_MAIN_PATTERNS = [
+  /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
+  /^cook-base-v2-windows-x64-msvc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
+  /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23-xdylint$/i,
+  /^setup-soldr-buildcache-v2-linux-x64-032744c531163905-[0-9a-f]{16}$/i,
+  /^setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
+  /^setup-soldr-buildcache-v2-windows-arm64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
 ];
 
 const CACHE_PREFIXES = [
@@ -58,7 +66,10 @@ function cacheShape(key) {
 }
 
 function isEligible(key) {
-  return CACHE_PREFIXES.some((prefix) => key.startsWith(prefix));
+  return (
+    CACHE_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+    RETIRED_MAIN_PATTERNS.some((pattern) => pattern.test(key))
+  );
 }
 
 function newestFirst(a, b) {
@@ -136,7 +147,8 @@ function planCountPrune(caches, keepPerShape = 1, currentRootLockHashes = null) 
     if (!cache.key || !isEligible(cache.key)) continue;
     if (
       cache.ref === "refs/heads/main" &&
-      RETIRED_MAIN_PREFIXES.some((prefix) => cache.key.startsWith(prefix))
+      (RETIRED_MAIN_PREFIXES.some((prefix) => cache.key.startsWith(prefix)) ||
+        RETIRED_MAIN_PATTERNS.some((pattern) => pattern.test(cache.key)))
     ) {
       stale.push(cache);
       continue;
@@ -191,6 +203,8 @@ function planHardCap(caches, currentBytes, targetBytes, alreadyPlannedIds = []) 
 
 module.exports = {
   CACHE_PREFIXES,
+  RETIRED_MAIN_PREFIXES,
+  RETIRED_MAIN_PATTERNS,
   cacheShape,
   cargoLockHashes,
   effectiveCacheBytes,

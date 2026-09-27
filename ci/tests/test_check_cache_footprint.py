@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 from ci import check_cache_footprint as guard
@@ -29,6 +30,63 @@ def _job(
 
 def test_repository_workflows_pass() -> None:
     assert guard.check() == []
+
+
+def test_measured_cache_cuts_cannot_be_reintroduced(tmp_path: Path) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    shutil.copytree(guard.ROOT / ".github/workflows", workflows)
+
+    cases = (
+        (
+            "wrapper-e2e.yml",
+            "prebuild-deps: none",
+            "prebuild-deps: soldr-cook",
+            "measured cook policy",
+        ),
+        (
+            "ci.yml",
+            "cache-key-suffix: dylint\n          linker: fast\n          prebuild-deps: none",
+            "cache-key-suffix: dylint\n          linker: fast\n          prebuild-deps: soldr-cook",
+            "measured cook policy",
+        ),
+        (
+            "wrapper-e2e.yml",
+            "build-cache: false",
+            "build-cache: true",
+            "disable Linux build-cache",
+        ),
+        (
+            "ci-check.yml",
+            "build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' }}",
+            "build-cache: true",
+            "disable Windows x64/ARM64 build-cache",
+        ),
+    )
+    for index, (filename, old, new, diagnostic) in enumerate(cases):
+        case_root = tmp_path / str(index)
+        case_workflows = case_root / ".github" / "workflows"
+        shutil.copytree(workflows, case_workflows)
+        path = case_workflows / filename
+        content = path.read_text(encoding="utf-8")
+        assert old in content
+        path.write_text(content.replace(old, new, 1), encoding="utf-8")
+        assert any(diagnostic in error for error in guard.check(case_root)), (
+            index,
+            guard.check(case_root),
+        )
+
+    registry_root = tmp_path / "registry"
+    registry_workflows = registry_root / ".github" / "workflows"
+    shutil.copytree(workflows, registry_workflows)
+    wrapper = registry_workflows / "wrapper-e2e.yml"
+    wrapper.write_text(
+        wrapper.read_text(encoding="utf-8").replace(
+            "cargo-registry-cache: true", "cargo-registry-cache: false"
+        ),
+        encoding="utf-8",
+    )
+    registry_errors = guard.check(registry_root)
+    assert sum("cargo-registry-cache: true" in error for error in registry_errors) == 2
 
 
 def test_rejects_solo_toolchain_cache_producer(tmp_path: Path) -> None:
@@ -73,11 +131,8 @@ def test_rejects_macos_build_cache_reintroduction(tmp_path: Path) -> None:
     )
 
     errors = guard.check(tmp_path)
-    assert any("macOS Check" in error and "disable build-cache" in error for error in errors)
-    assert any("macOS Test" in error and "disable build-cache" in error for error in errors)
     assert any(
-        "macOS wrapper-e2e" in error and "disable build-cache" in error
-        for error in errors
+        "macOS Check" in error and "disable build-cache" in error for error in errors
     )
     assert any(
         "macOS filesystem matrix" in error and "disable build-cache" in error
