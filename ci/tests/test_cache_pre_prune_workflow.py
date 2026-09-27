@@ -513,7 +513,11 @@ def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> No
                     "gha-cache save" in str(step.get("run", ""))
                 )
                 if writes_cache:
-                    assert with_values.get("save-cache") in {"false", expression}, (
+                    assert with_values.get("save-cache") in {
+                        False,
+                        "false",
+                        expression,
+                    }, (
                         f"{path.name} setup-soldr save policy is not main-push-only"
                     )
                 if writes_cache or writes_uv or writes_action_under_test or direct_cache_api:
