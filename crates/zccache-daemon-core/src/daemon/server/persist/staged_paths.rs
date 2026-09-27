@@ -174,7 +174,10 @@ pub(in crate::daemon::server) fn canonicalize_logical_depfile(
         );
     }
     if rewritten != bytes {
-        atomic_replace_bytes(path, &rewritten, true)?;
+        // This staging path is not a committed cache entry. The publisher
+        // syncs the copied output and generation before committing its
+        // durable pointer, so syncing this transient source is redundant.
+        atomic_replace_bytes(path, &rewritten)?;
     }
     Ok(())
 }
@@ -186,15 +189,15 @@ pub(in crate::daemon::server) fn rehydrate_logical_depfile(
     let bytes = std::fs::read(path)?;
     let rewritten = rehydrate_logical_depfile_bytes(&bytes, requested_outputs);
     if rewritten != bytes {
-        // This is a compiler-visible output, not the durable staged copy.
+        // This is a compiler-visible output, not the durable published copy.
         // The compiler would not fsync its depfile either; only the rename is
         // needed to keep readers from observing a partial rewrite.
-        atomic_replace_bytes(path, &rewritten, false)?;
+        atomic_replace_bytes(path, &rewritten)?;
     }
     Ok(())
 }
 
-fn atomic_replace_bytes(path: &Path, bytes: &[u8], durable: bool) -> io::Result<()> {
+fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -215,9 +218,6 @@ fn atomic_replace_bytes(path: &Path, bytes: &[u8], durable: bool) -> io::Result<
             .write(true)
             .open(&temporary)?;
         file.write_all(bytes)?;
-        if durable {
-            file.sync_all()?;
-        }
         drop(file);
         // The destination depfile is often the COW-lite hardlink materialized
         // for the current build's output (persist/hardlink.rs marks
@@ -242,11 +242,6 @@ fn atomic_replace_bytes(path: &Path, bytes: &[u8], durable: bool) -> io::Result<
             let _ = break_output_hardlink_before_compile(path);
         }
         replace_path(&temporary, path)?;
-        if durable {
-            if let Ok(directory) = std::fs::File::open(parent) {
-                let _ = directory.sync_all();
-            }
-        }
         Ok(())
     })();
     if result.is_err() {
@@ -448,6 +443,37 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(300),
             "50 depfile rehydrations took {elapsed:?}; requested outputs must not be synced"
+        );
+    }
+
+    /// The private staging directory is not itself a committed cache entry.
+    /// Publication syncs the copied output and generation before its pointer
+    /// commit, so canonicalizing a Rust-sized batch should not sync the
+    /// transient source or its parent directory first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn staged_depfile_canonicalization_batch_stays_under_transient_sync_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let private_root = temp.path().join("staged");
+        std::fs::create_dir(&private_root).unwrap();
+        let staged_depfile = private_root.join("fixture.d");
+        let requested_depfile: NormalizedPath = temp.path().join("requested/fixture.d").into();
+        let source = format!("{}: fixture.rs\n", staged_depfile.display());
+        let mut elapsed = std::time::Duration::ZERO;
+        for _ in 0..50 {
+            std::fs::write(&staged_depfile, &source).unwrap();
+            let started = std::time::Instant::now();
+            canonicalize_logical_depfile(&staged_depfile, &private_root, &requested_depfile)
+                .unwrap();
+            elapsed += started.elapsed();
+        }
+
+        assert!(contains_staged_output_marker(
+            &std::fs::read(&staged_depfile).unwrap()
+        ));
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "50 staged depfile canonicalizations took {elapsed:?}; transient syncs are redundant"
         );
     }
 
