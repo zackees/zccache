@@ -78,6 +78,7 @@ fn materialize(
         output_path,
         secondary_output_dir,
         current_depfile_dest: None,
+        current_rustc_out_dir: None,
         compile_start: Instant::now(),
         hit_label: "HIT_TEST",
         cached_error_label: "CACHED_ERROR_TEST",
@@ -115,6 +116,87 @@ async fn cc_hit_writes_primary_output_to_the_requested_path_not_the_cached_name(
     assert!(
         !fx.dir.path().join("a.o").exists(),
         "a C/C++ hit must not write the cold miss's output name"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn perf_rustc_out_dir_hit_materializes_b_depinfo_without_a_paths() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = crate::daemon::server::tests::bind_isolated_server(dir.path());
+    let state = server.state.as_ref();
+    let output_path: NormalizedPath = dir.path().join("b/deps/liblibsqlite3_sys.rlib").into();
+    let depfile_dest: NormalizedPath = dir.path().join("b/deps/libsqlite3_sys.d").into();
+    let source_path: NormalizedPath = dir.path().join("b/src/lib.rs").into();
+    let a_out = dir.path().join("a/target/build/libsqlite3-sys/out");
+    let b_out = dir.path().join("b/target/build/libsqlite3-sys/out");
+    let dep_payload = format!(
+        "{}: {}/bindgen.rs\n# env-dep:OUT_DIR={}\n",
+        depfile_dest.display(),
+        a_out.display(),
+        a_out.display(),
+    );
+    let archive = state.artifact_dir.join("out-dir-key_0");
+    let depfile = state.artifact_dir.join("out-dir-key_1");
+    std::fs::write(&archive, b"cached archive").expect("archive");
+    std::fs::write(&depfile, dep_payload.as_bytes()).expect("depfile");
+    write_authoritative_blob_digest(&archive).expect("archive digest");
+    write_authoritative_blob_digest(&depfile).expect("depfile digest");
+    let meta = ArtifactIndex::new(
+        vec![
+            "liblibsqlite3_sys.rlib".to_string(),
+            "libsqlite3_sys.d".to_string(),
+        ],
+        vec![14, dep_payload.len() as u64],
+        Arc::new(Vec::new()),
+        Arc::new(Vec::new()),
+        0,
+    );
+    state.artifacts.insert(
+        "out-dir-key".to_string(),
+        CachedArtifact::from_file_payloads(meta, vec![archive, depfile.clone()]),
+    );
+    let sid = state.sessions.create(crate::depgraph::SessionConfig {
+        client_pid: std::process::id(),
+        working_dir: dir.path().into(),
+        log_file: None,
+        track_stats: true,
+        journal_path: None,
+        profile: false,
+        private_env: Vec::new(),
+        owner_pids: Vec::new(),
+    });
+    let result = materialize_cached_compile_hit(CachedHitMaterializeRequest {
+        state,
+        sid: &sid,
+        artifact_key_hex: "out-dir-key",
+        verdict_key_hex: None,
+        source_path: &source_path,
+        output_path: &output_path,
+        secondary_output_dir: output_path.parent().expect("output parent").into(),
+        current_depfile_dest: Some(depfile_dest.clone()),
+        current_rustc_out_dir: Some(b_out.to_string_lossy().into_owned()),
+        compile_start: Instant::now(),
+        hit_label: "HIT_TEST",
+        cached_error_label: "CACHED_ERROR_TEST",
+        record_compilation: true,
+        downgrade_output_metadata: false,
+        mtime_floor_paths: Vec::new(),
+        rustc_metadata_compat_outputs: Some(vec![output_path.clone(), depfile_dest.clone()]),
+        rustc_archive_hardlink_eligible: Some(true),
+        materialization_mode: MaterializationMode::Auto,
+        phases: CachedHitPhases::request_cache(0, 0),
+    });
+    assert!(matches!(
+        result,
+        Ok(Response::CompileResult { cached: true, .. })
+    ));
+    let rebased = std::fs::read_to_string(&depfile_dest).expect("B dep-info");
+    assert!(rebased.contains(&format!("{}/bindgen.rs", b_out.display())));
+    assert!(rebased.contains(&format!("# env-dep:OUT_DIR={}", b_out.display())));
+    assert!(!rebased.contains(&a_out.to_string_lossy().into_owned()));
+    assert_eq!(
+        std::fs::read(&depfile).expect("cached dep-info"),
+        dep_payload.as_bytes()
     );
 }
 

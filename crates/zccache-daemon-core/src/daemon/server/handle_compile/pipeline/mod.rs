@@ -738,6 +738,12 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                             current_depfile_dest: crate::daemon::server::rustc_depfile_output_path(
                                 rustc_args, cwd,
                             ),
+                            current_rustc_out_dir: certified_rustc_out_dir(
+                                state,
+                                actual_context_key.as_ref().unwrap_or(&context_key),
+                                client_env.as_deref(),
+                                &source_path,
+                            ),
                             compile_start,
                             hit_label: "HIT_RUSTC_EMIT_COMPAT",
                             cached_error_label: "CACHED_ERROR_RUSTC_EMIT_COMPAT",

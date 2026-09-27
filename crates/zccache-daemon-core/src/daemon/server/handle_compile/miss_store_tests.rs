@@ -129,6 +129,7 @@ async fn perf_staged_rust_hit_uses_provisional_payload_before_durable_publicatio
             output_path: &requested,
             secondary_output_dir: work.path().into(),
             current_depfile_dest: None,
+            current_rustc_out_dir: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",

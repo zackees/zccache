@@ -205,6 +205,11 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
         rustc_requested_outputs.as_deref(),
     )
     .await;
+    let current_rustc_out_dir = if is_rustc {
+        certified_rustc_out_dir(state, &req_entry.context_key, client_env, &source_path)
+    } else {
+        None
+    };
     materialize_cached_compile_hit_offloaded(OwnedCachedHitMaterializeRequest {
         state: Arc::clone(state),
         sid: *sid,
@@ -214,6 +219,7 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
         output_path: output_path.clone(),
         secondary_output_dir: output_path.parent().unwrap_or(cwd).into(),
         current_depfile_dest,
+        current_rustc_out_dir,
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR_REQUEST",
@@ -345,6 +351,9 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         output_path: output_path.clone(),
         secondary_output_dir,
         current_depfile_dest: current_depfile_dest.clone(),
+        current_rustc_out_dir: is_rustc
+            .then(|| certified_rustc_out_dir(state, &context_key, client_env, source_path))
+            .flatten(),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR_FAST",
@@ -495,6 +504,9 @@ pub(super) async fn try_depgraph_cached_hit(
         output_path: output_path.clone(),
         secondary_output_dir,
         current_depfile_dest: current_depfile_dest.clone(),
+        current_rustc_out_dir: is_rustc
+            .then(|| certified_rustc_out_dir(state, &context_key, client_env, source_path))
+            .flatten(),
         compile_start,
         hit_label,
         cached_error_label: "CACHED_ERROR",

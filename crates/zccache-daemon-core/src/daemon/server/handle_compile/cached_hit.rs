@@ -46,6 +46,9 @@ pub(super) struct CachedHitMaterializeRequest<'a> {
     /// this fix landed (legacy single-output entries are honoured even
     /// when `Some(_)` is passed).
     pub(super) current_depfile_dest: Option<NormalizedPath>,
+    /// Physical OUT_DIR of the current rustc request; used only to rebase
+    /// dep-info after a cross-worktree hit, never to choose artifact bytes.
+    pub(super) current_rustc_out_dir: Option<String>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -71,6 +74,7 @@ pub(super) struct OwnedCachedHitMaterializeRequest {
     pub(super) output_path: NormalizedPath,
     pub(super) secondary_output_dir: NormalizedPath,
     pub(super) current_depfile_dest: Option<NormalizedPath>,
+    pub(super) current_rustc_out_dir: Option<String>,
     pub(super) compile_start: Instant,
     pub(super) hit_label: &'static str,
     pub(super) cached_error_label: &'static str,
@@ -99,6 +103,7 @@ pub(super) async fn materialize_cached_compile_hit_offloaded(
                 output_path: &request.output_path,
                 secondary_output_dir: request.secondary_output_dir,
                 current_depfile_dest: request.current_depfile_dest,
+                current_rustc_out_dir: request.current_rustc_out_dir,
                 compile_start: request.compile_start,
                 hit_label: request.hit_label,
                 cached_error_label: request.cached_error_label,
@@ -154,6 +159,7 @@ pub(super) fn materialize_cached_compile_hit(
         output_path,
         secondary_output_dir,
         current_depfile_dest,
+        current_rustc_out_dir,
         compile_start,
         hit_label,
         cached_error_label,
@@ -452,6 +458,21 @@ pub(super) fn materialize_cached_compile_hit(
                 // (soft miss — the shared artifact stays valid).
                 return Err(CachedHitFailure::DestinationWrite);
             }
+            if let Some(current_out_dir) = current_rustc_out_dir.as_deref() {
+                if let Err(error) =
+                    rehydrate_rustc_out_dir_depfile(target.as_path(), Path::new(current_out_dir))
+                {
+                    write_session_log(
+                        &state.sessions,
+                        sid,
+                        &format!(
+                            "[DIAG] rustc_out_dir_depinfo_rehydrate_failed: {}: {error}",
+                            target.display()
+                        ),
+                    );
+                    return Err(CachedHitFailure::DestinationWrite);
+                }
+            }
         }
         if rehydrate_stdout {
             stdout = Arc::new(rehydrate_staged_output_bytes(stdout.as_slice(), &targets));
@@ -666,6 +687,7 @@ mod tests {
                 output_path: &output_path,
                 secondary_output_dir: dir.path().into(),
                 current_depfile_dest: None,
+                current_rustc_out_dir: None,
                 compile_start: Instant::now(),
                 hit_label: "HIT_TEST",
                 cached_error_label: "CACHED_ERROR_TEST",
@@ -800,6 +822,7 @@ mod tests {
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
             current_depfile_dest: None,
+            current_rustc_out_dir: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -917,6 +940,7 @@ mod tests {
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
             current_depfile_dest: Some(depfile_dest.clone()),
+            current_rustc_out_dir: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -1019,6 +1043,7 @@ mod tests {
             output_path: &output_path,
             secondary_output_dir: dir.path().into(),
             current_depfile_dest: Some(depfile_dest.clone()),
+            current_rustc_out_dir: None,
             compile_start: Instant::now(),
             hit_label: "HIT_TEST",
             cached_error_label: "CACHED_ERROR_TEST",
@@ -1105,6 +1130,7 @@ mod tests {
                     output_path: &output_path,
                     secondary_output_dir: dir.path().into(),
                     current_depfile_dest: None,
+                    current_rustc_out_dir: None,
                     compile_start: Instant::now(),
                     hit_label: "HIT_TEST",
                     cached_error_label: "CACHED_ERROR_TEST",

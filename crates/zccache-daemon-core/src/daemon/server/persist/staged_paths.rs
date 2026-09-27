@@ -191,6 +191,75 @@ pub(in crate::daemon::server) fn rehydrate_logical_depfile(
     Ok(())
 }
 
+/// Rebase the physical include path and env-dep in a cached rustc dep-info
+/// file after a certified path-only `OUT_DIR` hit (#1749). Cargo must see the
+/// *current* build-script output directory even though the compiled artifact
+/// is shared with another worktree.
+pub(in crate::daemon::server) fn rehydrate_rustc_out_dir_depfile(
+    path: &Path,
+    current_out_dir: &Path,
+) -> io::Result<()> {
+    const PREFIX: &[u8] = b"# env-dep:OUT_DIR=";
+    let bytes = std::fs::read(path)?;
+    let mut old_out_dir = None;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if let Some(value) = line.strip_prefix(PREFIX) {
+            if old_out_dir.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "rustc dep-info has duplicate OUT_DIR env dependencies",
+                ));
+            }
+            old_out_dir = Some(value.strip_suffix(b"\r").unwrap_or(value));
+        }
+    }
+    let old_out_dir = old_out_dir.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rustc dep-info lacks an OUT_DIR env dependency",
+        )
+    })?;
+    let old_out_dir = std::str::from_utf8(old_out_dir)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let current = current_out_dir.to_string_lossy();
+    if old_out_dir == current {
+        return Ok(());
+    }
+    let old_generated = Path::new(old_out_dir).join("bindgen.rs");
+    let new_generated = current_out_dir.join("bindgen.rs");
+    let old_generated = old_generated.to_string_lossy();
+    let new_generated = new_generated.to_string_lossy();
+    let mut rewritten = Vec::with_capacity(bytes.len() + current.len());
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if line.starts_with(PREFIX) {
+            rewritten.extend_from_slice(PREFIX);
+            rewritten.extend_from_slice(current.as_bytes());
+            if line.ends_with(b"\r\n") {
+                rewritten.extend_from_slice(b"\r\n");
+            } else if line.ends_with(b"\n") {
+                rewritten.push(b'\n');
+            }
+        } else {
+            rewritten.extend_from_slice(&replace_make_depfile_path(
+                line,
+                old_generated.as_bytes(),
+                new_generated.as_bytes(),
+            ));
+        }
+    }
+    if rewritten == bytes
+        || rewritten
+            .windows(old_out_dir.len())
+            .any(|w| w == old_out_dir.as_bytes())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rustc dep-info OUT_DIR rebase was incomplete",
+        ));
+    }
+    atomic_replace_bytes(path, &rewritten)
+}
+
 fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -318,6 +387,64 @@ fn replace_all(bytes: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perf_out_dir_depinfo_hit_rebases_generated_path_and_env() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let depfile = temp.path().join("libsqlite3_sys.d");
+        let a = "/checkout-a/target/build/libsqlite3-sys/out";
+        let b = "/checkout-b/target/build/libsqlite3-sys/out";
+        let original = format!(
+            "/checkout-b/target/deps/libsqlite3_sys.d: {a}/bindgen.rs\n\
+             {a}/bindgen.rs:\n\
+             # env-dep:OUT_DIR={a}\n"
+        );
+        std::fs::write(&depfile, original).expect("dep-info fixture");
+        rehydrate_rustc_out_dir_depfile(&depfile, Path::new(b)).expect("rebase dep-info");
+        let text = std::fs::read_to_string(&depfile).expect("rebased dep-info");
+        assert!(text.contains(&format!("{b}/bindgen.rs")));
+        assert!(text.contains(&format!("# env-dep:OUT_DIR={b}")));
+        assert!(!text.contains(a), "no A path may leak into B dep-info");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn out_dir_depinfo_rebase_preserves_windows_make_escaping() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let depfile = temp.path().join("libsqlite3_sys.d");
+        let a = r"C:\checkout a\target\out";
+        let b = r"D:\checkout b\target\out";
+        let old_generated = Path::new(a).join("bindgen.rs");
+        let old_quoted = quote_make_depfile_path(old_generated.to_string_lossy().as_bytes());
+        let mut original = b"b.d: ".to_vec();
+        original.extend_from_slice(&old_quoted);
+        original.extend_from_slice(b"\r\n# env-dep:OUT_DIR=");
+        original.extend_from_slice(a.as_bytes());
+        original.extend_from_slice(b"\r\n");
+        std::fs::write(&depfile, original).expect("dep-info fixture");
+        rehydrate_rustc_out_dir_depfile(&depfile, Path::new(b)).expect("rebase dep-info");
+        let bytes = std::fs::read(&depfile).expect("rebased dep-info");
+        let new_generated = Path::new(b).join("bindgen.rs");
+        let new_quoted = quote_make_depfile_path(new_generated.to_string_lossy().as_bytes());
+        assert!(bytes
+            .windows(new_quoted.len())
+            .any(|window| window == new_quoted));
+        assert!(bytes.windows(b.len()).any(|window| window == b.as_bytes()));
+        assert!(!bytes.windows(a.len()).any(|window| window == a.as_bytes()));
+    }
+
+    #[test]
+    fn out_dir_depinfo_rebase_fails_closed_without_env_record() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let depfile = temp.path().join("libsqlite3_sys.d");
+        let original = b"b.d: /checkout-a/out/bindgen.rs\n";
+        std::fs::write(&depfile, original).expect("dep-info fixture");
+        assert!(rehydrate_rustc_out_dir_depfile(&depfile, Path::new("/checkout-b/out")).is_err());
+        assert_eq!(
+            std::fs::read(&depfile).expect("unchanged dep-info"),
+            original
+        );
+    }
 
     #[test]
     fn output_references_round_trip_without_utf8_conversion() {

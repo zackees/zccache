@@ -57,6 +57,35 @@ pub(super) fn rustc_env_dep_cache_value(
     )
 }
 
+/// Physical path to replay in dep-info after a certified hit. A failed or
+/// absent certificate must not authorize any dep-info transformation.
+pub(super) fn certified_rustc_out_dir(
+    state: &SharedState,
+    context_key: &ContextKey,
+    client_env: Option<&[(String, String)]>,
+    source_path: &Path,
+) -> Option<String> {
+    let includes = state.dep_graph.load().get_includes(context_key)?;
+    if audited_libsqlite3_sys_path_only(client_env, source_path, &includes) {
+        rustc_env_dep_value(client_env, "OUT_DIR").map(str::to_owned)
+    } else {
+        None
+    }
+}
+
+fn audited_libsqlite3_sys_path_only(
+    client_env: Option<&[(String, String)]>,
+    source_path: &Path,
+    resolved_includes: &[NormalizedPath],
+) -> bool {
+    path_only_certificate_matches(
+        client_env,
+        source_path,
+        resolved_includes,
+        &LIBSQLITE3_SYS_CERTIFICATE,
+    )
+}
+
 fn cache_value_with_certificate(
     client_env: Option<&[(String, String)]>,
     name: &str,
