@@ -1252,6 +1252,6 @@ Issue: https://github.com/zackees/zccache/issues/1578
 
 - [x] Capture the baseline A/B artifacts and prove which include-only outputs are byte-equivalent.
 - [x] Add a focused RED test for an include-only `OUT_DIR` compile across two roots, plus negative tests for an embedded path and changed generated file.
-- [ ] Implement a fail-closed proof/opt-in path that restores safe hits without dropping general rustc env-dep soundness.
+- [x] Implement a fail-closed proof/opt-in path that restores safe hits without dropping general rustc env-dep soundness.
 - [ ] Confirm the sqlite-link worktree fixture's hits, run the eight-cell Docker matrix and relevant Rust/Windows checks.
 - [ ] Review, push, validate, and merge a PR that resolves #1749.
