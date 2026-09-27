@@ -253,6 +253,7 @@ jobs:
           cache: true
           save-cache: false
           cook-delta: false
+          build-cache: false
           zccache-seed-strict: true
           toolchain: 1.95.0
           cargo-registry-cache: false
@@ -269,6 +270,9 @@ jobs:
           echo "base-hit=${{ steps.setup_probe.outputs.cook-cache-base-hit }}"
           echo "delta-hit=${{ steps.setup_probe.outputs.cook-cache-delta-hit }}"
           echo "status=${{ steps.setup_probe.outputs.cook-cache-status }}"
+          echo "build-cache-hit=${{ steps.setup_probe.outputs.build-cache-hit }}"
+          echo "setup-duration-seconds=${{ steps.setup_probe.outputs.setup-duration-seconds }}"
+          echo 'setup-phase-summary=${{ steps.setup_probe.outputs.setup-phase-summary }}'
           echo 'load-report=${{ steps.setup_probe.outputs.cook-cache-load-report-json }}'
       - name: Install Dylint nightly toolchain and fallback tools
         run: |
