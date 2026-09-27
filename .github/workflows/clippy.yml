@@ -58,8 +58,8 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
-          # setup-soldr#305: see Formatting job comment in ci.yml.
-          solo-toolchain-cache: true
+          # #1677: standalone toolchain snapshots are disabled repo-wide.
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Install Clippy
         run: soldr rustup component add clippy
       - name: Run Clippy

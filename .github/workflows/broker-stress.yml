@@ -50,7 +50,7 @@ jobs:
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
-          solo-toolchain-cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Stress the shared soldr broker
         shell: bash
         env:

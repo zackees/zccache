@@ -18,6 +18,7 @@ def _job(
     name: str, ref: str = CURRENT, os: str = "ubuntu-latest", **inputs: str
 ) -> str:
     inputs.setdefault("cook-delta", "false")
+    inputs.setdefault("solo-toolchain-cache", "false")
     lines = "".join(f"          {k}: {v}\n" for k, v in inputs.items())
     return (
         f"  {name}:\n    runs-on: {os}\n    steps:\n"
@@ -28,6 +29,47 @@ def _job(
 
 def test_repository_workflows_pass() -> None:
     assert guard.check() == []
+
+
+def test_rejects_solo_toolchain_cache_producer(tmp_path: Path) -> None:
+    _workflow(tmp_path, "a.yml", _job("a", **{"solo-toolchain-cache": "true"}))
+
+    assert any("solo-toolchain-cache" in error for error in guard.check(tmp_path))
+
+
+def test_rejects_macos_build_cache_reintroduction(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "ci-check.yml",
+        _job(
+            "check",
+            os="${{ inputs.os }}",
+            **{"build-cache": "true", "prebuild-deps": "soldr-cook"},
+        )
+        + _job(
+            "test",
+            os="${{ inputs.os }}",
+            **{"build-cache": "true", "prebuild-deps": "soldr-cook"},
+        ),
+        on="workflow_call",
+    )
+    _workflow(
+        tmp_path,
+        "wrapper-e2e.yml",
+        _job(
+            "wrapper-e2e",
+            os="${{ matrix.os }}",
+            **{"build-cache": "true", "prebuild-deps": "soldr-cook"},
+        ),
+    )
+
+    errors = guard.check(tmp_path)
+    assert any("macOS Check" in error and "disable build-cache" in error for error in errors)
+    assert any("macOS Test" in error and "disable build-cache" in error for error in errors)
+    assert any(
+        "macOS wrapper-e2e" in error and "disable build-cache" in error
+        for error in errors
+    )
 
 
 def test_rejects_distinct_suffixes_for_same_shape(tmp_path: Path) -> None:

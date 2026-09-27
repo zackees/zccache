@@ -57,6 +57,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
       - name: Install Linux filesystem tools
         if: runner.os == 'Linux'
@@ -131,6 +132,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
       - name: Install btrfs fixture tools
         if: runner.os == 'Linux'

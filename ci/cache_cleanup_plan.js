@@ -4,7 +4,14 @@
 // generation for the same restore shape exists. Keep one generation per
 // shape; the shape functions below intentionally retain OS, architecture,
 // target triple, and feature dimensions.
+const RETIRED_MAIN_PREFIXES = [
+  "solo-toolchain-v3-",
+  "setup-soldr-buildcache-v2-macos-arm64-6d40444a3fc5e4d0-",
+  "setup-soldr-buildcache-v2-macos-arm64-032744c531163905-",
+];
+
 const CACHE_PREFIXES = [
+  ...RETIRED_MAIN_PREFIXES,
   "cook-delta-v2-",
   "zccache-Linux-X64-test-",
   "zccache-Linux-ARM64-test-",
@@ -68,6 +75,13 @@ function planCountPrune(caches, keepPerShape = 1) {
   const stale = [];
   for (const cache of caches) {
     if (!cache.key || !isEligible(cache.key)) continue;
+    if (
+      cache.ref === "refs/heads/main" &&
+      RETIRED_MAIN_PREFIXES.some((prefix) => cache.key.startsWith(prefix))
+    ) {
+      stale.push(cache);
+      continue;
+    }
     // setup-soldr#528 disabled this layer at every first-party call site.
     // No current workflow restores it, so every remaining delta archive is
     // an obsolete generation rather than a reusable shape.

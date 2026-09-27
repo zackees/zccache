@@ -18,5 +18,10 @@
   {"id": 28, "key": "setup-soldr-cargoregistry-v1-windows-x64-3bf5d54592e41b8a-fedcba9876543210", "ref": "refs/heads/main", "size_in_bytes": 150000000, "created_at": "2026-09-26T21:00:00Z"},
   {"id": 23, "key": "cook-base-v2-linux-arm64-glibc-rustc1.95.0-fnone-example", "ref": "refs/heads/main", "size_in_bytes": 421959537, "created_at": "2026-09-26T21:33:52Z"},
   {"id": 24, "key": "setup-soldr-buildcache-v2-linux-arm64-6d40444a3fc5e4d0-3bf5d54592e41b8a", "ref": "refs/heads/main", "size_in_bytes": 326567604, "created_at": "2026-09-26T21:33:35Z"},
-  {"id": 25, "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-fnone-l3bf5d54592e41b8a-soldrv0.9.23-s6c558f939f7b-g13ed43f134f288c9", "ref": "refs/heads/main", "size_in_bytes": 3496050783, "created_at": "2026-09-26T21:40:00Z"}
+  {"id": 25, "key": "cook-delta-v2-linux-x64-glibc-rustc1.95.0-fnone-l3bf5d54592e41b8a-soldrv0.9.23-s6c558f939f7b-g13ed43f134f288c9", "ref": "refs/heads/main", "size_in_bytes": 3496050783, "created_at": "2026-09-26T21:40:00Z"},
+  {"id": 30, "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.95.0-cc2ee8c15-tnone-soldrv0.9.23", "ref": "refs/heads/main", "size_in_bytes": 173666072, "created_at": "2026-09-26T07:24:24Z"},
+  {"id": 31, "key": "setup-soldr-buildcache-v2-macos-arm64-6d40444a3fc5e4d0-3bf5d54592e41b8a", "ref": "refs/heads/main", "size_in_bytes": 403430142, "created_at": "2026-09-26T22:15:03Z"},
+  {"id": 32, "key": "solo-toolchain-v3-linux-x64-glibc-rustc1.95.0-cc2ee8c15-tnone-soldrv0.9.23", "ref": "refs/pull/1726/merge", "size_in_bytes": 173666072, "created_at": "2026-09-26T07:24:24Z"},
+  {"id": 33, "key": "setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-f2415904ed1de43f", "ref": "refs/heads/main", "size_in_bytes": 348300749, "created_at": "2026-09-26T21:43:04Z"},
+  {"id": 34, "key": "setup-soldr-buildcache-v2-macos-arm64-ffffffffffffffff-3bf5d54592e41b8a", "ref": "refs/heads/main", "size_in_bytes": 403430142, "created_at": "2026-09-26T22:15:03Z"}
 ]

@@ -59,7 +59,7 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
-          solo-toolchain-cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Check

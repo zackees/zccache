@@ -74,6 +74,16 @@ JUSTIFIED_COOK_DELTA: dict[str, str] = {}
 # a cache a later job in the same run restores).  None today.
 JUSTIFIED_PR_SAVES: dict[str, str] = {}
 
+# #1677 budget policy: retire the standalone Rust toolchain archive globally,
+# and avoid low-reuse build archives for the two macOS lanes whose exact
+# production probes showed zero compile-cache hits. Keep the other platforms'
+# build-cache profiles unchanged.
+MACOS_BUILD_CACHE_JOBS = {
+    "ci-check.yml:check": ("inputs.os", "macOS Check"),
+    "ci-check.yml:test": ("inputs.os", "macOS Test"),
+    "wrapper-e2e.yml:wrapper-e2e": ("matrix.os", "macOS wrapper-e2e"),
+}
+
 SHAPE_INPUTS = (
     "toolchain",
     "prebuild-deps",
@@ -187,6 +197,10 @@ def _cannot_save_on_pr(step: Step) -> bool:
     }
 
 
+def _normal_expression(value: object) -> str:
+    return re.sub(r"\s+", "", str(value).strip()).replace('"', "'")
+
+
 def _local_action_errors(root: Path) -> list[str]:
     errors: list[str] = []
     for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
@@ -232,6 +246,46 @@ def check(root: Path = ROOT) -> list[str]:
         )
 
     cached = [s for s in steps if _cache_on(s)]
+
+    for step in steps:
+        if not step.main_action:
+            continue
+        solo_toolchain_cache = str(
+            step.inputs.get("solo-toolchain-cache", "")
+        ).strip().lower()
+        if solo_toolchain_cache != "false":
+            errors.append(
+                f"{step.where} must set solo-toolchain-cache: false; "
+                "the standalone toolchain archives are retired by #1677"
+            )
+
+    for target, (os_context, label) in MACOS_BUILD_CACHE_JOBS.items():
+        target_steps = [
+            step
+            for step in steps
+            if step.main_action and step.where.startswith(f"{target}#")
+            and (
+                target != "wrapper-e2e.yml:wrapper-e2e"
+                or step.inputs.get("prebuild-deps") == "soldr-cook"
+            )
+        ]
+        if not target_steps:
+            if root.resolve() == ROOT:
+                errors.append(
+                    f"{target} is missing the guarded {label} cache producer"
+                )
+            continue
+        expected = _normal_expression(
+            f"${{{{ {os_context} != 'macos-15' }}}}"
+        )
+        for step in target_steps:
+            actual = _normal_expression(step.inputs.get("build-cache", "true"))
+            if actual != expected:
+                errors.append(
+                    f"{step.where} must disable build-cache on macos-15 "
+                    f"({label}; expected ${{{{ {os_context} != 'macos-15' }}}})"
+                )
+
     for i, a in enumerate(cached):
         for b in cached[i + 1 :]:
             if _shape(a) != _shape(b):

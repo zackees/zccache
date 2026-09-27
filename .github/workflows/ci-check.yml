@@ -39,14 +39,14 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
+          build-cache: ${{ inputs.os != 'macos-15' }}
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
-          # setup-soldr#305: skip ~7-11s `rustup toolchain install`
-          # on warm runs by restoring from a tiny per-platform cache.
-          # Was missing on Linux/macOS/Windows check+test jobs.
-          solo-toolchain-cache: true
+          # #1677: install the pinned toolchain normally; the standalone
+          # cache's 7-11s measured saving did not justify its footprint.
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Check
         shell: bash
         run: |
@@ -73,6 +73,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
+          build-cache: ${{ inputs.os != 'macos-15' }}
           # Bound compile and test concurrency for the 8-GB ARM runner. This
           # is the prescribed ci-tests resource contract; the Test step below
           # remains the only lib/bin test-profile compilation.
@@ -85,9 +86,9 @@ jobs:
           # across Linux/macOS/Windows.
           seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
           verify-compile-cache: warn
-          # setup-soldr#305: skip ~7-11s `rustup toolchain install` on warm
-          # runs by restoring the toolchain from a tiny per-platform cache.
-          solo-toolchain-cache: true
+          # #1677: install the pinned toolchain normally; the standalone
+          # cache's 7-11s measured saving did not justify its footprint.
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       # Platform Test runs unit tests in libraries and binaries only — it
       # intentionally does NOT compile the integration test binaries under
       # `crates/*/tests/`. Most of those binaries' tests are #[ignore]'d, but

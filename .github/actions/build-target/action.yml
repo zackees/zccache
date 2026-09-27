@@ -178,6 +178,7 @@ runs:
         toolchain: 1.95.0
         cross-targets: ${{ inputs.cross_compile == 'true' && inputs.target || '' }}
         cache: true
+        solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
         cache-key-suffix: build-${{ inputs.cache_key }}
         linker: ${{ inputs.cross_compile == 'true' && 'platform-default' || 'fast' }}
         prebuild-deps: ${{ inputs.prebuild_deps }}

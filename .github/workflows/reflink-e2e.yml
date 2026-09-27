@@ -29,6 +29,7 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
       - name: Mount a btrfs loop volume
         run: |

@@ -79,6 +79,8 @@ jobs:
           ci-tests: true
           zccache-seed-strict: true
           cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
+          build-cache: ${{ matrix.os != 'macos-15' }}
           linker: fast
           prebuild-deps: soldr-cook
           prebuild-deps-flags: "--release"
@@ -93,6 +95,7 @@ jobs:
           ci-tests: true
           zccache-seed-strict: true
           cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
 
       - name: restore source tree after dependency cook

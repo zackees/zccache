@@ -30,6 +30,7 @@ jobs:
           zccache-seed-strict: true
           cache: false
           linker: fast
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
 
       - uses: mozilla-actions/sccache-action@v0.0.10
 

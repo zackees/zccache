@@ -43,6 +43,7 @@ jobs:
           save-cache: auto
           zccache-seed-strict: true
           cache: false
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
 
       # Issue #1039: keep this independent from the main-only benchmark
@@ -73,6 +74,7 @@ jobs:
           save-cache: auto
           zccache-seed-strict: true
           cache: false
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
 
       - name: Build perf benchmark binary
@@ -143,6 +145,7 @@ jobs:
           save-cache: auto
           zccache-seed-strict: true
           cache: false
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           linker: fast
 
       - uses: mozilla-actions/sccache-action@v0.0.10

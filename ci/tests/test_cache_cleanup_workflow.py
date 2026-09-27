@@ -74,13 +74,38 @@ def test_cleanup_allowlist_preserves_foundation_cache_families() -> None:
     planner = (ROOT / "ci/cache_cleanup_plan.js").read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/cache-cleanup.yml").read_text(encoding="utf-8")
     for foundation in (
-        '"setup-soldr-buildcache-v2-',
-        '"solo-toolchain-v3-',
         '"soldr-mini-v2-',
         '"cook-base-v2-',
     ):
         assert foundation not in planner
+    assert '"solo-toolchain-v3-' in planner
+    assert '"setup-soldr-buildcache-v2-macos-arm64-6d40444a3fc5e4d0-' in planner
+    assert '"setup-soldr-buildcache-v2-macos-arm64-032744c531163905-' in planner
     assert "no current shape or foundation cache was deleted" in workflow
+
+
+def test_retired_cache_families_are_main_only_and_exactly_scoped() -> None:
+    fixture = ROOT / "ci/tests/fixtures/cache_cleanup_shapes.json"
+    script = (
+        "const fs=require('node:fs');"
+        "const {planCountPrune}=require(process.argv[1]);"
+        "const caches=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "const plan=planCountPrune(caches);"
+        "process.stdout.write(JSON.stringify({"
+        "keep:plan.keep.map(c=>c.id),stale:plan.stale.map(c=>c.id)}));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=fixture.read_text(encoding="utf-8"),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert {30, 31} <= set(plan["stale"])
+    assert 32 not in plan["stale"]
+    assert 33 not in plan["stale"]
+    assert 34 not in plan["stale"]
 
 
 def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
@@ -110,7 +135,7 @@ def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
     # caches are not assumed to be mutually restorable. Foundation caches are
     # not candidates.
     assert set(plan["keep"]) == {10, 11, 14, 15, 16, 17, 18, 19, 20}
-    assert set(plan["stale"]) == {12, 13, 25, 26, 29}
+    assert set(plan["stale"]) == {12, 13, 25, 26, 29, 30, 31}
     # setup-soldr registry keys encode both Cargo.lock identity and registry
     # archive digest; these are separate content identities, not generations.
     assert plan["registryEligible"] == [False, False, False, False]

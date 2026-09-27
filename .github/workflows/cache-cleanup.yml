@@ -1,21 +1,21 @@
 name: Cache Cleanup
 
-# setup-soldr#320 / setup-soldr#316: prune per-commit caches to prevent
-# LRU eviction of small long-lived caches (solo-toolchain,
-# cargo-registry). Without this the repo cache budget (10 GB) gets
-# dominated by per-commit cook-delta + zccache-test entries,
-# nullifying the warm-run wins from setup-soldr#305 / #310 / #313.
+# zccache#1677: prune obsolete per-commit generations and exact cache
+# families whose producers were disabled after measured low reuse. The
+# standalone solo-toolchain archive and the two measured macOS build-cache
+# key roots are eligible only on refs/heads/main; PR-ref caches remain untouched.
 #
 # Runs daily on the default branch and remains manually dispatchable for
 # release-and-cascade work. It runs before cache-budget.yml so stale
 # per-commit generations are retired before the budget check. It does not run
 # from push or pull-request events, where cache saves could race with pruning.
 #
-# Strategy: keep the newest entry for each distinct cache restore shape and
+# Strategy: keep the newest entry for each distinct reusable cache shape and
 # retire older generations. Shapes retain platform, architecture, target and
 # feature dimensions; a new generation for one target cannot evict another.
-# The hard-cap step may remove additional stale generations, but never the
-# newest entry for a shape or an unlisted foundation family.
+# The retired prefixes above are the only foundation-family exception. The
+# hard-cap step may remove additional stale generations, never the newest
+# entry for a live shape or any other foundation family.
 #
 # Manual runs default to a read-only dry run. Inspect the listed cache keys,
 # refs and sizes before dispatching with `dry-run: false` to delete them.
@@ -96,9 +96,9 @@ jobs:
           DRY_RUN: ${{ inputs['dry-run'] }}
         with:
           script: |
-            // Keep the newest generation of every restore shape. The shared
-            // planner strips only known generation suffixes and favors main
-            // over pull-request copies of an otherwise identical cache.
+            // Keep the newest generation of every live restore shape. The
+            // planner also retires two exact main-only families whose
+            // producers are disabled; it never selects their PR-ref copies.
             const { planCountPrune } = require(
               `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`
             );
@@ -154,7 +154,7 @@ jobs:
             core.setOutput("pruned-cache-ids", JSON.stringify(prunedIds));
             core.setOutput("pruned-bytes", String(totalBytes));
             console.log(
-              `${dryRun ? "Would prune" : "Pruned"} ${totalPruned} per-commit entries ` +
+              `${dryRun ? "Would prune" : "Pruned"} ${totalPruned} eligible entries ` +
               `(${(totalBytes / 1024 / 1024 / 1024).toFixed(2)} GB)`
             );
 
@@ -167,7 +167,7 @@ jobs:
           COUNT_PRUNED_IDS: ${{ steps.count-prune.outputs.pruned-cache-ids }}
         with:
           script: |
-            // Never delete the newest cache for a restore shape or an
+            // Never delete the newest cache for a live restore shape or an
             // unlisted foundation family. If unique protected caches remain
             // above budget, fail rather than deleting those caches.
             const TARGET_GB = 9.5;

@@ -73,10 +73,9 @@ jobs:
           # restored build-cache so the daemon-isolated test phase starts warm.
           seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/integration
           verify-compile-cache: warn
-          # setup-soldr#305: skip the ~8s `rustup toolchain install` on
-          # warm runs by restoring the toolchain delta from a tiny
-          # long-lived cache.
-          solo-toolchain-cache: true
+          # #1677: install the pinned toolchain normally; the standalone
+          # cache's measured saving did not justify its footprint.
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Build integration test binaries
         shell: bash
         env:

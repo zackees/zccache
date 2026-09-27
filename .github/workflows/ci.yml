@@ -63,12 +63,9 @@ jobs:
           build-cache: false
           linker: fast
           prebuild-deps: none
-          # Re-enabled after setup-soldr#334: rustfmt is now declared
-          # in rust-toolchain.toml's `components = ["rustfmt"]`, so
-          # setup-soldr installs it during the toolchain phase and
-          # the solo-cache snapshot captures both the manifest AND
-          # the cargo-fmt binary. Warm restore is consistent.
-          solo-toolchain-cache: true
+          # #1677: standalone toolchain snapshots retain too much data for
+          # their measured 7-11s install-time saving; install normally.
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Check formatting
         run: soldr cargo fmt --all -- --check
       - name: Check log-audit registry snapshot
@@ -109,6 +106,7 @@ jobs:
           # and tool binaries once; the Dylint stages below only consume it.
           ci-tests: true
           dylint-cache: true
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           dylint-toolchain: nightly-2026-05-26
           cargo-dylint-version: 6.0.1
           dylint-link-version: 6.0.1
@@ -256,14 +254,13 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
-          # setup-soldr#305: see Formatting job comment above.
-          solo-toolchain-cache: true
+          # #1677: standalone toolchain snapshots are disabled repo-wide.
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
           # setup-soldr#347 smoke test: have the post-step prune
           # the oldest non-foundation entries when repo cache > 8 GB.
-          # Foundation prefixes (solo-toolchain, cargo-registry,
-          # soldr-mini, setup-cache) are never touched. This lets the
-          # eviction policy do the work the cache-cleanup.yml workflow
-          # previously handled, but in-band per CI run.
+          # This post-step prune stays limited to non-foundation cache
+          # families; cache-cleanup.yml retires the disabled solo-toolchain
+          # family through its explicit main-only policy.
           cache-eviction-policy: protect-foundations
       - name: Check MSRV
         run: soldr cargo check --workspace
@@ -294,8 +291,8 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
           verify-compile-cache: warn
-          # setup-soldr#305: see Formatting job comment above.
-          solo-toolchain-cache: true
+          # #1677: standalone toolchain snapshots are disabled repo-wide.
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Build docs
         run: soldr cargo doc --workspace --no-deps
 
@@ -317,6 +314,7 @@ jobs:
           toolchain: 1.95.0
           cache: true
           linker: fast
+          solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Check clang++
         run: clang++ --version
       - name: Run miss-overhead budget
