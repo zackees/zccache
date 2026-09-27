@@ -341,7 +341,7 @@ function planLockTransitionPrePrune(
   const nativePythonF9Rows = mainRows.filter((cache) => {
     const parts = parseCookBaseKey(cache.key);
     return parts && parts.os === "linux" && parts.arch === "x64" &&
-      parts.flags === "f9e7e4902" && parts.suffix === "";
+      parts.flags === "9e7e4902" && parts.suffix === "";
   });
   const hasCurrentNativePythonF9 = nativePythonF9Rows.some((cache) =>
     currentHashes.get("linux").has(parseCookBaseKey(cache.key).lockHash),

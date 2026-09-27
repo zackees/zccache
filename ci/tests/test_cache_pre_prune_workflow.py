@@ -212,6 +212,40 @@ def test_transition_forecast_reserves_perf_guard_profile_when_row_is_absent() ->
     assert plan["estimatedNewBytes"] >= 400_000_000
 
 
+def test_transition_forecast_does_not_double_reserve_existing_native_python_f9() -> None:
+    cache = {
+        "id": 1,
+        "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-f9e7e4902-l27ed8f2e0ba4ca9d-soldrv0.9.23",
+        "ref": "refs/heads/main",
+        "size_in_bytes": 824_323_345,
+        "created_at": "2026-09-27T00:00:00Z",
+    }
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const {caches}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "const p=planLockTransitionPrePrune(caches,{linux:'27ed8f2e0ba4ca9d',macos:'27ed8f2e0ba4ca9d',windows:['373d63beb34d7b6e']},1_000_000_000,1_000_000_000);"
+        "process.stdout.write(JSON.stringify(p));"
+    )
+
+    def plan(caches: list[dict[str, object]]) -> dict:
+        result = subprocess.run(
+            ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+            input=json.dumps({"caches": caches}),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
+    with_current = plan([cache])
+    without_current = plan([])
+
+    assert with_current["ok"] is True
+    assert without_current["ok"] is True
+    assert without_current["estimatedNewBytes"] - with_current["estimatedNewBytes"] == 1_120_000_000
+
+
 def test_lock_transition_forecast_fails_closed_for_unknown_buildcache_key() -> None:
     caches = [
         {"id": 1, "key": "setup-soldr-buildcache-v3-linux-x64-unknown", "ref": "refs/heads/main", "size_in_bytes": 100, "created_at": "2026-01-01T00:00:00Z"}
