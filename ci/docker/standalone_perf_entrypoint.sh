@@ -29,6 +29,7 @@ seed_soldr_home() {
     fi
     export CARGO_HOME="${soldr_root}/cargo"
     export RUSTUP_HOME="${soldr_root}/rustup"
+    export PATH="${CARGO_HOME}/bin:${PATH}"
 }
 
 command="${1:-}"
@@ -72,6 +73,11 @@ case "${command}" in
     run)
         require_mount /artifacts/perf_bench_test
         require_mount /artifacts/zccache-ci
+        seed_soldr_home
+        case "$(rustc --version)" in
+            "rustc ${RUST_VERSION} "*) ;;
+            *) echo "ERROR: pinned rustc ${RUST_VERSION} is unavailable to the benchmark" >&2; exit 2 ;;
+        esac
         language="${2:?language is required}"
         test_name="${3:?test name is required}"
         attempts="${4:?attempt count is required}"
