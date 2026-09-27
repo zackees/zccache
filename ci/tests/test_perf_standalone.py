@@ -521,6 +521,11 @@ def test_runtime_rust_state_is_owned_and_seeded_by_soldr():
     )
     assert 'export CARGO_HOME="${soldr_root}/cargo"' in entrypoint
     assert 'export RUSTUP_HOME="${soldr_root}/rustup"' in entrypoint
+    assert 'export PATH="${CARGO_HOME}/bin:${PATH}"' in entrypoint
+    run_entrypoint = entrypoint.split("    run)\n", 1)[1]
+    assert run_entrypoint.index("seed_soldr_home") < run_entrypoint.index(
+        'rustc --version'
+    )
     assert "/opt/rust" not in entrypoint
 
 
