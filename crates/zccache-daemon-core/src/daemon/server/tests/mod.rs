@@ -48,6 +48,7 @@ pub(crate) mod staged_env;
 mod store_mode;
 mod system_includes_deferred;
 mod watcher_lifecycle;
+mod wrapperless_rustc_rebuild;
 mod write_cached;
 mod write_cached_mode;
 
