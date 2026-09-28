@@ -15,8 +15,9 @@ const OUTPUT_BYTES: usize = 256 * 1024;
 /// Median cost of detaching a hardlinked output next to the median cost of
 /// writing the same bytes with a file + directory sync, interleaved in the
 /// same directory so machine load hits both equally. `None` unless a synced
-/// write costs at least 2 ms here: where sync is cheap (tmpfs, a write-back
-/// cache, a hosted runner's disk) the copy itself is the same order.
+/// write costs at least 5 ms here: where sync is cheap (tmpfs, a write-back
+/// cache, hosted runner disks at 0.8-2.1 ms) the copy itself is the same
+/// order under a parallel test run.
 fn median_detach_vs_synced_write(dir: &Path) -> Option<(std::time::Duration, std::time::Duration)> {
     const SAMPLES: usize = 21;
     let payload = vec![0x5a_u8; OUTPUT_BYTES];
@@ -51,7 +52,7 @@ fn median_detach_vs_synced_write(dir: &Path) -> Option<(std::time::Duration, std
     detach_costs.sort();
     sync_costs.sort();
     let (detach, sync) = (detach_costs[SAMPLES / 2], sync_costs[SAMPLES / 2]);
-    (sync >= std::time::Duration::from_millis(2)).then_some((detach, sync))
+    (sync >= std::time::Duration::from_millis(5)).then_some((detach, sync))
 }
 
 /// The detached copy is a compiler-visible output the compiler (or tool)
