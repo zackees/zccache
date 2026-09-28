@@ -15,6 +15,12 @@ Fails when:
   other ref only ``save-cache: false`` or an expression that is false on
   ``pull_request`` counts.  ``save-cache: true`` must be justified in
   ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``);
+* a setup-soldr step still writes the bare main-push-only rule
+  (``MAIN_PUSH_ONLY_SAVE``) instead of ``SAVE_CACHE_POLICY``.  The only
+  exception to the main-push-only rule is nektos/act: local bosn runs are
+  ``pull_request`` events with ``ACT=true`` and save fully so they stay warm
+  (zackees/bosn#309); on GitHub ``env.ACT`` is empty and the policy reduces
+  to main-push-only, which ``check`` re-proves by evaluating it;
 * this repository's first-party action (``uses: ./``) cannot save durable
   caches from pull-request workflows; allow only explicit no-save or a
   main-ref-only save expression;
@@ -78,6 +84,117 @@ JUSTIFIED_COOK_DELTA: dict[str, str] = {}
 # `workflow.yml:job` -> why that job must save on pull_request (e.g. it seeds
 # a cache a later job in the same run restores).  None today.
 JUSTIFIED_PR_SAVES: dict[str, str] = {}
+
+# #1677 budget rule: on GitHub only a push to main saves durable caches.
+MAIN_PUSH_ONLY_SAVE = (
+    "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
+    "&& 'auto' || 'false' }}"
+)
+# The save-cache value every setup-soldr step that saves on main must use.
+# nektos/act sets ACT=true, so local bosn runs (deliberately pull_request
+# events) save fully and stay warm (zackees/bosn#309).  On GitHub `env.ACT`
+# is empty, so this reduces to MAIN_PUSH_ONLY_SAVE and a pull_request run
+# never saves; `check` proves that with `evaluate_save_policy`.  Revisit when
+# setup-soldr's runner-aware `auto` (zackees/setup-soldr#537) ships.
+SAVE_CACHE_POLICY = (
+    "${{ env.ACT && 'true' || (github.event_name == 'push' "
+    "&& github.ref == 'refs/heads/main' && 'auto' || 'false') }}"
+)
+# The composite build-target action forwards its caller's GitHub policy and
+# adds the act prefix once, so callers keep MAIN_PUSH_ONLY_SAVE or "false".
+COMPOSITE_SAVE_CACHE_POLICY = "${{ env.ACT && 'true' || inputs.save_cache }}"
+
+_EXPR_TOKEN = re.compile(r"\s*('[^']*'|&&|\|\||==|!=|\(|\)|[A-Za-z_][\w.]*)")
+
+
+def evaluate_save_policy(
+    expression: str, *, event_name: str, ref: str, act: str = ""
+) -> str:
+    """Evaluate a ``save-cache`` expression the way Actions would.
+
+    Supports the subset the save policies use: single-quoted strings,
+    ``env.ACT``, ``github.event_name``, ``github.ref``, ``==``/``!=``,
+    ``&&``/``||`` (value-returning, empty string is falsy) and parentheses.
+    Anything else raises ``ValueError`` so an unprovable policy fails closed.
+    """
+    body = expression.strip()
+    if not (body.startswith("${{") and body.endswith("}}")):
+        raise ValueError(f"not an expression: {expression!r}")
+    body = body[3:-2].strip()
+    tokens: list[str] = []
+    pos = 0
+    while pos < len(body):
+        match = _EXPR_TOKEN.match(body, pos)
+        if not match:
+            raise ValueError(f"unsupported syntax at {body[pos:]!r}")
+        tokens.append(match.group(1))
+        pos = match.end()
+        while pos < len(body) and body[pos].isspace():
+            pos += 1
+    names = {"env.ACT": act, "github.event_name": event_name, "github.ref": ref}
+
+    def primary(i: int) -> tuple[str, int]:
+        token = tokens[i] if i < len(tokens) else ""
+        if token == "(":
+            value, i = either(i + 1)
+            if i >= len(tokens) or tokens[i] != ")":
+                raise ValueError(f"unbalanced parentheses in {expression!r}")
+            return value, i + 1
+        if token.startswith("'"):
+            return token[1:-1], i + 1
+        if token in names:
+            return names[token], i + 1
+        raise ValueError(f"unsupported token {token!r} in {expression!r}")
+
+    def compare(i: int) -> tuple[str, int]:
+        left, i = primary(i)
+        while i < len(tokens) and tokens[i] in {"==", "!="}:
+            op = tokens[i]
+            right, i = primary(i + 1)
+            equal = left.lower() == right.lower()
+            left = "true" if equal == (op == "==") else ""
+        return left, i
+
+    def both(i: int) -> tuple[str, int]:
+        left, i = compare(i)
+        while i < len(tokens) and tokens[i] == "&&":
+            right, i = compare(i + 1)
+            left = right if left else left
+        return left, i
+
+    def either(i: int) -> tuple[str, int]:
+        left, i = both(i)
+        while i < len(tokens) and tokens[i] == "||":
+            right, i = both(i + 1)
+            left = left if left else right
+        return left, i
+
+    value, end = either(0)
+    if end != len(tokens):
+        raise ValueError(f"trailing tokens in {expression!r}")
+    return value
+
+
+def _save_policy_errors() -> list[str]:
+    """Prove SAVE_CACHE_POLICY is main-push-only on GitHub and full under act."""
+    cases = (
+        ("pull_request", "refs/pull/1/merge", "", "false"),
+        ("push", "refs/heads/feature", "", "false"),
+        ("schedule", "refs/heads/main", "", "false"),
+        ("push", "refs/heads/main", "", "auto"),
+        ("pull_request", "refs/pull/1/merge", "true", "true"),
+    )
+    errors: list[str] = []
+    for event_name, ref, act, expected in cases:
+        actual = evaluate_save_policy(
+            SAVE_CACHE_POLICY, event_name=event_name, ref=ref, act=act
+        )
+        if actual != expected:
+            errors.append(
+                f"SAVE_CACHE_POLICY evaluates to {actual!r} for {event_name} "
+                f"{ref} (ACT={act!r}); expected {expected!r}"
+            )
+    return errors
 
 # #1677 budget policy: retire low-return archives identified by exact hosted
 # probes. #1758: cook bases are Linux-only (zackees/ci.yml#5 RUST-010); keep
@@ -213,9 +330,13 @@ def _shape(step: Step) -> tuple[str, ...]:
 
 def _cannot_save_on_pr(step: Step) -> bool:
     value = str(step.inputs.get("save-cache", "")).strip().replace(" ", "")
-    main_push_only = "${{github.event_name=='push'&&github.ref=='refs/heads/main'&&'auto'||'false'}}"
+    main_push_only = _normal_expression(MAIN_PUSH_ONLY_SAVE)
     main_push_boolean = "${{github.event_name=='push'&&github.ref=='refs/heads/main'}}"
     if step.ref in SAVE_CACHE_REFS and value.lower() in {"", "auto"}:
+        return True
+    # SAVE_CACHE_POLICY is main-push-only on GitHub (env.ACT is empty there);
+    # _save_policy_errors re-proves that on every check.
+    if value == _normal_expression(SAVE_CACHE_POLICY):
         return True
     return value.lower() == "false" or value in {main_push_only, main_push_boolean} or value in {
         "${{github.event_name!='pull_request'}}",
@@ -281,10 +402,7 @@ def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
 
     errors: list[str] = []
     windows_with = windows[0].get("with") or {}
-    expected_save = (
-        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
-        "&& 'auto' || 'false' }}"
-    )
+    expected_save = SAVE_CACHE_POLICY
     expected_windows = {
         "build-cache": False,
         "cargo-registry-cache": True,
@@ -299,7 +417,7 @@ def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
     if windows_with.get("save-cache") != expected_save:
         errors.append(
             "fs-matrix.yml:matrix Windows setup must retain the main-push-only "
-            "save-cache policy"
+            "save-cache policy (SAVE_CACHE_POLICY)"
         )
 
     other_with = other[0].get("with") or {}
@@ -343,12 +461,36 @@ def _non_linux_cook_errors(steps: list[Step]) -> list[str]:
     return errors
 
 
+def _act_save_policy_errors(steps: list[Step]) -> list[str]:
+    """Main-push-only savers must use SAVE_CACHE_POLICY (act saves fully)."""
+    bare = _normal_expression(MAIN_PUSH_ONLY_SAVE)
+    inputs_only = _normal_expression("${{ inputs.save_cache }}")
+    errors: list[str] = []
+    for step in steps:
+        if not step.main_action:
+            continue
+        value = _normal_expression(step.inputs.get("save-cache", ""))
+        if value == bare:
+            errors.append(
+                f"{step.where} uses the bare main-push-only save-cache rule; use "
+                "SAVE_CACHE_POLICY so local act runs save fully (zackees/bosn#309)"
+            )
+        elif step.where.startswith("actions/") and value == inputs_only:
+            errors.append(
+                f"{step.where} forwards inputs.save_cache without the act prefix; "
+                "use COMPOSITE_SAVE_CACHE_POLICY"
+            )
+    return errors
+
+
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
+    errors.extend(_save_policy_errors())
     errors.extend(_local_action_errors(root))
     errors.extend(_fs_matrix_windows_profile_errors(root))
     steps = collect(root)
     errors.extend(_non_linux_cook_errors(steps))
+    errors.extend(_act_save_policy_errors(steps))
 
     refs = sorted({s.ref for s in steps})
     if len(refs) > 1:

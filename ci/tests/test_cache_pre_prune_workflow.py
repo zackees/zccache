@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from ci import check_cache_footprint as footprint
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -473,8 +475,17 @@ def test_pre_prune_is_push_only_and_waiter_is_read_only_and_exact_sha() -> None:
 
 
 def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> None:
-    """Every durable first-party writer is gated; non-push refs are read-only."""
-    expression = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}"
+    """Every durable first-party writer is gated; non-push refs are read-only.
+
+    setup-soldr steps use SAVE_CACHE_POLICY: main-push-only on GitHub, full
+    saves under nektos/act (local bosn runs, zackees/bosn#309).
+    """
+    expression = footprint.SAVE_CACHE_POLICY
+    for event_name, ref in (
+        ("pull_request", "refs/pull/1/merge"),
+        ("push", "refs/heads/feature"),
+    ):
+        assert footprint.evaluate_save_policy(expression, event_name=event_name, ref=ref) == "false"
     writer_names = {
         "CI",
         "Linux",
@@ -607,12 +618,13 @@ def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> No
         encoding="utf-8"
     )
     assert "wait-cache-pre-prune" in source
-    assert "save-cache: ${{ inputs.save_cache }}" in source
+    assert f"save-cache: {footprint.COMPOSITE_SAVE_CACHE_POLICY}" in source
     assert "default: \"false\"" in source
     release = yaml.safe_load((ROOT / ".github/workflows/release-auto.yml").read_text(encoding="utf-8"))
     release_steps = [step for job in release["jobs"].values() for step in job.get("steps", [])]
     release_target = next(step for step in release_steps if step.get("uses") == "./.github/actions/build-target")
-    assert release_target["with"]["save_cache"] == expression
+    # Callers pass the GitHub rule; the composite step adds the act prefix once.
+    assert release_target["with"]["save_cache"] == footprint.MAIN_PUSH_ONLY_SAVE
     release_job = next(job for job in release["jobs"].values() if any(
         step.get("uses") == "./.github/actions/build-target" for step in job.get("steps", [])
     ))

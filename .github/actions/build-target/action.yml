@@ -182,7 +182,9 @@ runs:
       uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
       with:
         cook-delta: false # per-commit delta layer off (setup-soldr#528)
-        save-cache: ${{ inputs.save_cache }}
+        # Local act runs (bosn; pull_request events) save fully; GitHub keeps
+        # the #1677 main-push-only rule. See SAVE_CACHE_POLICY in ci/check_cache_footprint.py.
+        save-cache: ${{ env.ACT && 'true' || inputs.save_cache }}
         toolchain: 1.95.0
         cross-targets: ${{ inputs.cross_compile == 'true' && inputs.target || '' }}
         cache: true

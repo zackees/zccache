@@ -1,6 +1,8 @@
 import shutil
 from pathlib import Path
 
+import pytest
+
 from ci import check_cache_footprint as guard
 
 CURRENT = next(iter(guard.SAVE_CACHE_REFS))
@@ -330,3 +332,88 @@ def test_linux_only_cook_expression_passes_on_a_mixed_matrix(tmp_path: Path) -> 
     assert not any("cook bases are Linux-only" in e for e in guard.check(tmp_path))
     _workflow(tmp_path, "linux.yml", _job("linux", os="ubuntu-latest"))
     assert not any("cook bases are Linux-only" in e for e in guard.check(tmp_path))
+
+
+def test_save_cache_policy_is_main_push_only_on_github_and_full_under_act() -> None:
+    """GitHub pull_request runs never save; local act (bosn#309) saves fully."""
+    policy = guard.SAVE_CACHE_POLICY
+
+    def evaluate(event_name: str, ref: str, act: str = "") -> str:
+        return guard.evaluate_save_policy(policy, event_name=event_name, ref=ref, act=act)
+
+    assert evaluate("pull_request", "refs/pull/7/merge") == "false"
+    assert evaluate("pull_request_target", "refs/heads/main") == "false"
+    assert evaluate("push", "refs/heads/feature") == "false"
+    assert evaluate("schedule", "refs/heads/main") == "false"
+    assert evaluate("push", "refs/heads/main") == "auto"
+    assert evaluate("pull_request", "refs/pull/7/merge", act="true") == "true"
+    # On GitHub the act prefix is inert: identical to the bare #1677 rule.
+    for event_name, ref in (
+        ("pull_request", "refs/pull/7/merge"),
+        ("push", "refs/heads/main"),
+        ("push", "refs/heads/feature"),
+    ):
+        assert evaluate(event_name, ref) == guard.evaluate_save_policy(
+            guard.MAIN_PUSH_ONLY_SAVE, event_name=event_name, ref=ref
+        )
+    assert guard._save_policy_errors() == []
+
+
+def test_evaluate_save_policy_fails_closed_on_unknown_syntax() -> None:
+    with pytest.raises(ValueError):
+        guard.evaluate_save_policy(
+            "${{ github.head_ref && 'true' || 'false' }}",
+            event_name="pull_request",
+            ref="refs/pull/7/merge",
+        )
+
+
+def test_save_cache_policy_is_accepted(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "a.yml",
+        _job("a", **{"save-cache": guard.SAVE_CACHE_POLICY}),
+    )
+    assert guard.check(tmp_path) == []
+
+
+def test_bare_main_push_only_expression_is_rejected(tmp_path: Path) -> None:
+    """The pre-act rule is safe on GitHub but leaves local act runs cold."""
+    _workflow(
+        tmp_path,
+        "a.yml",
+        _job("a", **{"save-cache": guard.MAIN_PUSH_ONLY_SAVE}),
+    )
+    errors = guard.check(tmp_path)
+    assert any(
+        "bare main-push-only save-cache rule" in error and "SAVE_CACHE_POLICY" in error
+        for error in errors
+    ), errors
+
+
+def test_repository_setup_soldr_steps_use_the_act_policy() -> None:
+    steps = [s for s in guard.collect(guard.ROOT) if s.main_action]
+    savers = [
+        s for s in steps if str(s.inputs.get("save-cache", "")).strip() != "false"
+    ]
+    assert savers
+    for step in savers:
+        expected = (
+            guard.COMPOSITE_SAVE_CACHE_POLICY
+            if step.where.startswith("actions/")
+            else guard.SAVE_CACHE_POLICY
+        )
+        assert step.inputs.get("save-cache") == expected, step.where
+
+
+def test_composite_without_act_prefix_is_rejected(tmp_path: Path) -> None:
+    action = tmp_path / ".github" / "actions" / "build-target" / "action.yml"
+    action.parent.mkdir(parents=True)
+    action.write_text(
+        "runs:\n  using: composite\n  steps:\n"
+        f"    - uses: zackees/setup-soldr@{CURRENT}\n      with:\n"
+        "        cook-delta: false\n        solo-toolchain-cache: false\n"
+        "        save-cache: ${{ inputs.save_cache }}\n",
+        encoding="utf-8",
+    )
+    assert any("COMPOSITE_SAVE_CACHE_POLICY" in e for e in guard.check(tmp_path))
