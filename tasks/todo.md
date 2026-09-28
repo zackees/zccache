@@ -1,3 +1,18 @@
+# PR #1655 rebase + Windows/dylint fixes
+
+- [x] Rebase `repair-3` onto main (resolve 5 conflicted files: keep both `current_rustc_out_dir` #1749 and PR's `depfile_key_root`; port moved cached_hit tests).
+- [x] Add platform-gated `from_root(relative)` fixture generator to `zccache-test-support`.
+- [x] Move `depfile_root.rs` inline tests to `depfile_root_tests.rs` (dylint `enforce_platform_boundary` failure: `#[cfg(unix)]` + `os::unix::fs::symlink` in a Production-classified file).
+- [x] Convert all POSIX-root test fixtures (`/work/tree`, `/wt/a`, ...) to `from_root(...)` (5 Windows test failures: `root_spelling` requires `is_absolute`, false for `/...` on Windows).
+- [x] Verify: targeted tests, clippy, fmt, and `uv run python -m ci.lint --dylint-only`.
+- [ ] Push branch, open PR, validate CI.
+
+## Review — PR #1655 rebase
+
+- The rebase missed two `CachedHitMaterializeRequest` literals in `cached_hit_output_path_tests.rs` (new on main via #1749); added `depfile_key_root: None`.
+- Local: `zccache-daemon-core` lib tests 1007 passed; `ci.lint --dylint-only` exit 0; clippy on touched crates (`--no-deps`) clean; `--target x86_64-pc-windows-msvc` test check compiles.
+- Already on main, not part of this PR: `clippy::nonminimal_bool` at `zccache-core/src/config/env_policy.rs:156`.
+
 # #1719 embedded flush consistency
 
 - [x] Inventory startup loads, flush/shutdown/periodic writers, the in-memory WAL, and per-file durability guarantees.

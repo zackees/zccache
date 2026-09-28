@@ -209,6 +209,7 @@ fn parse_bool(name: &str, value: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zccache_test_support::from_root;
 
     fn env(values: &[(&str, &str)]) -> Vec<(String, String)> {
         values
@@ -389,19 +390,22 @@ mod tests {
             ]
             .to_vec()
         };
+        // Host-absolute roots: POSIX `/wt/a` is not absolute on Windows,
+        // where the key-root rewrite is (correctly) disabled.
+        let (a, b) = (from_root("wt/a"), from_root("wt/b"));
 
         assert_eq!(
-            context_for("/wt/a", &ninja("/wt/a"), Some("/wt/a")),
-            context_for("/wt/b", &ninja("/wt/b"), Some("/wt/b")),
+            context_for(&a, &ninja(&a), Some(&a)),
+            context_for(&b, &ninja(&b), Some(&b)),
         );
         assert_ne!(
-            context_for("/wt/a", &ninja("/wt/a"), None),
-            context_for("/wt/b", &ninja("/wt/b"), None),
+            context_for(&a, &ninja(&a), None),
+            context_for(&b, &ninja(&b), None),
             "without a rehydrating key root the raw spelling stays in the key"
         );
         assert_ne!(
-            context_for("/wt/a", &ninja("/wt/a"), Some("/wt/a")),
-            context_for("/wt/b", &ninja("/wt/a"), Some("/wt/b")),
+            context_for(&a, &ninja(&a), Some(&a)),
+            context_for(&b, &ninja(&a), Some(&b)),
             "a path outside the requesting root keeps its own spelling"
         );
     }

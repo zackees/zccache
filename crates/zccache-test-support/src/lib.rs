@@ -6,6 +6,26 @@ use zccache_core::NormalizedPath;
 
 pub use zccache_audit::{CacheRootAuditGuard, RuleId};
 
+/// Build an absolute fixture path from a root-relative spec, gated on the
+/// host platform's spelling: `from_root("work/tree")` is `/work/tree` on
+/// Unix and `C:/work/tree` on Windows.
+///
+/// Always forward-slashed so Make-depfile byte fixtures interpolate
+/// identically on every host and `\` never reads as a Make escape.
+/// `Path::is_absolute` holds on both hosts, which is the precondition
+/// `root_spelling` gates whole-root key rewriting on — POSIX literals
+/// like `/work/tree` are rooted but *not* absolute on Windows, so tests
+/// that hardcode them silently exercise the disabled path there.
+#[must_use]
+pub fn from_root(relative: &str) -> String {
+    let relative = relative.trim_matches('/');
+    if cfg!(windows) {
+        format!("C:/{relative}")
+    } else {
+        format!("/{relative}")
+    }
+}
+
 /// Apply the canonical Rust log-audit definition of an unknown miss.
 ///
 /// `intentional_test` is the visible, per-test escape hatch for the one
