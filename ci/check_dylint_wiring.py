@@ -94,6 +94,45 @@ def check_platform_baseline(root: Path, path: Path) -> list[str]:
     return errors
 
 
+# ci/lint.py runs Dylint once per OS (#1740). Late lints only see
+# cfg-selected code, so a first-party gate finer than the OS (arch, env,
+# pointer width) or on an unlisted OS would hide source from every leg.
+DYLINT_OSES = frozenset({"linux", "windows", "macos"})
+CFG_ATTR = re.compile(r"#!?\[\s*cfg(?:_attr)?\s*\(")
+TARGET_PREDICATE = re.compile(r'\b(target_\w+)\s*=\s*"([^"]*)"')
+
+
+def _cfg_attr_bodies(text: str):
+    """Yield (start offset, body) for each `#[cfg(..)]`/`#[cfg_attr(..)]`."""
+    for match in CFG_ATTR.finditer(text):
+        end, depth = match.end(), 1
+        while depth and end < len(text):
+            depth += {"(": 1, ")": -1}.get(text[end], 0)
+            end += 1
+        yield match.end(), text[match.end() : end - 1]
+
+
+def check_cfg_coverage(root: Path) -> list[str]:
+    errors: list[str] = []
+    for path in sorted((root / "crates").rglob("*.rs")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for start, body in _cfg_attr_bodies(text):
+            for predicate in TARGET_PREDICATE.finditer(body):
+                key, value = predicate.groups()
+                if key == "target_os" and value in DYLINT_OSES:
+                    continue
+                if key == "target_family" and value in {"unix", "windows"}:
+                    continue
+                line = text.count("\n", 0, start + predicate.start()) + 1
+                errors.append(
+                    f"{path.relative_to(root).as_posix()}:{line}: "
+                    f'{key} = "{value}" gates source no Dylint OS leg selects '
+                    "(gate on unix/windows/target_os, or add a leg to "
+                    "ci/lint.py DYLINT_OS_TARGETS)"
+                )
+    return errors
+
+
 def check(root: Path = ROOT) -> list[str]:
     """Return wiring errors; kept pure so pytest can exercise fixtures."""
     expected = manifests(root)
@@ -143,6 +182,7 @@ def check(root: Path = ROOT) -> list[str]:
                 errors.append(f"stale allowlist path: {allowlist.relative_to(root)}: {entry}")
     for baseline in (root / "dylints").glob("*/src/baseline.txt"):
         errors.extend(check_platform_baseline(root, baseline))
+    errors.extend(check_cfg_coverage(root))
     return errors
 
 

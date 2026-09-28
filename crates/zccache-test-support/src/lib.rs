@@ -449,7 +449,7 @@ fn hdiutil_retry_pause(attempt: u32) {
 fn create_macos_image(
     temp: &tempfile::TempDir,
     filesystem: &str,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<NormalizedPath, String> {
     let mut last_error = None;
     for attempt in 0..MAC_HDIUTIL_ATTEMPTS {
         // A failed create can leave a partially registered image. Use a fresh
@@ -470,7 +470,7 @@ fn create_macos_image(
             .output()
             .map_err(|error| error.to_string())?;
         if output.status.success() {
-            return Ok(image);
+            return Ok(image.into());
         }
         last_error = Some(command_error("hdiutil create", &output));
         if !hdiutil_resource_busy(&output) || attempt + 1 == MAC_HDIUTIL_ATTEMPTS {

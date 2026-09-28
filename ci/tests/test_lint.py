@@ -19,6 +19,33 @@ def test_one_linux_dylint_job_gates_ordinary_pr_ci():
     assert "soldr dylint prepare" in job
 
 
+def test_ci_dylint_job_lints_and_proves_every_os_target():
+    # #1740: the late lints see only cfg-selected code, so the one Linux job
+    # must also lint the Windows and macOS selections and prove each target
+    # reports a planted violation.
+    workflow = (lint.SCRIPT_DIR / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = workflow.split("\n  dylint:", 1)[1].split("\n  msrv:", 1)[0]
+    install = job.split("- name: Install Dylint nightly toolchain", 1)[1].split("\n      - name:", 1)[0]
+    proof = job.split("- name: Prove custom-lint selection for every OS", 1)[1]
+    for target in lint.DYLINT_OS_TARGETS.values():
+        assert f"--target {target}" in install
+        assert target in proof
+    assert "uv run python -m ci.lint --dylint-only" in job
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [
+        ("linux", ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"]),
+        ("win32", ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]),
+        ("darwin", ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]),
+    ],
+)
+def test_dylint_cross_targets_cover_every_other_os(monkeypatch, platform, expected):
+    monkeypatch.setattr(lint.sys, "platform", platform)
+    assert lint.dylint_cross_targets() == expected
+
+
 def test_windows_local_dylint_cannot_return_a_green_skip(monkeypatch):
     monkeypatch.setattr(lint, "os", SimpleNamespace(name="nt"))
     assert not lint.skip_dylint_on_windows()
@@ -120,6 +147,34 @@ def test_lint_dylint_only_uses_managed_fast_path_and_fails_closed(monkeypatch):
     assert calls[1][0] == ["soldr", "dylint", "--all", "--", "--workspace", "--lib", "--bins"]
     assert "RUSTFLAGS" not in calls[1][1]["env"]
     assert "RUSTUP_TOOLCHAIN" not in calls[1][1]["env"]
+
+
+def test_lint_dylint_only_fails_closed_on_a_cross_target_finding(monkeypatch):
+    # #1740: a Windows-only finding must fail local lint on a Linux host.
+    monkeypatch.setattr(lint, "which", lambda _: "/tools/soldr")
+    monkeypatch.setattr(lint, "self_build_env", lambda: {})
+    monkeypatch.setattr(lint.sys, "platform", "linux")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        failed = "x86_64-pc-windows-msvc" in command and "dylint" in command
+        return SimpleNamespace(returncode=1 if failed else 0, stdout="", stderr="")
+
+    monkeypatch.setattr(lint.subprocess, "run", fake_run)
+
+    assert lint.lint_dylint_only() == 1
+    workspace = ["soldr", "dylint", "--all", "--", "--workspace", "--lib", "--bins"]
+    assert calls == [
+        ["soldr", "dylint", "prepare"],
+        workspace,
+        [
+            "soldr", "rustup", "target", "add",
+            "--toolchain", lint.DYLINT_TOOLCHAIN,
+            "x86_64-pc-windows-msvc", "aarch64-apple-darwin",
+        ],
+        [*workspace, "--target", "x86_64-pc-windows-msvc"],
+    ]
 
 
 def test_dylint_command_keeps_the_plugin_subcommand(monkeypatch):

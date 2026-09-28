@@ -136,3 +136,47 @@ def test_platform_baseline_total_must_match_rows(tmp_path: Path) -> None:
 
     errors = check_dylint_wiring.check(tmp_path)
     assert any("total 9 != 1 rows" in error for error in errors)
+
+
+def test_cfg_coverage_accepts_os_level_gates(tmp_path: Path) -> None:
+    _scaffold(tmp_path)
+    _write(
+        tmp_path,
+        "crates/x/src/lib.rs",
+        '#[cfg(all(unix, not(target_os = "macos")))]\n'
+        "fn a() {}\n"
+        '#[cfg_attr(target_family = "windows", allow(dead_code))]\n'
+        "fn b() {}\n"
+        'fn c() -> bool { cfg!(target_arch = "aarch64") }\n',
+    )
+
+    assert check_dylint_wiring.check(tmp_path) == []
+
+
+def test_cfg_coverage_rejects_gates_no_dylint_leg_selects(tmp_path: Path) -> None:
+    # #1740: Dylint lints one triple per OS, so an arch/env/unknown-OS gate
+    # would hide source from every leg.
+    _scaffold(tmp_path)
+    _write(
+        tmp_path,
+        "crates/x/src/lib.rs",
+        '#[cfg(target_arch = "aarch64")]\n'
+        "fn a() {}\n"
+        "#[cfg(all(\n"
+        "    windows,\n"
+        '    target_env = "gnu",\n'
+        "))]\n"
+        "fn b() {}\n"
+        '#![cfg_attr(target_os = "freebsd", allow(dead_code))]\n',
+    )
+
+    errors = check_dylint_wiring.check(tmp_path)
+    assert any('crates/x/src/lib.rs:1: target_arch = "aarch64"' in e for e in errors)
+    assert any('crates/x/src/lib.rs:5: target_env = "gnu"' in e for e in errors)
+    assert any('crates/x/src/lib.rs:8: target_os = "freebsd"' in e for e in errors)
+
+
+def test_cfg_coverage_os_set_matches_the_lint_targets() -> None:
+    from ci import lint
+
+    assert check_dylint_wiring.DYLINT_OSES == frozenset(lint.DYLINT_OS_TARGETS)

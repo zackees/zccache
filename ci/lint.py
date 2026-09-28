@@ -1,9 +1,10 @@
 """Run workspace linting: rustfmt check + clippy.
 
 Usage:
-    ./lint              # full workspace lint
-    ./lint --fix        # auto-fix formatting + clippy
-    ./lint <file.rs>    # single-file rustfmt + per-crate clippy
+    ./lint                  # fmt, clippy, Dylint for every OS, docs
+    ./lint --fix            # auto-fix formatting + clippy (no Dylint)
+    ./lint <file.rs>        # single-file rustfmt + per-crate clippy (no Dylint)
+    ./lint --dylint-only    # Dylint for the host and every other OS target
 """
 
 import filecmp
@@ -22,6 +23,16 @@ from ci.soldr import cargo_command, rust_tool_command, self_build_env
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
 DYLINT_TOOLCHAIN = "nightly-2026-05-28"
 DYLINT_COMPONENTS = ["llvm-tools-preview", "rust-src", "rustc-dev"]
+# Dylint's late lints only see cfg-selected code, so a host-only pass misses
+# the other operating systems' modules (#1740). One triple per OS is enough:
+# ci/check_dylint_wiring.py rejects first-party cfg gates on anything but
+# unix/windows/target_os, so every published triple of an OS selects the
+# same source.
+DYLINT_OS_TARGETS = {
+    "linux": "x86_64-unknown-linux-gnu",
+    "windows": "x86_64-pc-windows-msvc",
+    "macos": "aarch64-apple-darwin",
+}
 
 
 def dylint_manifests() -> list[str]:
@@ -182,8 +193,21 @@ def skip_dylint_on_windows():
     return False
 
 
+def dylint_cross_targets() -> list[str]:
+    """Return the OS target triples the native host pass does not select."""
+    host = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    return [
+        target for os_name, target in DYLINT_OS_TARGETS.items() if os_name != host
+    ]
+
+
 def lint_dylint_only():
-    """Run the pinned, published Dylint toolchain on this native host."""
+    """Run the pinned, published Dylint toolchain for every supported OS.
+
+    The native host pass runs first, then one cross-target check per other
+    OS. Cross checks never link target code; only build scripts and proc
+    macros link, for the host.
+    """
     if which("soldr") is None:
         print("soldr is required for Dylint; install it globally", file=sys.stderr)
         return 1
@@ -192,9 +216,17 @@ def lint_dylint_only():
     env.pop("RUSTUP_TOOLCHAIN", None)  # setup-soldr exports stable for CI.
     env["SOLDR_DYLINT_TOOLCHAIN"] = DYLINT_TOOLCHAIN
     env["SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS"] = "1"
+    workspace = ["soldr", "dylint", "--all", "--", "--workspace", "--lib", "--bins"]
+    cross_targets = dylint_cross_targets()
     for command in (
         ["soldr", "dylint", "prepare"],
-        ["soldr", "dylint", "--all", "--", "--workspace", "--lib", "--bins"],
+        workspace,
+        [
+            "soldr", "rustup", "target", "add",
+            "--toolchain", DYLINT_TOOLCHAIN,
+            *cross_targets,
+        ],
+        *([*workspace, "--target", target] for target in cross_targets),
     ):
         result = subprocess.run(
             command,

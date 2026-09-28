@@ -24,7 +24,16 @@ env -u RUSTUP_TOOLCHAIN -u RUSTFLAGS SOLDR_DYLINT_TOOLCHAIN=nightly-2026-05-28 s
 ./lint
 ```
 
-Full `./lint` runs formatting, Clippy, workspace library/binary Dylint, and docs checks on
-the current host. `./lint <file.rs>` checks formatting and Clippy for that
-file's crate, but not Dylint; `./lint --fix` formats and runs Clippy, but does
-not run Dylint. CI runs Dylint for all eight published target triples.
+Full `./lint` runs formatting, Clippy, workspace library/binary Dylint, and docs checks.
+`./lint <file.rs>` checks formatting and Clippy for that file's crate, but not
+Dylint; `./lint --fix` formats and runs Clippy, but does not run Dylint.
+
+Late lints only see cfg-selected code, so a host-only pass misses the other
+operating systems' modules (#1740). `./lint` and `./lint --dylint-only` (the
+CI `Dylint` job) run the host pass, then a cross-target `cargo check` pass for
+each other OS in `ci/lint.py` `DYLINT_OS_TARGETS` (Linux GNU x64, Windows MSVC
+x64, macOS arm64); `soldr rustup target add` installs each target's std on the
+pinned nightly. One triple per OS covers all eight published triples because
+`ci/check_dylint_wiring.py` rejects first-party `cfg` gates on anything but
+`unix`, `windows`, `target_family`, and those three `target_os` values.
+`ci/dylint-target-fixture` proves each OS leg reports a planted finding.

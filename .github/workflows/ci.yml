@@ -148,7 +148,7 @@ jobs:
           echo "DYLINT_CARGO_SHIM=${shim_dir}" >> "${GITHUB_ENV}"
           echo "${shim_dir}" >> "${GITHUB_PATH}"
       - name: Install Dylint nightly toolchain
-        run: soldr rustup toolchain install nightly-2026-05-28 --component llvm-tools-preview --component rust-src --component rustc-dev --target x86_64-unknown-linux-gnu --profile minimal
+        run: soldr rustup toolchain install nightly-2026-05-28 --component llvm-tools-preview --component rust-src --component rustc-dev --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-msvc --target aarch64-apple-darwin --profile minimal
       - name: Install stable Rust components
         run: soldr rustup component add rustfmt
       - name: Check Dylint wiring
@@ -236,19 +236,21 @@ jobs:
       - name: Run Dylint
         # Each lint crate uses dylint-link, so the published Soldr driver can
         # build all ten libraries once without an alias-repair retry loop.
+        # ci.lint runs the Linux host pass plus one cross-target pass per
+        # other OS: late lints only see cfg-selected code (#1740).
         run: uv run python -m ci.lint --dylint-only
-      - name: Prove Linux x64 custom-lint selection
+      - name: Prove custom-lint selection for every OS
         working-directory: ci/dylint-target-fixture
-        env:
-          TARGET: x86_64-unknown-linux-gnu
         run: |
-          set +e
-          env -u RUSTUP_TOOLCHAIN -u RUSTFLAGS SOLDR_DYLINT_TOOLCHAIN=nightly-2026-05-28 SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 soldr dylint --all -- --features violate --target "$TARGET" 2>&1 | tee "$RUNNER_TEMP/dylint-negative.log"
-          status=${PIPESTATUS[0]}
-          set -e
-          test "$status" -ne 0
-          grep -Fq 'use zccache_core::path::NormalizedPath instead of std::path::PathBuf' "$RUNNER_TEMP/dylint-negative.log"
-          env -u RUSTUP_TOOLCHAIN -u RUSTFLAGS SOLDR_DYLINT_TOOLCHAIN=nightly-2026-05-28 SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 soldr dylint --all -- --target "$TARGET"
+          for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do
+            set +e
+            env -u RUSTUP_TOOLCHAIN -u RUSTFLAGS SOLDR_DYLINT_TOOLCHAIN=nightly-2026-05-28 SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 soldr dylint --all -- --features violate --target "$target" 2>&1 | tee "$RUNNER_TEMP/dylint-negative-$target.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            test "$status" -ne 0
+            grep -Fq 'use zccache_core::path::NormalizedPath instead of std::path::PathBuf' "$RUNNER_TEMP/dylint-negative-$target.log"
+            env -u RUSTUP_TOOLCHAIN -u RUSTFLAGS SOLDR_DYLINT_TOOLCHAIN=nightly-2026-05-28 SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 soldr dylint --all -- --target "$target"
+          done
 
   msrv:
     name: MSRV (1.95.0)
