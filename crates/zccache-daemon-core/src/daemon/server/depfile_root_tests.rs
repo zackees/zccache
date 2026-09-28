@@ -118,6 +118,59 @@ fn a_symlink_into_the_root_binds_the_depfile() {
     assert!(names_unrewritten_root_path(&stored, &root));
 }
 
+#[cfg(windows)]
+#[test]
+fn a_backslash_root_round_trips_on_windows() {
+    let root = Path::new(r"C:\work\tree");
+    assert_eq!(
+        salt_depfile_arg(r"-IC:\work\tree\include", Some(root)),
+        format!(r"-I{DEPFILE_WORKTREE_ROOT_MARKER}\include")
+    );
+    let fixture = "obj\\a.o: C:\\work\\tree\\src\\a.c \\\n C:\\work\\tree2\\b.h\n";
+    let stored = canonicalize_depfile_root(fixture.as_bytes(), root);
+    assert!(contains_depfile_root_marker(&stored));
+    assert!(!names_unrewritten_root_path(&stored, root));
+    let delivered = rehydrate_depfile_root(stored, Some(Path::new(r"D:\other\wt"))).unwrap();
+    assert_eq!(
+        String::from_utf8(delivered).unwrap(),
+        "obj\\a.o: D:\\other\\wt\\src\\a.c \\\n C:\\work\\tree2\\b.h\n"
+    );
+}
+
+/// The rewrite is byte-exact, so a drive-letter case or separator spelling
+/// of the root stays raw; the path comparison folds both, so it binds.
+#[cfg(windows)]
+#[test]
+fn drive_letter_case_and_separator_spellings_bind_the_depfile_on_windows() {
+    let root = Path::new(r"C:\work\tree");
+    for token in [r"c:\work\tree\gen\config.h", "C:/work/tree/gen/config.h"] {
+        let fixture = format!("obj\\a.o: C:\\work\\tree\\src\\a.c {token}\n");
+        let stored = canonicalize_depfile_root(fixture.as_bytes(), root);
+        assert!(names_unrewritten_root_path(&stored, root), "{token}");
+    }
+}
+
+/// A directory-name case spelling of an existing root resolves to the
+/// on-disk name, so it binds like a symlink into the root does on Unix.
+#[cfg(windows)]
+#[test]
+fn a_directory_case_spelling_of_the_root_binds_the_depfile_on_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base =
+        crate::core::path::strip_verbatim_prefix(&std::fs::canonicalize(tmp.path()).unwrap());
+    let root = base.join("tree");
+    std::fs::create_dir_all(root.join("gen")).unwrap();
+    std::fs::write(root.join("gen").join("config.h"), "").unwrap();
+    let alias = base.join("TREE").join("gen").join("config.h");
+    let token = crate::daemon::server::quote_make_depfile_path(alias.to_str().unwrap().as_bytes());
+    let mut depfile = b"obj\\a.o: ".to_vec();
+    depfile.extend_from_slice(&token);
+    depfile.push(b'\n');
+    let stored = canonicalize_depfile_root(&depfile, &root);
+    assert!(!contains_depfile_root_marker(&stored));
+    assert!(names_unrewritten_root_path(&stored, &root));
+}
+
 #[test]
 fn a_bound_depfile_replays_only_to_its_own_root() {
     let root = from_root("work/tree");

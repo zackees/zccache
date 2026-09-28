@@ -5,7 +5,8 @@
 - [x] Move `depfile_root.rs` inline tests to `depfile_root_tests.rs` (dylint `enforce_platform_boundary` failure: `#[cfg(unix)]` + `os::unix::fs::symlink` in a Production-classified file).
 - [x] Convert all POSIX-root test fixtures (`/work/tree`, `/wt/a`, ...) to `from_root(...)` (5 Windows test failures: `root_spelling` requires `is_absolute`, false for `/...` on Windows).
 - [x] Verify: targeted tests, clippy, fmt, and `uv run python -m ci.lint --dylint-only`.
-- [ ] Push branch, open PR, validate CI.
+- [x] Push branch, open PR, validate CI (landed on main as #1757).
+- [x] Confirm Windows drive-letter, `\\` and case handling (review ask on #1655): `cfg(windows)` tests for a backslash root round trip, drive-letter-case and forward-slash spellings that bind, and an on-disk directory-case alias that binds.
 
 ## Review — PR #1655 rebase
 
