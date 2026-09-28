@@ -101,7 +101,9 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
                 .create_new(true)
                 .open(&tmp_path)?;
             std::io::copy(&mut src, &mut dst)?;
-            dst.sync_all()?;
+            // No sync: this private copy replaces a build output that the
+            // compiler or tool rewrites next, and compilers never fsync their
+            // outputs. The rename below is what readers must not observe torn.
             let permissions = src.metadata()?.permissions();
             std::fs::set_permissions(&tmp_path, permissions)?;
             Ok::<(), std::io::Error>(())
@@ -164,3 +166,7 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
         )
     }))
 }
+
+#[cfg(test)]
+#[path = "hardlink_perf_tests.rs"]
+mod perf_tests;
