@@ -75,7 +75,7 @@ jobs:
     needs: cache-pre-prune
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v6
@@ -95,10 +95,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr cargo test -p zccache --test perf_bench_test --no-run
+          # Time the optimized daemon users run, as the standalone campaign
+          # (ci/docker/standalone_perf_entrypoint.sh) does. A dev-profile
+          # bench roughly doubled zccache's measured overhead per C miss.
+          soldr cargo test -p zccache --test perf_bench_test --release --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
           bench_bin="$(
-            find target/debug/deps \
+            find target/release/deps \
               -maxdepth 1 \
               -type f \
               -name 'perf_bench_test-*' \

@@ -288,6 +288,7 @@ def test_benchmark_command_targets_existing_workspace_package():
         "--no-cache",
         "cargo",
         "test",
+        "--release",
         "-p",
         "zccache",
         "--test",

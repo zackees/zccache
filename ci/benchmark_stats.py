@@ -58,11 +58,14 @@ RATIO_COLORS = {
 MAX_DISPLAY_ROUNDED_ZERO_RATIO = 1000.0
 ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SOLDR_TABLE_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)?\s+(?=## |\|)")
+# `--release`: chart the optimized daemon users run, matching Perf Guard and
+# the standalone campaign; a dev-profile bench overstates zccache's overhead.
 BENCHMARK_BASE_COMMAND = [
     "soldr",
     "--no-cache",
     "cargo",
     "test",
+    "--release",
     "-p",
     "zccache",
     "--test",

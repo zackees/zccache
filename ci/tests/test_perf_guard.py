@@ -1164,3 +1164,21 @@ def test_floor_margin_is_empty_for_a_passing_sample():
     )
 
     assert margin == ""
+
+
+def test_hosted_benchmarks_time_the_release_built_daemon():
+    """The in-process daemon under test must be optimized in every harness.
+
+    A dev-profile bench measured zccache's per-miss overhead at 4.2-4.5 ms
+    versus 2.0 ms release on the same code, so Perf Guard floors and the
+    published charts overstated zccache's cost (#1036).
+    """
+    root = Path(__file__).resolve().parents[2]
+    perf_guard = (root / ".github/workflows/perf-guard.yml").read_text(encoding="utf-8")
+    standalone = (root / "ci/docker/standalone_perf_entrypoint.sh").read_text(encoding="utf-8")
+    assert "perf_bench_test --release --no-run" in perf_guard
+    assert "find target/release/deps" in perf_guard
+    assert "find target/debug/deps" not in perf_guard
+    assert "perf_bench_test --release --no-run" in standalone
+    assert "--release" in benchmark_stats.BENCHMARK_BASE_COMMAND
+
