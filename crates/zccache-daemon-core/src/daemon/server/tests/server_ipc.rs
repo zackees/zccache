@@ -74,6 +74,33 @@ async fn test_server_shutdown_request() {
     .await;
 }
 
+/// `zccache stop` waits until the daemon endpoint disappears, which happens
+/// only after `run()` returns. The background maintenance and depgraph-save
+/// loops polled the shutdown flag once a second, so every stop of an idle
+/// daemon paid about a second (measured 997-1056 ms end to end).
+#[tokio::test]
+#[ignore] // integration-level: starts real daemon with IPC + file watcher
+async fn perf_shutdown_request_exits_idle_daemon_promptly() {
+    const BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+    crate::test_support::test_timeout(async {
+        let (endpoint, server_task, _shutdown, _cache_root) = start_daemon().await;
+
+        let mut client = crate::ipc::connect(&endpoint).await.unwrap();
+        client.send(&Request::Shutdown).await.unwrap();
+        let started = std::time::Instant::now();
+        let resp: Option<Response> = client.recv().await.unwrap();
+        assert_eq!(resp, Some(Response::ShuttingDown));
+        server_task.await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < BUDGET,
+            "idle daemon took {elapsed:?} to exit after Shutdown (budget {BUDGET:?})"
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn test_server_clear_empty() {

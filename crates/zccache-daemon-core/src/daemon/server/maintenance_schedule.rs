@@ -46,8 +46,9 @@ pub(super) const DEPGRAPH_SAVE_BATCH: usize = 32;
 pub(super) const DEPGRAPH_SAVE_BATCH_POLL: Duration = Duration::from_secs(5);
 /// How often the save loop checks the latched shutdown flag between ticks.
 /// It polls the flag rather than the shared `Notify` for the reasons on
-/// `wait_for_next_pass_or_shutdown`.
-const DEPGRAPH_SHUTDOWN_POLL: Duration = Duration::from_secs(1);
+/// `wait_for_next_pass_or_shutdown`, and shares the maintenance loop's short
+/// interval because `zccache stop` waits for both loops.
+const DEPGRAPH_SHUTDOWN_POLL: Duration = super::disk_maintenance::SHUTDOWN_POLL_INTERVAL;
 
 /// Pure decision core for the save loop: `Some(reason)` when a save is due.
 pub(super) fn depgraph_save_due(

@@ -35,7 +35,11 @@ const ENDED_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 // A maintenance pass must not invalidate a result that was just published.
 // The next pressure pass can reclaim it if the disk is still constrained.
 const HARD_PRESSURE_MIN_AGE: Duration = PRESSURE_INTERVAL;
-const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the maintenance loop checks the latched shutdown flag. `run()`
+/// waits for this loop before draining, and `zccache stop` waits for `run()`,
+/// so this interval is paid on every stop; a 1 s poll made each stop of an
+/// idle daemon take about a second.
+pub(super) const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const FULL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const FULL_MARKER: &str = ".disk-maintenance-last-full-v1";
 /// Grace period for retired `v<VERSION>` stores (issues #1659, #1673). It
