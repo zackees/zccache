@@ -170,6 +170,60 @@ async fn a_saturated_compile_gate_reports_queued_then_delivers_the_terminal_resp
     assert_eq!(terminal, Response::Pong);
 }
 
+/// A handler that is already done must not wait for the heartbeat timer.
+///
+/// Every `Compile`/`CompileEphemeral` runs through this wrapper. It used to
+/// await the periodic timer's "immediate" first tick before polling the
+/// handler, and that tick only fires on the runtime timer's next ~1 ms
+/// advance. A warm C cache hit (~0.35 ms of daemon work) waited ~1.07 ms here,
+/// 4x its whole cost (50 warm hits: 0.081 s vs 0.021 s with the timer off).
+#[tokio::test]
+async fn perf_ready_handler_is_not_delayed_by_the_heartbeat_timer() {
+    const REQUESTS: u32 = 100;
+    const BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
+    let temp = tempfile::tempdir().expect("temp cache root");
+    let endpoint = crate::ipc::unique_test_endpoint();
+    let mut server = super::super::tests::bind_isolated_server_at(&endpoint, temp.path());
+    let client_endpoint = endpoint.clone();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+    let client = tokio::spawn(async move {
+        let mut client = crate::ipc::connect(&client_endpoint)
+            .await
+            .expect("client connects");
+        client.send(&Request::Ping).await.expect("client sends");
+        // Hold the connection open; the handlers below finish without writing.
+        let _ = done_rx.await;
+    });
+
+    let mut conn = server.listener.accept().await.expect("server accepts");
+    let _ = conn.recv::<Request>().await.expect("server reads request");
+    let wire = ResponseWire::ProstV16 {
+        request_id: "ready-handler-test".to_string(),
+    };
+
+    let started = std::time::Instant::now();
+    for _ in 0..REQUESTS {
+        let outcome = guarded_dispatch_with_progress_every(
+            Some(std::time::Duration::from_secs(30)),
+            &mut conn,
+            &wire,
+            &server.state,
+            async { (Response::Pong, None) },
+        )
+        .await;
+        assert_eq!(outcome.expect("ready handler completes").0, Response::Pong);
+    }
+    let elapsed = started.elapsed();
+    let _ = done_tx.send(());
+    client.await.expect("client task");
+
+    assert!(
+        elapsed < BUDGET,
+        "{REQUESTS} ready handlers took {elapsed:?} through the heartbeat wrapper \
+         (budget {BUDGET:?}); the handler must be polled before any timer wait"
+    );
+}
+
 /// The documented kill switch has to actually switch off, and the compile
 /// must still complete.
 #[tokio::test]

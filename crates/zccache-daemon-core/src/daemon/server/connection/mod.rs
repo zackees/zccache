@@ -228,21 +228,19 @@ where
     let slot = Arc::new(super::compile_progress::CompileProgressSlot::default());
     let handler = super::compile_progress::scope(Arc::clone(&slot), handler);
     let mut handler = std::pin::pin!(handler);
-    let mut ticker = kernal_api::async_engine::PeriodicTimer::new_unbounded(interval)
-        .expect("compile-progress interval must fit the runtime timer");
-    ticker.set_missed_tick_behavior(kernal_api::async_engine::MissedTickBehavior::Delay);
-    // `interval` fires immediately on first tick; burn it so the first
-    // heartbeat lands one full interval into the compile rather than at t=0.
-    ticker.tick().await;
     loop {
-        let tick = ticker.tick();
-        let mut tick = std::pin::pin!(tick);
-        let winner = kernal_api::biased_race!((handler.as_mut()), (tick.as_mut()),).await;
-        match winner {
-            kernal_api::async_engine::BiasedRace2::First(out) => return Some(out),
-            kernal_api::async_engine::BiasedRace2::Second(()) => {}
+        // `timeout` polls the handler before it arms its delay, so a request
+        // that is already done (a warm cache hit) returns without any timer
+        // wait. The first heartbeat lands one full interval into the compile
+        // and each later one an interval after the previous. Do not reach for
+        // a periodic timer and burn its "immediate" first tick: that tick
+        // only fires on the runtime timer's next ~1 ms advance, which cost
+        // every compile request ~1 ms (4x a warm C hit's own work).
+        match kernal_api::async_engine::timeout(interval, handler.as_mut()).await {
+            Ok(out) => return Some(out),
+            Err(kernal_api::async_engine::DeadlineElapsed) => {}
         }
-        // Borrow of `conn` from the `select!` above has ended here.
+        // Borrow of `conn` by the handler's poll above has ended here.
         let progress = super::compile_progress::progress_response(&slot, &state.compile_queue);
         if let Response::CompileProgress {
             queue_position,
