@@ -537,6 +537,16 @@ hardlinks and are never stamped with the current time. On Windows, placing both
 the cache and build target on a ReFS Dev Drive provides the strongest true-COW
 tier; prefer a real partition-backed Dev Drive over a VHDX for daily use.
 
+`ZCCACHE_MODE` (`AUTO` | `LINK` | `COPY` | `REFLINK`, read per compile, no
+daemon restart) picks how a hit is delivered. If a tool later writes to
+delivered outputs, such as `.rmeta`/`.rlib` files that a wrapper-less `rustc`
+replaces (see #1722 for the open Windows case), use `ZCCACHE_MODE=COPY`, which
+always delivers an independent writable file, or `ZCCACHE_MODE=REFLINK`. Under
+soldr, set it with `SOLDR_ZCCACHE_MODE=copy`, `soldr --zccache-mode copy`, or
+`[zccache] mode = "copy"` in soldr's `config.toml`. soldr forwards the result as
+`ZCCACHE_MODE`. A project-level `Cargo.toml` setting is tracked in
+zackees/soldr#3434.
+
 zccache can share cache entries across sibling Git worktrees when the compile is
 equivalent. This targets multi-agent workflows where several checkouts of the
 same repository build the same Rust crates under different absolute paths. The
