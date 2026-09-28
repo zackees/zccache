@@ -25,6 +25,21 @@
             "type": "command",
             "command": "uv run --no-project python ci/hooks/loc_guard.py",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "uv run --no-project --with pyyaml python ci/hooks/workflow_guard.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --with pyyaml python ci/hooks/workflow_guard.py",
+            "timeout": 30
           }
         ]
       }
