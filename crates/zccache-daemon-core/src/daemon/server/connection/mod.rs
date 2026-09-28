@@ -236,9 +236,8 @@ where
         // a periodic timer and burn its "immediate" first tick: that tick
         // only fires on the runtime timer's next ~1 ms advance, which cost
         // every compile request ~1 ms (4x a warm C hit's own work).
-        match kernal_api::async_engine::timeout(interval, handler.as_mut()).await {
-            Ok(out) => return Some(out),
-            Err(kernal_api::async_engine::DeadlineElapsed) => {}
+        if let Ok(out) = kernal_api::async_engine::timeout(interval, handler.as_mut()).await {
+            return Some(out);
         }
         // Borrow of `conn` by the handler's poll above has ended here.
         let progress = super::compile_progress::progress_response(&slot, &state.compile_queue);
