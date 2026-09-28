@@ -461,8 +461,7 @@ pub fn rust_rlib_path(index: usize) -> String {
 
 pub fn rust_final_link_args(output: &str) -> Vec<String> {
     let mut args = vec![
-        "--edition".to_string(),
-        "2021".to_string(),
+        "--edition=2021".to_string(),
         "--crate-type".to_string(),
         "staticlib".to_string(),
         "--crate-name".to_string(),

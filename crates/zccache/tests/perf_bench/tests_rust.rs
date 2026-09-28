@@ -463,3 +463,26 @@ async fn perf_rustc_zccache_vs_sccache() {
     }
     eprintln!();
 }
+
+/// zccache#1756: sccache 0.10.0's rustc parser reads a split `--edition 2021`
+/// as a second input file and reports `CannotCache(multiple input files)`, so
+/// every Rust row compared zccache against an uncached sccache passthrough.
+/// Cargo always passes the joined `--edition=2021`; the bench must match it.
+#[test]
+fn rust_bench_args_use_cargo_shaped_edition_flag() {
+    let arg_sets = [
+        rustc_args_for("unit_000", "unit_000.rs", "deps"),
+        rustc_check_args_for("unit_000", "unit_000.rs", "deps"),
+        super::link::rust_final_link_args("librust_link_app.a"),
+    ];
+    for args in arg_sets {
+        assert!(
+            !args.iter().any(|arg| arg == "--edition"),
+            "split `--edition <value>` makes sccache treat the value as an input: {args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "--edition=2021"),
+            "bench rustc args must pass cargo's `--edition=2021`: {args:?}"
+        );
+    }
+}

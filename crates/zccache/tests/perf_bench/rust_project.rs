@@ -62,8 +62,7 @@ pub fn warmup_rustc(rc: &str, dir: &Path) {
     let deps = dir.join("deps");
     let output = std::process::Command::new(rc)
         .args([
-            "--edition",
-            "2021",
+            "--edition=2021",
             "--crate-type",
             "lib",
             "--crate-name",
@@ -96,8 +95,7 @@ pub fn warmup_rustc(rc: &str, dir: &Path) {
 /// and -C metadata/-C extra-filename for output naming.
 pub fn rustc_args_for(cn: &str, src: &str, deps_dir: &str) -> Vec<String> {
     vec![
-        "--edition".into(),
-        "2021".into(),
+        "--edition=2021".into(),
         "--crate-type".into(),
         "lib".into(),
         "--crate-name".into(),
@@ -117,8 +115,7 @@ pub fn rustc_args_for(cn: &str, src: &str, deps_dir: &str) -> Vec<String> {
 /// Produces only .rmeta + .d files (no .rlib).
 pub fn rustc_check_args_for(cn: &str, src: &str, deps_dir: &str) -> Vec<String> {
     vec![
-        "--edition".into(),
-        "2021".into(),
+        "--edition=2021".into(),
         "--crate-type".into(),
         "lib".into(),
         "--crate-name".into(),
