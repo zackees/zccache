@@ -11,10 +11,11 @@ use std::io::Write;
 /// Median cost of `op` next to the median cost of the same-sized write
 /// that *does* pay a file + directory sync, measured interleaved in the
 /// same directory so machine load and the filesystem hit both equally.
-/// Returns `None` unless a synced write costs at least 2 ms here. Where
-/// sync is cheap (tmpfs, a write-back cache, a hosted runner's disk at
-/// ~0.8 ms) the rename and read in the operation itself are the same order
-/// as a sync, so the comparison cannot separate them.
+/// Returns `None` unless a synced write costs at least 5 ms here. Where
+/// sync is cheap (tmpfs, a write-back cache, hosted runner disks at
+/// 0.8-2.1 ms) the rename and read in the operation itself are the same
+/// order as a sync under a parallel test run, so the comparison cannot
+/// separate them.
 fn median_cost_vs_synced_write(
     dir: &Path,
     mut op: impl FnMut(),
@@ -41,7 +42,7 @@ fn median_cost_vs_synced_write(
     op_costs.sort();
     sync_costs.sort();
     let (op, sync) = (op_costs[SAMPLES / 2], sync_costs[SAMPLES / 2]);
-    (sync >= std::time::Duration::from_millis(2)).then_some((op, sync))
+    (sync >= std::time::Duration::from_millis(5)).then_some((op, sync))
 }
 
 /// Requested depfiles are compiler outputs, not durable cache metadata.
