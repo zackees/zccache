@@ -122,12 +122,11 @@ uv run python ci/build_dist.py --skip-build
 Hooks are in `ci/hooks/` (Python) and `crates/zccache-ci` (Rust):
 
 - **PreToolUse**: `ci/hooks/tool_guard.py` blocks bare Rust commands (must use `soldr`) and bare `python`/`pip` (must use `uv`)
-- **PostToolUse**: `ci/hooks/lint.py` auto-formats + runs clippy on edited `.rs` files
 - **PostToolUse**: `ci/hooks/readme_guard.py` errors if directory lacks README.md
 - **PostToolUse** (Edit|Write and Bash): `ci/hooks/workflow_guard.py` runs `ci/check_cache_footprint.py` whenever a workflow, composite action, `action.yml` or the cache planner is edited or dirty, and fails the call on a cache-footprint violation (#1760)
 - **PostToolUse**: `ci/hooks/loc_guard.py` warns when an edited source file exceeds 1,000 LOC and hard-blocks (exit 2) above 1,500 LOC — split into focused submodules before the file crosses the threshold
 - **SessionStart**: `ci/hooks/check-on-start.py` captures git fingerprint
-- **Stop**: `soldr cargo run -p zccache --bin zccache-ci` runs lint + unit tests in parallel (skips if no changes)
+- **Not registered by default:** the `ci/hooks/lint.py` format/clippy pass and the `zccache-ci` Stop hook were removed from `.claude/settings.json` (#309, Windows console pop-ups). Run `./lint` and `soldr cargo clippy --workspace --all-targets -- -D warnings` yourself before reporting Rust changes done, or re-enable them in a gitignored `.claude/settings.local.json`
 
 ## Language Policy
 
