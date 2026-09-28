@@ -234,9 +234,8 @@ fn exercise_modes(fixture: &FsFixture, cross_volume: bool) -> String {
             true,
         )
         .unwrap();
-        // Plan against the capabilities the executor uses, including the
-        // legacy ZCCACHE_DISABLE_REFLINK switch when a runner sets it.
-        let caps = caps_for_mode(mode, raw_caps, legacy_reflink_disabled());
+        // Plan against the capabilities the executor uses.
+        let caps = caps_for_mode(mode, raw_caps);
         let plan = plan_tiers(mode, true, caps, 0);
         let tier = match (
             observed.reflink_count,

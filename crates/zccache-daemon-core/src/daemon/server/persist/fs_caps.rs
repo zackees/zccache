@@ -4,7 +4,6 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-pub(in crate::daemon::server) const DISABLE_REFLINK_ENV: &str = "ZCCACHE_DISABLE_REFLINK";
 pub(in crate::daemon::server) const COW_READONLY_ENV: &str = "ZCCACHE_COW_READONLY";
 const CAPS_CACHE_LIMIT: usize = 4096;
 /// zccache's conservative cache-materialization policy. This is not a claim
@@ -48,16 +47,6 @@ impl VolumeCaps {
             hardlink_limit: 0,
         }
     }
-}
-
-pub(in crate::daemon::server) fn apply_reflink_switch(
-    mut caps: VolumeCaps,
-    disabled: bool,
-) -> VolumeCaps {
-    if disabled {
-        caps.reflink = false;
-    }
-    caps
 }
 
 // The path ancestor is part of the key, not just the raw volume id.
@@ -104,15 +93,8 @@ fn env_flag(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-/// `ZCCACHE_DISABLE_REFLINK`: the legacy switch that strips the reflink tier.
-/// An explicit `ZCCACHE_MODE=REFLINK` overrides it (#1683 decision D3).
-pub(in crate::daemon::server) fn legacy_reflink_disabled() -> bool {
-    env_flag(DISABLE_REFLINK_ENV, false)
-}
-
-/// Probed capabilities for a volume pair *without* the legacy reflink switch
-/// applied, so an explicitly selected materialization mode can decide
-/// whether that switch applies. One probe per pair, cached.
+/// Probed capabilities for a volume pair, before `ZCCACHE_MODE` narrows
+/// them. One probe per pair, cached.
 pub(in crate::daemon::server) fn fs_caps_raw(src: &Path, dst: &Path) -> VolumeCaps {
     let Some(src_volume) = crate::platform::fs::volume::volume_identity_u128(src) else {
         return VolumeCaps::copy_only();

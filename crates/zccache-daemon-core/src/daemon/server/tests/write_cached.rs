@@ -753,20 +753,6 @@ fn hardlink_ceiling_degrades_before_os_error() {
 }
 
 #[test]
-fn disable_reflink_kill_switch_forces_next_tier() {
-    let caps = VolumeCaps {
-        reflink: true,
-        hardlink: true,
-        readonly_enforced: true,
-        file_id: FileIdWidth::Bits128,
-        hardlink_limit: 1023,
-    };
-    let disabled = apply_reflink_switch(caps, true);
-    assert!(!disabled.reflink);
-    assert!(disabled.hardlink);
-}
-
-#[test]
 fn suspect_corruption_emits_durable_forensics() {
     let dir = tempfile::tempdir().unwrap();
     let _cache_dir = super::CacheDirEnvGuard::set(dir.path());

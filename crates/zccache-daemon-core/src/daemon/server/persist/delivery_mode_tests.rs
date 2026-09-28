@@ -254,30 +254,15 @@ fn hardlink_permission_matches_the_plan_without_a_probe() {
     }
 }
 
-/// An explicit REFLINK overrides the legacy `ZCCACHE_DISABLE_REFLINK`
-/// switch; AUTO and LINK keep honoring it; COPY never uses probed caps
-/// (#1683 decision D3).
+/// Only COPY narrows the probed caps; `ZCCACHE_MODE=COPY` is the one way to
+/// opt out of cloning (the old `ZCCACHE_DISABLE_REFLINK` switch is gone).
 #[test]
-fn legacy_disable_reflink_applies_to_every_mode_but_explicit_reflink() {
+fn only_copy_mode_narrows_probed_caps() {
     let probed = caps(true, true);
     for mode in MaterializationMode::ALL {
-        let switched = caps_for_mode(mode, probed, true);
-        assert_eq!(
-            switched.reflink,
-            mode == Reflink,
-            "{mode} with legacy switch"
-        );
-        assert_eq!(
-            switched.hardlink,
-            mode != Copy,
-            "{mode} hardlink capability"
-        );
-        let untouched = caps_for_mode(mode, probed, false);
-        assert_eq!(
-            untouched.reflink,
-            mode != Copy,
-            "{mode} without legacy switch"
-        );
+        let planned = caps_for_mode(mode, probed);
+        assert_eq!(planned.reflink, mode != Copy, "{mode} reflink capability");
+        assert_eq!(planned.hardlink, mode != Copy, "{mode} hardlink capability");
     }
 }
 

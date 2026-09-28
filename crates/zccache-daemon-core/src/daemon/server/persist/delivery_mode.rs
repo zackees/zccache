@@ -68,9 +68,7 @@ pub(in crate::daemon::server) const fn plan_store_tiers(mode: MaterializationMod
     }
 }
 
-/// Capabilities the executor plans against. `COPY` never probes the volume;
-/// the legacy `ZCCACHE_DISABLE_REFLINK` switch applies to every mode except
-/// an explicit `REFLINK` (#1683 decision D3).
+/// Capabilities the executor plans against. `COPY` never probes the volume.
 pub(in crate::daemon::server) fn delivery_caps(
     mode: MaterializationMode,
     cache_file: &Path,
@@ -79,26 +77,18 @@ pub(in crate::daemon::server) fn delivery_caps(
     if mode == MaterializationMode::Copy {
         return VolumeCaps::copy_only();
     }
-    caps_for_mode(
-        mode,
-        fs_caps_raw(cache_file, out_path),
-        legacy_reflink_disabled(),
-    )
+    caps_for_mode(mode, fs_caps_raw(cache_file, out_path))
 }
 
 /// The pure half of [`delivery_caps`].
 pub(in crate::daemon::server) fn caps_for_mode(
     mode: MaterializationMode,
     probed: VolumeCaps,
-    legacy_reflink_disabled: bool,
 ) -> VolumeCaps {
     if mode == MaterializationMode::Copy {
         return VolumeCaps::copy_only();
     }
-    apply_reflink_switch(
-        probed,
-        mode != MaterializationMode::Reflink && legacy_reflink_disabled,
-    )
+    probed
 }
 
 static REFLINK_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);

@@ -396,7 +396,7 @@ Windows identity uses `GetFileInformationByHandleEx(FileIdInfo)` and its native
 checked before creation so exhaustion degrades to copy. Eviction and `clear`
 remove read-only attributes before deletion.
 
-`ZCCACHE_DISABLE_REFLINK=1` disables cloning and `ZCCACHE_COW_READONLY=0`
+`ZCCACHE_MODE=COPY` disables cloning and `ZCCACHE_COW_READONLY=0`
 disables read-only enforcement. Neither setting adds an IPC roundtrip.
 
 ### Materialization mode (`ZCCACHE_MODE`, #1683)
@@ -416,8 +416,8 @@ only in the syscall. The mode can only *demote* an output to independent
 delivery; it never shares an inode the output's delivery policy forbids, so
 the ETXTBSY and in-place-edit guards hold in every mode. Switching from
 `LINK`/`AUTO` to `COPY`/`REFLINK` detaches an existing hardlinked output on its
-next hit. The legacy `ZCCACHE_DISABLE_REFLINK` applies to every mode except an
-explicit `REFLINK`.
+next hit. The former `ZCCACHE_DISABLE_REFLINK` switch was removed; use
+`ZCCACHE_MODE=COPY` to opt out of cloning.
 
 Resolution is per request, with no extra roundtrip: the wrapper forwards its
 environment on every compile/link/exec request, so a valid `ZCCACHE_MODE`

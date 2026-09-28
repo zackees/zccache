@@ -530,7 +530,7 @@ copy-before-write and watcher-assisted verification, and finally a plain copy
 on cross-volume or limited filesystems. Correctness is identical in every tier;
 only disk sharing changes.
 
-Set `ZCCACHE_DISABLE_REFLINK=1` to diagnose or bypass block cloning. Read-only
+Set `ZCCACHE_MODE=COPY` to diagnose or bypass block cloning. Read-only
 hardlink enforcement defaults on; set `ZCCACHE_COW_READONLY=0` only as a
 compatibility escape hatch. Cache-file mtimes are preserved for reflinks and
 hardlinks and are never stamped with the current time. On Windows, placing both
