@@ -53,6 +53,8 @@ RATIO_COLORS = {
 # treat as missing data. This preserves the #443 guard against broken timing
 # while allowing legitimate sub-millisecond warm cache hits such as 87x-96x.
 MAX_DISPLAY_ROUNDED_ZERO_RATIO = 1000.0
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+SOLDR_TABLE_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)?\s+(?=## |\|)")
 BENCHMARK_BASE_COMMAND = [
     "soldr",
     "--no-cache",
@@ -437,7 +439,10 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        line = ANSI_CSI_RE.sub("", raw_line).strip()
+        # soldr's diagnostic capture prefixes even Markdown headings and rows
+        # with elapsed seconds; leave all other log text untouched (#1752).
+        line = SOLDR_TABLE_PREFIX_RE.sub("", line)
         for prefix, table in TABLES.items():
             if line.startswith(prefix):
                 current = table

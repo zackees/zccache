@@ -1255,3 +1255,10 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Implement a fail-closed proof/opt-in path that restores safe hits without dropping general rustc env-dep soundness.
 - [ ] Confirm the sqlite-link worktree fixture's hits, run the eight-cell Docker matrix and relevant Rust/Windows checks.
 - [ ] Review, push, validate, and merge a PR that resolves #1749.
+
+# #1752 Soldr-prefixed benchmark stats
+
+- [x] Add a RED parser regression for elapsed-time and ANSI-prefixed multi-language tables.
+- [x] Normalize only supported log prefixes and make the regression GREEN without changing unprefixed parsing.
+- [x] Parse the September 27 uploaded log end to end, render all four images, and verify provenance.
+- [ ] Run focused CI tests and lint, review, open/validate/merge the PR, then dispatch and verify a fresh benchmark-stats run on main.

@@ -116,6 +116,25 @@ def sample_payload():
     )
 
 
+def test_parse_benchmark_log_accepts_soldr_elapsed_and_ansi_prefixes():
+    # Soldr 0.9.23 prefixes captured benchmark output (including headings and
+    # Markdown rows) with elapsed time; the September 27 nightly had all tests
+    # pass but published nothing because these lines produced zero rows (#1752).
+    prefixed_lines = []
+    for index, line in enumerate(SAMPLE_LOG.splitlines()):
+        if line.startswith(("## ", "|")):
+            prefixed = f"   {index / 100:.2f} {line}"
+            if "Build, Cold" in line or "## C Benchmark:" in line:
+                prefixed = f"\x1b[36m{prefixed}\x1b[0m"
+            prefixed_lines.append(prefixed)
+        else:
+            prefixed_lines.append(line)
+
+    assert benchmark_stats.parse_benchmark_log("\n".join(prefixed_lines)) == (
+        benchmark_stats.parse_benchmark_log(SAMPLE_LOG)
+    )
+
+
 def test_parse_benchmark_log_extracts_all_tables():
     rows = benchmark_stats.parse_benchmark_log(SAMPLE_LOG)
 

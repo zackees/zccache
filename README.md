@@ -64,9 +64,11 @@ zccache --version
 
 [![Latest zccache Rust benchmark stats](https://raw.githubusercontent.com/zackees/zccache/benchmark-stats/benchmark-rust.jpg)](https://github.com/zackees/zccache/tree/benchmark-stats)
 
-The benchmark images are generated from the latest scheduled run and replace
-hand-maintained text stats. Full results, rendered HTML, and machine-readable
-JSON are published in the
+The benchmark images show the latest **successful** benchmark run, whether
+scheduled or manually triggered. The UTC timestamp and source commit in each
+image header reveal when that was. A failed run leaves the previous images in
+place, so check their date before comparing performance. Full results,
+rendered HTML, and machine-readable JSON are published in the
 [benchmark-stats branch](https://github.com/zackees/zccache/tree/benchmark-stats)
 and at [zackees.github.io/zccache](https://zackees.github.io/zccache/). Run the
 same suite locally with `./perf.sh`.
