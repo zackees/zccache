@@ -11,6 +11,7 @@ generated files suitable for publishing from an orphan branch:
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import datetime as dt
 import json
 import os
@@ -23,6 +24,8 @@ import tempfile
 from html import escape
 from pathlib import Path
 from typing import Any
+
+from ci import benchmark_metrics
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -512,7 +515,7 @@ def parse_benchmark_log(text: str) -> list[dict[str, Any]]:
 
 
 def _format_seconds(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.3f}s"
+    return benchmark_metrics.format_seconds(value)
 
 
 def _format_bytes(value: int | float | None) -> str:
@@ -527,7 +530,7 @@ def _format_bytes(value: int | float | None) -> str:
         amount /= 1024
     if unit == "B":
         return f"{int(amount)} B"
-    if amount < 10:
+    if amount < 10 or unit in ("MiB", "GiB"):
         return f"{amount:.1f} {unit}"
     return f"{amount:.0f} {unit}"
 
@@ -584,7 +587,9 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_payload(results: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
+def build_payload(
+    results: list[dict[str, Any]], metadata: dict[str, Any]
+) -> dict[str, Any]:
     return {
         "schema_version": 2,
         "metadata": metadata,
@@ -596,15 +601,21 @@ def build_payload(results: list[dict[str, Any]], metadata: dict[str, Any]) -> di
 def build_history_row(payload: dict[str, Any]) -> dict[str, Any]:
     metadata = payload["metadata"]
     return {
+        "schema_version": payload.get("schema_version", 2),
         "ts": metadata.get("generated_at"),
         "sha": metadata.get("git_sha"),
         "summary": payload.get("summary"),
         "results": [
             {
                 "benchmark": row.get("benchmark"),
+                "scenario_id": row.get("scenario_id"),
                 "language": row.get("language"),
                 "scenario": row.get("scenario"),
                 "mode": row.get("mode"),
+                "methodology": row.get("methodology"),
+                "bare_duration_ns": row.get("bare_duration_ns"),
+                "sccache_duration_ns": row.get("sccache_duration_ns"),
+                "zccache_duration_ns": row.get("zccache_duration_ns"),
                 "bare_seconds": row.get("bare_seconds"),
                 "sccache_seconds": row.get("sccache_seconds"),
                 "zccache_seconds": row.get("zccache_seconds"),
@@ -612,6 +623,7 @@ def build_history_row(payload: dict[str, Any]) -> dict[str, Any]:
                 "sccache_cache_bytes": row.get("sccache_cache_bytes"),
                 "zccache_cache_bytes": row.get("zccache_cache_bytes"),
                 "cache_bytes_reported": row.get("cache_bytes_reported"),
+                "sccache_evidence": row.get("sccache_evidence"),
             }
             for row in payload.get("results", [])
         ],
@@ -977,7 +989,8 @@ def build_combined_image_rows(results: list[dict[str, Any]]) -> list[dict[str, A
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     order: list[tuple[str, str]] = []
     for row in results:
-        scenario_root = _strip_mode_suffix(row.get("scenario", ""))
+        scenario_root = row.get("scenario_id") or _strip_mode_suffix(row.get("scenario", ""))
+        scenario_label = _strip_mode_suffix(row.get("scenario", ""))
         key = (row.get("benchmark", ""), scenario_root)
         combined = groups.get(key)
         if combined is None:
@@ -990,10 +1003,13 @@ def build_combined_image_rows(results: list[dict[str, Any]]) -> list[dict[str, A
                 "compact_label": _compact_benchmark_label(
                     str(row.get("language", "")), str(row.get("benchmark_label", ""))
                 ),
-                "compact_scenario": _compact_scenario(scenario_root),
+                "compact_scenario": scenario_label,
                 "cold": {series: None for series in SERIES_ORDER},
                 "warm": {series: None for series in SERIES_ORDER},
-                "cache_bytes": {series: None for series in SERIES_ORDER},
+                "cache_bytes": {
+                    mode: {series: None for series in SERIES_ORDER}
+                    for mode in ("cold", "warm")
+                },
             }
             groups[key] = combined
             order.append(key)
@@ -1006,7 +1022,7 @@ def build_combined_image_rows(results: list[dict[str, Any]]) -> list[dict[str, A
                 combined[mode][series] = float(value)
             cache_value = row.get(f"{series}_cache_bytes")
             if isinstance(cache_value, (int, float)) and cache_value >= 0:
-                combined["cache_bytes"][series] = int(cache_value)
+                combined["cache_bytes"][mode][series] = int(cache_value)
     return [groups[key] for key in order]
 
 
@@ -1059,7 +1075,7 @@ def _format_seconds_label(value: float | None) -> str:
     """Tight value label for the bar annotation. n/a when no datum."""
     if not isinstance(value, (int, float)) or value <= 0:
         return "n/a"
-    return f"{value:.3f}s"
+    return benchmark_metrics.format_seconds(value)
 
 
 def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> None:
@@ -1085,13 +1101,13 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
 
     width = 900
     margin = 20
-    header_band_h = 116
-    chart_top = 134
+    header_band_h = 140
+    chart_top = 156
     footer_h = 56
-    legend_h = 40
+    legend_h = 64
 
-    bar_row_h = 54
-    scenario_label_h = 36
+    bar_row_h = 108
+    scenario_label_h = 58
     scenario_gap = 16
     scenario_padding_top = 10
     scenario_padding_bottom = 12
@@ -1160,10 +1176,9 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
     draw.text(point(margin, 22), title, font=title_font, fill="#f0f6fc")
     metadata = payload["metadata"]
     sha = (metadata.get("git_sha") or "n/a")[:12]
-    runner = metadata.get("runner", {}).get("platform") or "n/a"
     metadata_line = (
         f"Generated {metadata['generated_at']} | ref {metadata.get('git_ref') or 'n/a'} | "
-        f"sha {sha} | runner {runner}"
+        f"sha {sha}"
     )
     draw_fit(
         margin,
@@ -1176,7 +1191,16 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
     draw_fit(
         margin,
         92,
-        "Per-scenario bars normalized to the cold maximum (100%); warm overlays on top.",
+        f"Runner: {metadata.get('runner', {}).get('os') or 'n/a'} / "
+        f"{metadata.get('runner', {}).get('arch') or 'n/a'} | full provenance: latest.json",
+        subtitle_font,
+        "#8b949e",
+        width - margin * 2,
+    )
+    draw_fit(
+        margin,
+        113,
+        "Per-scenario bars use the cold maximum (100%); warm-only uses its warm maximum.",
         subtitle_font,
         "#8b949e",
         width - margin * 2,
@@ -1219,21 +1243,21 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
             "#c9d1d9",
             chart_w - swatch_w - 40,
         )
-        # Violation swatch on the right side of the legend row
-        violation_x = x0 + chart_w - inner_padding - 220
+        # A second line avoids clipping the explanatory legend at 900px.
+        violation_x = x0 + inner_padding
         draw.rectangle(
-            box((violation_x, warm_top, violation_x + 30, warm_bottom)),
+            box((violation_x, warm_top + 30, violation_x + 30, warm_bottom + 30)),
             fill=SERIES_COLOR_PAIRS["zccache"]["warm"],
             outline=WARM_VIOLATION_OUTLINE,
             width=2 * scale,
         )
         draw_fit(
             violation_x + 38,
-            legend_top + 2,
+            legend_top + 32,
             "warm > cold = cache regression",
             legend_font,
             WARM_VIOLATION_OUTLINE,
-            220 - 40,
+            chart_w - 80,
         )
         return y + legend_h
 
@@ -1257,7 +1281,7 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
             heading,
             scenario_font,
             "#f0f6fc",
-            chart_w - inner_padding * 2 - 260,
+            chart_w - inner_padding * 2,
         )
         # Per-scenario scale note (right-aligned in the heading row)
         if source == "cold":
@@ -1266,12 +1290,8 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
             scale_note = f"100% = warm max {scale_max:.3f}s (no cold data)"
         else:
             scale_note = "no data"
-        scale_note_px = _text_width(draw, scale_note, subtitle_font)
         draw.text(
-            point(
-                x0 + chart_w - inner_padding - scale_note_px // scale,
-                y + scenario_padding_top + 8,
-            ),
+            point(x0 + inner_padding, y + scenario_padding_top + 28),
             scale_note,
             font=subtitle_font,
             fill="#8b949e",
@@ -1290,7 +1310,8 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
 
             cold_seconds = combined_row["cold"].get(series)
             warm_seconds = combined_row["warm"].get(series)
-            cache_bytes = combined_row["cache_bytes"].get(series)
+            cold_cache_bytes = combined_row["cache_bytes"]["cold"].get(series)
+            warm_cache_bytes = combined_row["cache_bytes"]["warm"].get(series)
             pair = SERIES_COLOR_PAIRS[series]
 
             # Series label (use bare_label for the "bare" row)
@@ -1340,35 +1361,28 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
                         fill=pair["warm"],
                     )
 
-            # Value labels: compact cold / warm / cache stack.
+            # One duration/cache pair per measured mode. Omit a whole absent
+            # mode instead of drawing phantom "cold n/a" on warm-only tests.
             value_x = bar_area_x1 + 12
-            draw_fit(
-                value_x,
-                row_top + 4,
-                f"cold {_format_seconds_label(cold_seconds)}",
-                value_font,
-                pair["cold"] if isinstance(cold_seconds, (int, float)) and cold_seconds > 0 else "#6e7681",
-                value_label_w - 12,
-            )
             warm_color = WARM_VIOLATION_OUTLINE if series in violations else (
                 pair["warm"] if isinstance(warm_seconds, (int, float)) and warm_seconds > 0 else "#6e7681"
             )
-            draw_fit(
-                value_x,
-                row_top + bar_row_h // 2 + 2,
-                f"warm {_format_seconds_label(warm_seconds)}",
-                value_font,
-                warm_color,
-                value_label_w - 12,
-            )
-            draw_fit(
-                value_x,
-                row_top + bar_row_h - 15,
-                f"cache {_format_bytes(cache_bytes)}",
-                small_font,
-                "#8b949e",
-                value_label_w - 12,
-            )
+            if any(value is not None for value in combined_row["cold"].values()):
+                draw_fit(value_x, row_top + 2, f"cold {_format_seconds_label(cold_seconds)}",
+                         value_font, pair["cold"], value_label_w - 12)
+                draw_fit(value_x, row_top + 27,
+                         f"cold cache {_format_bytes(cold_cache_bytes)}",
+                         small_font, "#8b949e", value_label_w - 12)
+            if any(value is not None for value in combined_row["warm"].values()):
+                warm_label_y = row_top + (57 if any(
+                    value is not None for value in combined_row["cold"].values()
+                ) else 27)
+                draw_fit(value_x, warm_label_y,
+                         f"warm {_format_seconds_label(warm_seconds)}",
+                         value_font, warm_color, value_label_w - 12)
+                draw_fit(value_x, warm_label_y + 25,
+                         f"warm cache {_format_bytes(warm_cache_bytes)}",
+                         small_font, "#8b949e", value_label_w - 12)
 
         # Subtle separator under the block
         draw.line(
@@ -1409,10 +1423,7 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
     draw.rectangle(
         box((margin, height - 36, width - margin, height - 34)), fill="#30363d"
     )
-    footer = (
-        "Artifacts: latest.json, benchmark-c.jpg, benchmark-cpp.jpg, "
-        "benchmark-emscripten.jpg, benchmark-rust.jpg"
-    )
+    footer = "Data: latest.json | images: benchmark-{c,cpp,emscripten,rust}.jpg"
     draw_fit(
         margin,
         height - 26,
@@ -1428,7 +1439,9 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
     image.save(path, format="JPEG", quality=90, optimize=True)
 
 
-def write_outputs(payload: dict[str, Any], output_dir: Path) -> None:
+def write_outputs(payload: dict[str, Any] | benchmark_metrics.BenchmarkReport, output_dir: Path) -> None:
+    if isinstance(payload, benchmark_metrics.BenchmarkReport):
+        payload = asdict(payload)  # JSON/presentation boundary; internal metric data stayed typed.
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     write_history_jsonl(payload, output_dir)
@@ -1465,10 +1478,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         parser.error("use --run-benchmarks or --input-log")
 
-    results = parse_benchmark_log(text)
-    if not results:
-        raise SystemExit("no benchmark result rows found in benchmark output")
-    payload = build_payload(results, collect_metadata())
+    table_metadata = {table["id"]: table for table in TABLES.values()}
+    records = benchmark_metrics.parse_metric_records(text, table_metadata)
+    results = benchmark_metrics.records_to_results(records, table_metadata)
+    payload = benchmark_metrics.make_report(results, collect_metadata())
     write_outputs(payload, args.output_dir)
     print(f"wrote benchmark stats to {args.output_dir}")
     return 0

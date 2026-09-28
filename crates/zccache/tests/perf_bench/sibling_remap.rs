@@ -28,6 +28,7 @@ use super::cpp_project::{
     absolute_cpp_source_names, baseline_single, generate_project, generate_project_with_file_tags,
     sccache_compile_single, source_names, warmup_compiler, zccache_compile_cpp_single_with_env,
 };
+use super::metrics::{sccache_stats, SccacheEvidence};
 
 pub fn make_git_workspace(dir: &Path) {
     std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -53,6 +54,7 @@ pub struct CppSiblingRemapResult {
     pub sccache_warm: Option<Vec<Duration>>,
     pub zccache_warm: Vec<Duration>,
     pub sccache_cache_bytes: Option<u64>,
+    pub sccache_evidence: Option<SccacheEvidence>,
     pub zccache_cache_bytes: u64,
 }
 
@@ -102,12 +104,14 @@ pub async fn measure_cpp_sibling_remap_mode(
     eprintln!();
 
     let mut sccache_cache_bytes = None;
+    let mut sccache_evidence = None;
     let sccache_warm = if let Some(sccache_bin) = find_sccache() {
         let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
         std::env::set_var("SCCACHE_DIR", &sc_cache_str);
         eprintln!("  [2/3] sccache (prime: workspace A, warm: workspace B)");
         let mut warm = Vec::with_capacity(WARM_TRIALS);
+        let mut stats_before = None;
         for trial in 0..WARM_TRIALS {
             if with_file_tags || trial == 0 {
                 let _ = std::process::Command::new(&sccache_bin)
@@ -127,6 +131,7 @@ pub async fn measure_cpp_sibling_remap_mode(
                     .status();
                 warmup_compiler(compiler, &workspace_a);
                 let _ = sccache_compile_single(&sccache_bin, compiler, &workspace_a, &sources_a);
+                stats_before = sccache_stats(&sccache_bin);
             }
             warm.push(sccache_compile_single(
                 &sccache_bin,
@@ -137,6 +142,12 @@ pub async fn measure_cpp_sibling_remap_mode(
         }
         print_trials_per("warm:", &warm, Some(NUM_FILES));
         sccache_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        if !with_file_tags {
+            sccache_evidence = sccache_stats(&sccache_bin).and_then(|after| {
+                stats_before
+                    .map(|before| SccacheEvidence::from_stats(&after.delta(&before), "warm"))
+            });
+        }
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -199,6 +210,7 @@ pub async fn measure_cpp_sibling_remap_mode(
         sccache_warm,
         zccache_warm: zc_warm,
         sccache_cache_bytes,
+        sccache_evidence,
         zccache_cache_bytes,
     }
 }

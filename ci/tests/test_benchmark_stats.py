@@ -513,6 +513,112 @@ def test_render_language_jpg_draws_combined_cold_warm_overlay(tmp_path, monkeypa
     assert "% slower" not in joined
 
 
+def test_warm_only_chart_does_not_invent_cold_labels(tmp_path, monkeypatch):
+    """#1754: a warm-only experiment has no cold sample to annotate."""
+    pytest.importorskip("PIL")
+    from PIL import ImageDraw
+
+    captured_text = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self, xy, value, *args, **kwargs):
+        captured_text.append(value)
+        return original_text(self, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    payload = sample_payload()
+    payload["results"] = [
+        row for row in payload["results"] if row["benchmark"] == "rust-sibling-remap"
+    ]
+    benchmark_stats.render_language_jpg(payload, "rust", tmp_path / "rust.jpg")
+
+    assert "cold n/a" not in captured_text
+    assert any(text.startswith("warm ") for text in captured_text)
+
+
+def test_chart_retains_cold_and_warm_cache_snapshots(tmp_path, monkeypatch):
+    """#1754: the 28.5/23.3 MiB workspace-link snapshots cannot be merged."""
+    pytest.importorskip("PIL")
+    from PIL import ImageDraw
+
+    captured_text = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self, xy, value, *args, **kwargs):
+        captured_text.append(value)
+        return original_text(self, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    payload = sample_payload()
+    payload["results"] = [
+        row for row in payload["results"] if row["benchmark"] == "rust-workspace-link"
+    ]
+    cold, warm = payload["results"]
+    cold["zccache_cache_bytes"] = 29_884_416
+    warm["zccache_cache_bytes"] = 24_431_821
+    benchmark_stats.render_language_jpg(payload, "rust", tmp_path / "rust.jpg")
+
+    assert any("28.5 MiB" in text and "cold" in text for text in captured_text)
+    assert any("23.3 MiB" in text and "warm" in text for text in captured_text)
+
+
+def test_chart_value_labels_do_not_overlap(tmp_path, monkeypatch):
+    """#1754: inspect rendered text boxes, not only the text content."""
+    pytest.importorskip("PIL")
+    from PIL import ImageDraw
+
+    boxes = []
+    original_text = ImageDraw.ImageDraw.text
+
+    def recording_text(self, xy, value, *args, **kwargs):
+        if value.startswith(("cold ", "warm ", "cache ")):
+            font = kwargs["font"]
+            bounds = self.textbbox(xy, value, font=font)
+            boxes.append((value, bounds))
+        return original_text(self, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    benchmark_stats.render_language_jpg(sample_payload(), "rust", tmp_path / "rust.jpg")
+    for index, (left_text, left) in enumerate(boxes):
+        for right_text, right in boxes[index + 1 :]:
+            if left[0] < right[2] and right[0] < left[2]:
+                gap = max(left[1] - right[3], right[1] - left[3])
+                assert gap >= 40, f"crowded labels: {left_text!r} and {right_text!r} ({gap}px)"
+
+
+def test_all_four_final_resolution_images_keep_text_inside_canvas(tmp_path, monkeypatch):
+    """#1754: layout golden for each language, including long and warm-only rows."""
+    pytest.importorskip("PIL")
+    from PIL import Image, ImageDraw
+
+    original_text = ImageDraw.ImageDraw.text
+    text_boxes = []
+
+    def recording_text(self, xy, value, *args, **kwargs):
+        text_boxes.append((value, self.textbbox(xy, value, font=kwargs["font"])))
+        return original_text(self, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+    payload = sample_payload()
+    for language, filename in benchmark_stats.LANGUAGE_IMAGE_FILES.items():
+        text_boxes.clear()
+        path = tmp_path / filename
+        benchmark_stats.render_language_jpg(payload, language, path)
+        with Image.open(path) as image:
+            width, height = image.size
+        assert width == 900
+        assert height >= 460
+        assert text_boxes
+        if language == "c++":
+            assert any(
+                "Sibling-workspace with __FILE__" in value and not value.endswith("...")
+                for value, _ in text_boxes
+            )
+        for value, (left, top, right, bottom) in text_boxes:
+            assert 0 <= left < right <= width * 4, (language, value)
+            assert 0 <= top < bottom <= height * 4, (language, value)
+
+
 def test_strip_mode_suffix_handles_cold_warm_and_canonical_forms():
     f = benchmark_stats._strip_mode_suffix
     assert f("Single-file, Cold") == "Single-file"

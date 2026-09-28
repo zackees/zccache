@@ -153,7 +153,7 @@ pub fn native_crash_capture_enabled() -> bool {
 }
 
 fn native_crash_capture_from_env_value(value: Option<&str>) -> bool {
-    !value.is_some_and(|raw| raw.trim() == "0")
+    value.is_none_or(|raw| raw.trim() != "0")
 }
 
 /// Testable core of [`daemon_spawn_disabled`] — no environment access.

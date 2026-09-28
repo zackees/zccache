@@ -13,6 +13,7 @@ use super::common::{
     print_trials_per, start_daemon, start_zccache_session, NUM_FILES, RUSTC_NUM_FILES,
     RUSTC_WARM_TRIALS, WARM_TRIALS,
 };
+use super::metrics::{emit_metric, sccache_stats, MetricRow, SccacheEvidence};
 use super::rust_project::{
     generate_rust_project, run_rustc_batch, run_sccache_rustc_batch,
     run_zccache_rustc_batch_with_env, rust_source_names, rustc_args_for, warmup_rustc,
@@ -70,6 +71,34 @@ async fn perf_cpp_sibling_remap_warm() {
     eprintln!("|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|");
     for result in &results {
         let zc_warm_med = median(&result.zccache_warm);
+        let scenario_id = if result.scenario.contains("no __FILE__") {
+            "sibling-workspace-no-__file__"
+        } else {
+            "sibling-workspace-with-__file__"
+        };
+        emit_metric(&MetricRow::new(
+            "cpp-sibling-remap",
+            "c++",
+            "perf_cpp_sibling_remap_warm",
+            scenario_id,
+            result.scenario,
+            "warm",
+            "sibling-workspace",
+            WARM_TRIALS,
+            "Bare clang",
+            result.bare_warm,
+            result.sccache_warm.as_ref().map(|times| median(times)),
+            zc_warm_med,
+            result.sccache_cache_bytes,
+            result.zccache_cache_bytes,
+            result.sccache_evidence.clone().unwrap_or_else(|| {
+                if result.sccache_warm.is_some() {
+                    SccacheEvidence::unverified()
+                } else {
+                    SccacheEvidence::unavailable()
+                }
+            }),
+        ));
         let sccache_warm_str = result.sccache_warm.as_ref().map(|t| fmt_dur(median(t)));
         let sccache_cache_str = result.sccache_cache_bytes.map(fmt_bytes);
         let zccache_cache_str = fmt_bytes(result.zccache_cache_bytes);
@@ -147,6 +176,7 @@ async fn perf_rustc_sibling_remap_warm() {
 
     // ── sccache warm in workspace B ────────────────────────────────────
     let mut sccache_cache_bytes = None;
+    let mut sccache_warm_evidence = None;
     let sccache_warm = if let Some(scc_bin) = find_sccache() {
         let scd = zccache::test_support::temp_cache_dir().unwrap();
         let scd_s = scd.path().to_string_lossy().into_owned();
@@ -165,6 +195,7 @@ async fn perf_rustc_sibling_remap_warm() {
             .status();
         warmup_rustc(&rc, &workspace_b);
         let _ = run_sccache_rustc_batch(&scc_bin, &rc, &workspace_b, &srcs, rustc_args_for);
+        let stats_before = sccache_stats(&scc_bin);
         let mut warm = Vec::with_capacity(RUSTC_WARM_TRIALS);
         for _ in 0..RUSTC_WARM_TRIALS {
             warm.push(run_sccache_rustc_batch(
@@ -177,6 +208,9 @@ async fn perf_rustc_sibling_remap_warm() {
         }
         print_trials_per("warm:", &warm, Some(RUSTC_NUM_FILES));
         sccache_cache_bytes = Some(dir_size_bytes(scd.path()));
+        sccache_warm_evidence = sccache_stats(&scc_bin).and_then(|after| {
+            stats_before.map(|before| SccacheEvidence::from_stats(&after.delta(&before), "warm"))
+        });
         let _ = std::process::Command::new(&scc_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -249,6 +283,29 @@ async fn perf_rustc_sibling_remap_warm() {
     let dash = "\u{2014}";
     let bl_med = median(&bl_warm);
     let zc_med = median(&zc_warm);
+    emit_metric(&MetricRow::new(
+        "rust-sibling-remap",
+        "rust",
+        "perf_rustc_sibling_remap_warm",
+        "sibling-workspace",
+        "Sibling-workspace, Warm",
+        "warm",
+        "sibling-workspace",
+        RUSTC_WARM_TRIALS,
+        "Bare rustc",
+        bl_med,
+        sccache_warm.as_ref().map(|times| median(times)),
+        zc_med,
+        sccache_cache_bytes,
+        zccache_cache_bytes,
+        sccache_warm_evidence.unwrap_or_else(|| {
+            if sccache_warm.is_some() {
+                SccacheEvidence::unverified()
+            } else {
+                SccacheEvidence::unavailable()
+            }
+        }),
+    ));
     let sccache_warm_str = sccache_warm.as_ref().map(|t| fmt_dur(median(t)));
     let sccache_cache_str = sccache_cache_bytes.map(fmt_bytes);
     let zccache_cache_str = fmt_bytes(zccache_cache_bytes);

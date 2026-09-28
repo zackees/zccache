@@ -15,6 +15,7 @@ use super::common::{
     dir_size_bytes, find_sccache, fmt_bytes, fmt_dur, fmt_ratio, median, print_trials,
     start_daemon, RUSTC_NUM_FILES, RUSTC_WARM_TRIALS,
 };
+use super::metrics::{emit_metric, sccache_stats, MetricRow, SccacheEvidence};
 use super::rust_project::{
     generate_rust_project, run_rustc_batch, run_sccache_rustc_batch, run_zccache_rustc_batch,
     rust_source_names, rustc_args_for, rustc_check_args_for, warmup_rustc,
@@ -62,7 +63,10 @@ async fn perf_rustc_zccache_vs_sccache() {
 
     let build_sc_cold;
     let build_sc_warm;
+    let mut build_sccache_cold_cache_bytes = None;
     let mut build_sccache_cache_bytes = None;
+    let mut build_cold_evidence = SccacheEvidence::unavailable();
+    let mut build_warm_evidence = SccacheEvidence::unavailable();
     if let Some(ref scc_bin) = find_sccache() {
         let sd = zccache::test_support::temp_cache_dir().unwrap();
         generate_rust_project(sd.path());
@@ -89,6 +93,12 @@ async fn perf_rustc_zccache_vs_sccache() {
         let c = run_sccache_rustc_batch(scc_bin, &rc, sd.path(), &srcs, rustc_args_for);
         eprintln!("        cold:  {}", fmt_dur(c));
         build_sc_cold = Some(c);
+        build_sccache_cold_cache_bytes = Some(dir_size_bytes(scd.path()));
+        let cold_stats = sccache_stats(scc_bin);
+        build_cold_evidence = cold_stats
+            .as_ref()
+            .map(|stats| SccacheEvidence::from_stats(stats, "cold"))
+            .unwrap_or_else(SccacheEvidence::unverified);
         let mut t = Vec::with_capacity(RUSTC_WARM_TRIALS);
         for _ in 0..RUSTC_WARM_TRIALS {
             t.push(run_sccache_rustc_batch(
@@ -102,6 +112,11 @@ async fn perf_rustc_zccache_vs_sccache() {
         print_trials("warm:", &t);
         build_sc_warm = Some(t);
         build_sccache_cache_bytes = Some(dir_size_bytes(scd.path()));
+        build_warm_evidence = sccache_stats(scc_bin)
+            .and_then(|stats| cold_stats.as_ref().map(|cold| stats.delta(cold)))
+            .as_ref()
+            .map(|stats| SccacheEvidence::from_stats(stats, "warm"))
+            .unwrap_or_else(SccacheEvidence::unverified);
         let _ = std::process::Command::new(scc_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -140,6 +155,7 @@ async fn perf_rustc_zccache_vs_sccache() {
     let build_zc_cold =
         run_zccache_rustc_batch(&mut cl, &sid, &rc, &zc, &srcs, rustc_args_for).await;
     eprintln!("        cold:  {}", fmt_dur(build_zc_cold));
+    let build_zccache_cold_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     let mut build_zc_warm = Vec::with_capacity(RUSTC_WARM_TRIALS);
     for _ in 0..RUSTC_WARM_TRIALS {
         build_zc_warm
@@ -166,7 +182,10 @@ async fn perf_rustc_zccache_vs_sccache() {
 
     let check_sc_cold;
     let check_sc_warm;
+    let mut check_sccache_cold_cache_bytes = None;
     let mut check_sccache_cache_bytes = None;
+    let mut check_cold_evidence = SccacheEvidence::unavailable();
+    let mut check_warm_evidence = SccacheEvidence::unavailable();
     if let Some(ref scc_bin) = find_sccache() {
         let sd = zccache::test_support::temp_cache_dir().unwrap();
         generate_rust_project(sd.path());
@@ -193,6 +212,12 @@ async fn perf_rustc_zccache_vs_sccache() {
         let c = run_sccache_rustc_batch(scc_bin, &rc, sd.path(), &srcs, rustc_check_args_for);
         eprintln!("        cold:  {}", fmt_dur(c));
         check_sc_cold = Some(c);
+        check_sccache_cold_cache_bytes = Some(dir_size_bytes(scd.path()));
+        let cold_stats = sccache_stats(scc_bin);
+        check_cold_evidence = cold_stats
+            .as_ref()
+            .map(|stats| SccacheEvidence::from_stats(stats, "cold"))
+            .unwrap_or_else(SccacheEvidence::unverified);
         let mut t = Vec::with_capacity(RUSTC_WARM_TRIALS);
         for _ in 0..RUSTC_WARM_TRIALS {
             t.push(run_sccache_rustc_batch(
@@ -206,6 +231,11 @@ async fn perf_rustc_zccache_vs_sccache() {
         print_trials("warm:", &t);
         check_sc_warm = Some(t);
         check_sccache_cache_bytes = Some(dir_size_bytes(scd.path()));
+        check_warm_evidence = sccache_stats(scc_bin)
+            .and_then(|stats| cold_stats.as_ref().map(|cold| stats.delta(cold)))
+            .as_ref()
+            .map(|stats| SccacheEvidence::from_stats(stats, "warm"))
+            .unwrap_or_else(SccacheEvidence::unverified);
         let _ = std::process::Command::new(scc_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -228,6 +258,7 @@ async fn perf_rustc_zccache_vs_sccache() {
     let check_zc_cold =
         run_zccache_rustc_batch(&mut cl, &sid, &rc, &zc, &srcs, rustc_check_args_for).await;
     eprintln!("        cold:  {}", fmt_dur(check_zc_cold));
+    let check_zccache_cold_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     let mut check_zc_warm = Vec::with_capacity(RUSTC_WARM_TRIALS);
     for _ in 0..RUSTC_WARM_TRIALS {
         check_zc_warm.push(
@@ -298,8 +329,8 @@ async fn perf_rustc_zccache_vs_sccache() {
         build_bl_cold,
         build_sc_cold,
         build_zc_cold,
-        build_sccache_cache_bytes,
-        build_zccache_cache_bytes,
+        build_sccache_cold_cache_bytes,
+        build_zccache_cold_cache_bytes,
         false,
     );
     row(
@@ -316,8 +347,8 @@ async fn perf_rustc_zccache_vs_sccache() {
         check_bl_cold,
         check_sc_cold,
         check_zc_cold,
-        check_sccache_cache_bytes,
-        check_zccache_cache_bytes,
+        check_sccache_cold_cache_bytes,
+        check_zccache_cold_cache_bytes,
         false,
     );
     row(
@@ -329,6 +360,85 @@ async fn perf_rustc_zccache_vs_sccache() {
         check_zccache_cache_bytes,
         true,
     );
+    for (
+        scenario_id,
+        scenario,
+        mode,
+        trials,
+        bare,
+        sccache,
+        zccache,
+        sc_bytes,
+        zc_bytes,
+        evidence,
+    ) in [
+        (
+            "build",
+            "Build, Cold",
+            "cold",
+            1,
+            build_bl_cold,
+            build_sc_cold,
+            build_zc_cold,
+            build_sccache_cold_cache_bytes,
+            build_zccache_cold_cache_bytes,
+            build_cold_evidence,
+        ),
+        (
+            "build",
+            "Build, Warm",
+            "warm",
+            RUSTC_WARM_TRIALS,
+            build_bl_warm,
+            build_sc_warm.as_ref().map(|times| median(times)),
+            build_zm,
+            build_sccache_cache_bytes,
+            build_zccache_cache_bytes,
+            build_warm_evidence,
+        ),
+        (
+            "check",
+            "Check, Cold",
+            "cold",
+            1,
+            check_bl_cold,
+            check_sc_cold,
+            check_zc_cold,
+            check_sccache_cold_cache_bytes,
+            check_zccache_cold_cache_bytes,
+            check_cold_evidence,
+        ),
+        (
+            "check",
+            "Check, Warm",
+            "warm",
+            RUSTC_WARM_TRIALS,
+            check_bl_warm,
+            check_sc_warm.as_ref().map(|times| median(times)),
+            check_zm,
+            check_sccache_cache_bytes,
+            check_zccache_cache_bytes,
+            check_warm_evidence,
+        ),
+    ] {
+        emit_metric(&MetricRow::new(
+            "rust",
+            "rust",
+            "perf_rustc_zccache_vs_sccache",
+            scenario_id,
+            scenario,
+            mode,
+            "rustc-batch",
+            trials,
+            "Bare rustc",
+            bare,
+            sccache,
+            zccache,
+            sc_bytes,
+            zc_bytes,
+            evidence,
+        ));
+    }
 
     eprintln!();
     eprintln!("> **Build** = `--emit=dep-info,metadata,link` (cargo build). **Check** = `--emit=dep-info,metadata` (cargo check).");

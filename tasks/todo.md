@@ -1262,3 +1262,11 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Normalize only supported log prefixes and make the regression GREEN without changing unprefixed parsing.
 - [x] Parse the September 27 uploaded log end to end, render all four images, and verify provenance.
 - [ ] Run focused CI tests and lint, review, open/validate/merge the PR, then dispatch and verify a fresh benchmark-stats run on main.
+
+# #1754 typed benchmark metrics and truthful charts
+
+- [x] Add RED contract/renderer tests for the documented failures, a September 28 real-log excerpt, and publication fail-closed behavior.
+- [x] Emit versioned typed benchmark records from all registered Rust perf tests, with exact nanoseconds, cache bytes, identity/methodology, and sccache evidence; use validated Python dataclasses internally and JSON only on the wire.
+- [x] Validate a complete run before publication; preserve legacy Markdown consumers and historical schema compatibility.
+- [x] Render warm-only and methodologically distinct rows honestly, retain per-mode cache sizes, and prove legible final-resolution images.
+- [ ] Run targeted and broad tests, review, rebase onto origin/main, push a PR, wait for CI, merge, and remove this worktree/branch leftovers.

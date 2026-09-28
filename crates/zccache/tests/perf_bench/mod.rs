@@ -17,6 +17,7 @@
 )]
 
 mod common;
+mod metrics;
 
 // Project-generation + per-language compile helpers
 mod c_project;

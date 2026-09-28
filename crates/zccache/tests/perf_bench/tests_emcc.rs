@@ -28,6 +28,7 @@ use super::cpp_project::{
     sccache_compile_single, source_names, warmup_compiler, zccache_compile_cpp_single_with_env,
     zccache_compile_multi, zccache_compile_single,
 };
+use super::metrics::{emit_metric, sccache_stats, MetricRow, SccacheEvidence};
 use super::sibling_remap::{make_git_workspace, path_remap_auto_env};
 
 /// Emscripten warm-cache benchmark: bare em++ vs sccache vs zccache.
@@ -82,6 +83,11 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let mut sccache_single_cache_bytes = None;
     let mut sccache_cold_multi_cache_bytes = None;
     let mut sccache_warm_multi_cache_bytes = None;
+    let mut sccache_cold_single_cache_bytes = None;
+    let mut sccache_cold_single_stats = None;
+    let mut sccache_warm_single_stats = None;
+    let mut sccache_cold_multi_stats = None;
+    let mut sccache_warm_multi_stats = None;
     if let Some(sccache_bin) = find_sccache() {
         let sc_dir = zccache::test_support::temp_cache_dir().unwrap();
         generate_project(sc_dir.path());
@@ -116,6 +122,8 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         let cold = sccache_compile_single(&sccache_bin, &compiler, sc_dir.path(), &sources);
         eprintln!("        single cold:  {}", fmt_dur(cold));
         sccache_cold_single = Some(cold);
+        sccache_cold_single_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_cold_single_stats = sccache_stats(&sccache_bin);
         let mut warm = Vec::with_capacity(WARM_TRIALS);
         for _ in 0..WARM_TRIALS {
             warm.push(sccache_compile_single(
@@ -128,6 +136,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         print_trials("single warm:", &warm);
         sccache_warm_single = Some(warm);
         sccache_single_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_warm_single_stats = sccache_stats(&sccache_bin);
 
         stop_purge_start(&sccache_bin, &sc_cache_str);
         nuke_and_regenerate(sc_dir.path());
@@ -137,6 +146,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         eprintln!("        multi cold (per-TU):   {}", fmt_dur(cold));
         sccache_cold_multi = Some(cold);
         sccache_cold_multi_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_cold_multi_stats = sccache_stats(&sccache_bin);
 
         // Keep the batched warm baseline in its pre-#1437 empty-cache state.
         // The cold parity pass above populated sccache per translation unit.
@@ -154,6 +164,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         print_trials("multi warm:", &warm);
         sccache_warm_multi = Some(warm);
         sccache_warm_multi_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_warm_multi_stats = sccache_stats(&sccache_bin);
 
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
@@ -185,6 +196,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let zc_cold_single =
         zccache_compile_single(&mut client, &session_id, &compiler, &zc_cwd, &sources).await;
     eprintln!("        single cold:  {}", fmt_dur(zc_cold_single));
+    let zc_cold_single_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     let mut zc_warm_single = Vec::with_capacity(WARM_TRIALS);
     for _ in 0..WARM_TRIALS {
         zc_warm_single.push(
@@ -192,6 +204,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
         );
     }
     print_trials("single warm:", &zc_warm_single);
+    let zc_warm_single_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
 
     // #445: reset the cache before the multi-cold measurement. Without
     // this, `nuke_and_regenerate` only rewrites the (deterministic)
@@ -213,6 +226,7 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     )
     .await;
     eprintln!("        multi cold:   {}", fmt_dur(zc_cold_multi));
+    let zc_cold_multi_cache_bytes = dir_size_bytes(zccache_cache_dir.path());
     let mut zc_warm_multi = Vec::with_capacity(WARM_TRIALS);
     for _ in 0..WARM_TRIALS {
         zc_warm_multi.push(
@@ -231,6 +245,110 @@ async fn perf_emcc_warm_cache_zccache_vs_sccache() {
     let dash = "\u{2014}";
     let zc_single_med = median(&zc_warm_single);
     let zc_multi_med = median(&zc_warm_multi);
+    let cold_single_evidence = sccache_cold_single_stats
+        .as_ref()
+        .map(|stats| SccacheEvidence::from_stats(stats, "cold"));
+    let warm_single_evidence = sccache_warm_single_stats.as_ref().and_then(|stats| {
+        sccache_cold_single_stats
+            .as_ref()
+            .map(|before| SccacheEvidence::from_stats(&stats.delta(before), "warm"))
+    });
+    let cold_multi_evidence = sccache_cold_multi_stats
+        .as_ref()
+        .map(|stats| SccacheEvidence::from_stats(stats, "cold"));
+    let warm_multi_evidence = sccache_warm_multi_stats
+        .as_ref()
+        .map(|stats| SccacheEvidence::from_stats(stats, "warm"));
+    for (
+        scenario_id,
+        scenario,
+        mode,
+        methodology,
+        trials,
+        bare,
+        sccache,
+        zccache,
+        sc_bytes,
+        zc_bytes,
+        evidence,
+    ) in [
+        (
+            "single-file",
+            "Single-file, Cold",
+            "cold",
+            "single-file",
+            1,
+            bl_cold_single,
+            sccache_cold_single,
+            zc_cold_single,
+            sccache_cold_single_cache_bytes,
+            zc_cold_single_cache_bytes,
+            cold_single_evidence,
+        ),
+        (
+            "single-file",
+            "Single-file, Warm",
+            "warm",
+            "single-file",
+            WARM_TRIALS,
+            bl_warm_single,
+            sccache_warm_single.as_ref().map(|t| median(t)),
+            zc_single_med,
+            sccache_single_cache_bytes,
+            zc_warm_single_cache_bytes,
+            warm_single_evidence,
+        ),
+        (
+            "multi-file-per-tu",
+            "Multi-file, Cold (per-TU)",
+            "cold",
+            "per-translation-unit",
+            1,
+            bl_cold_multi,
+            sccache_cold_multi,
+            zc_cold_multi,
+            sccache_cold_multi_cache_bytes,
+            zc_cold_multi_cache_bytes,
+            cold_multi_evidence,
+        ),
+        (
+            "multi-file-batched",
+            "Multi-file, Warm",
+            "warm",
+            "batched",
+            WARM_TRIALS,
+            bl_warm_multi,
+            sccache_warm_multi.as_ref().map(|t| median(t)),
+            zc_multi_med,
+            sccache_warm_multi_cache_bytes,
+            zccache_cache_bytes,
+            warm_multi_evidence,
+        ),
+    ] {
+        emit_metric(&MetricRow::new(
+            "emscripten",
+            "emscripten",
+            "perf_emcc_warm_cache_zccache_vs_sccache",
+            scenario_id,
+            scenario,
+            mode,
+            methodology,
+            trials,
+            "Bare em++",
+            bare,
+            sccache,
+            zccache,
+            sc_bytes,
+            zc_bytes,
+            evidence.unwrap_or_else(|| {
+                if sccache.is_some() {
+                    SccacheEvidence::unverified()
+                } else {
+                    SccacheEvidence::unavailable()
+                }
+            }),
+        ));
+    }
     let sc_warm_single_str = sccache_warm_single.as_ref().map(|t| fmt_dur(median(t)));
     let sc_warm_multi_str = sccache_warm_multi.as_ref().map(|t| fmt_dur(median(t)));
     let sc_cold_single_str = sccache_cold_single.map(fmt_dur);
@@ -350,6 +468,7 @@ async fn perf_emcc_sibling_remap_warm() {
 
     // ── sccache em++ warm in workspace B ──────────────────────────────
     let mut sccache_cache_bytes = None;
+    let mut sccache_warm_evidence = None;
     let sccache_warm = if let Some(sccache_bin) = find_sccache() {
         let sc_cache_dir = zccache::test_support::temp_cache_dir().unwrap();
         let sc_cache_str = sc_cache_dir.path().to_string_lossy().into_owned();
@@ -368,6 +487,7 @@ async fn perf_emcc_sibling_remap_warm() {
             .status();
         warmup_compiler(&compiler, &workspace_b);
         let _ = sccache_compile_single(&sccache_bin, &compiler, &workspace_b, &sources);
+        let stats_before = sccache_stats(&sccache_bin);
         let mut warm = Vec::with_capacity(WARM_TRIALS);
         for _ in 0..WARM_TRIALS {
             warm.push(sccache_compile_single(
@@ -379,6 +499,9 @@ async fn perf_emcc_sibling_remap_warm() {
         }
         print_trials_per("warm:", &warm, Some(NUM_FILES));
         sccache_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_warm_evidence = sccache_stats(&sccache_bin).and_then(|after| {
+            stats_before.map(|before| SccacheEvidence::from_stats(&after.delta(&before), "warm"))
+        });
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
             .stdout(std::process::Stdio::null())
@@ -447,6 +570,29 @@ async fn perf_emcc_sibling_remap_warm() {
     let dash = "\u{2014}";
     let bl_warm_med = median(&bl_warm);
     let zc_warm_med = median(&zc_warm);
+    emit_metric(&MetricRow::new(
+        "emscripten-sibling-remap",
+        "emscripten",
+        "perf_emcc_sibling_remap_warm",
+        "sibling-workspace",
+        "Sibling-workspace, Warm",
+        "warm",
+        "sibling-workspace",
+        WARM_TRIALS,
+        "Bare em++",
+        bl_warm_med,
+        sccache_warm.as_ref().map(|times| median(times)),
+        zc_warm_med,
+        sccache_cache_bytes,
+        zccache_cache_bytes,
+        sccache_warm_evidence.unwrap_or_else(|| {
+            if sccache_warm.is_some() {
+                SccacheEvidence::unverified()
+            } else {
+                SccacheEvidence::unavailable()
+            }
+        }),
+    ));
     let sccache_warm_str = sccache_warm.as_ref().map(|t| fmt_dur(median(t)));
     let sccache_cache_str = sccache_cache_bytes.map(fmt_bytes);
     let zccache_cache_str = fmt_bytes(zccache_cache_bytes);

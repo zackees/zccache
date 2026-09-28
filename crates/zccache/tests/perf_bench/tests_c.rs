@@ -18,6 +18,7 @@ use super::common::{
     dir_size_bytes, find_sccache, fmt_bytes, fmt_dur, fmt_ratio, median, print_trials,
     start_daemon, NUM_FILES, WARM_TRIALS,
 };
+use super::metrics::{emit_metric, sccache_stats, MetricRow, SccacheEvidence};
 
 #[tokio::test]
 #[ignore] // Run explicitly: soldr cargo test -p zccache --test perf_bench_test -- perf_c_zccache_vs_bare --nocapture --ignored
@@ -59,6 +60,8 @@ async fn perf_c_zccache_vs_bare() {
     let sccache_warm;
     let mut sccache_cold_cache_bytes = None;
     let mut sccache_warm_cache_bytes = None;
+    let mut sccache_cold_evidence = SccacheEvidence::unavailable();
+    let mut sccache_warm_evidence = SccacheEvidence::unavailable();
     if let Some(sccache_bin) = find_sccache() {
         let sc_dir = zccache::test_support::temp_cache_dir().unwrap();
         generate_c_project(sc_dir.path());
@@ -90,6 +93,11 @@ async fn perf_c_zccache_vs_bare() {
         eprintln!("        cold:  {}", fmt_dur(cold));
         sccache_cold = Some(cold);
         sccache_cold_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        let cold_stats = sccache_stats(&sccache_bin);
+        sccache_cold_evidence = cold_stats
+            .as_ref()
+            .map(|stats| SccacheEvidence::from_stats(stats, "cold"))
+            .unwrap_or_else(SccacheEvidence::unverified);
 
         let mut times = Vec::with_capacity(WARM_TRIALS);
         for _ in 0..WARM_TRIALS {
@@ -103,6 +111,11 @@ async fn perf_c_zccache_vs_bare() {
         print_trials("warm:", &times);
         sccache_warm = Some(times);
         sccache_warm_cache_bytes = Some(dir_size_bytes(sc_cache_dir.path()));
+        sccache_warm_evidence = sccache_stats(&sccache_bin)
+            .and_then(|stats| cold_stats.as_ref().map(|cold| stats.delta(cold)))
+            .as_ref()
+            .map(|stats| SccacheEvidence::from_stats(stats, "warm"))
+            .unwrap_or_else(SccacheEvidence::unverified);
 
         let _ = std::process::Command::new(&sccache_bin)
             .arg("--stop-server")
@@ -210,6 +223,40 @@ async fn perf_c_zccache_vs_bare() {
         vs_sccache_warm.as_deref().unwrap_or(dash),
         vs_bare_warm,
     );
+    emit_metric(&MetricRow::new(
+        "c-inline",
+        "c",
+        "perf_c_zccache_vs_bare",
+        "single-file",
+        "Single-file, Cold",
+        "cold",
+        "single-file",
+        1,
+        "Bare clang",
+        bl_cold,
+        sccache_cold,
+        zc_cold,
+        sccache_cold_cache_bytes,
+        zc_cold_cache_bytes,
+        sccache_cold_evidence,
+    ));
+    emit_metric(&MetricRow::new(
+        "c-inline",
+        "c",
+        "perf_c_zccache_vs_bare",
+        "single-file",
+        "Single-file, Warm",
+        "warm",
+        "single-file",
+        WARM_TRIALS,
+        "Bare clang",
+        bl_warm,
+        sccache_warm.as_ref().map(|times| median(times)),
+        zc_warm_med,
+        sccache_warm_cache_bytes,
+        zc_warm_cache_bytes,
+        sccache_warm_evidence,
+    ));
     eprintln!();
     eprintln!("> **Cold** = first compile (empty cache). **Warm** = median of {WARM_TRIALS} subsequent runs.");
     eprintln!();

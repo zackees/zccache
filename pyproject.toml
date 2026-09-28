@@ -42,3 +42,7 @@ zccache = "python/zccache"
 zccache = ["py.typed"]
 "zccache.fingerprint" = ["py.typed"]
 "zccache.watcher" = ["py.typed"]
+
+[tool.pyright]
+include = ["ci/benchmark_metrics.py"]
+typeCheckingMode = "strict"

@@ -9,11 +9,13 @@ Python scripts for development tooling. Rust commands go through `soldr <tool>` 
 - **`./lint`** - Workspace linting (rustfmt + clippy), supports single-file mode
 - **`./test`** - Workspace tests, supports per-crate filtering
 - **`./perf.sh`** - Performance benchmarks (zccache vs sccache vs bare clang)
-- **`python -m ci.benchmark_stats`** - Generates `index.html`, `latest.json`, and per-language benchmark JPGs from perf output for the published benchmark report
+- **`uv run python -m ci.benchmark_stats`** - Generates `index.html`, `latest.json`, and per-language benchmark JPGs from validated perf output for the published benchmark report
 - **`python -m ci.perf_guard`** - Fails CI when Rust, C, or C++ zccache benchmark rows fall below the bare-compiler or pinned-sccache speed floors. Cold-vs-bare floors whose zccache cost is a fixed added time are re-based per runner by `ci/perf_floor.py` (#1445): a runner faster than the calibration runner keeps the same added-time budget instead of a smaller one
 - **`uv run --with pyyaml python ci/render_feature_matrix.py`** - Renders the zccache vs sccache feature matrix from `docs/feature-matrix.yaml` into the README headline/full tables and `docs/FEATURE-MATRIX.md`. Pass `--check` to verify outputs are up-to-date (CI gate)
 - **`uv run --no-project python ci/clear_runtime_telemetry.py --cache-root <dir>`** - Deletes the telemetry files `zccache-ci audit-logs` reads (journals, lifecycle and daemon logs) while keeping cache artifacts; the Integration workflow runs it around every seeded or intentional-failure phase. `ci/log_audit_source_fixture.json` is the shared Rust/Python contract for which files count (#1523)
 - **`uv run python -m ci.host_diag`** - single-mode host validation diagnostic (issue #1186): timestamped streamed gates, per-gate compile-journal miss-reason summaries, overlapping-session detection, JSON report under `.cache/host-diag/`
+
+The benchmark tests keep human-readable Markdown in `benchmark.log` and also emit one prefixed JSON record per measured row. `ci.benchmark_metrics` validates the complete 32-record v1 contract into immutable dataclasses before the publisher writes schema-v3 `latest.json`. Each record identifies its test, scenario, mode, methodology, exact nanosecond durations, mode-specific cache bytes, and sccache counters. A missing, duplicate, malformed, or unexpected record fails publication; unavailable cache size is `null`, never zero. Warm sccache speedup is reported only for a verified cache-hit run with no misses or non-cacheable requests. Historical schema-v2 reports and Markdown-based `ci.perf_guard` remain readable; new `history.jsonl` rows include `schema_version` and additive exact fields without rewriting old rows.
 
 ## Release Automation
 

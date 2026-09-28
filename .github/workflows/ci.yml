@@ -79,6 +79,13 @@ jobs:
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
       - name: Check formatting
         run: soldr cargo fmt --all -- --check
+      - name: Strict benchmark metric type check
+        run: uvx --from pyright==1.1.411 pyright
+      - name: Benchmark report contract tests
+        run: |
+          PYTHONPATH=. uv run --no-project --python 3.13 \
+            --with pytest --with pillow \
+            pytest -q ci/tests/test_benchmark_metrics.py ci/tests/test_benchmark_stats.py
       - name: Check log-audit registry snapshot
         run: uv run python ci/check_log_audit_registry.py
       - name: Check setup-soldr cache footprint
