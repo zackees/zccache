@@ -385,12 +385,24 @@ pub(super) fn materialize_cached_compile_hit(
         || payloads_to_write.iter().any(
             |payload| matches!(payload, CachedPayload::File(path) if is_staged_artifact_path(path)),
         );
+    // The batch floor is seeded with now(), which already puts a C/C++
+    // object at least as new as every source and header, as a bare compiler
+    // would; statting each recorded input for a larger mtime only matters for
+    // future-dated files and cost ~2.4 us per header on every warm hit (165 us
+    // of a ~0.4 ms hit with 70 headers). Rustc keeps its inputs: cargo treats
+    // an extern newer than the output as stale (#599), and the set is small.
+    // `Some` here identifies a rustc request.
+    let floor_paths: &[NormalizedPath] = if rustc_archive_hardlink_eligible.is_some() {
+        &mtime_floor_paths
+    } else {
+        &[]
+    };
     payloads.record_staged_pre_materialization(&state.profiler.staged);
     let observed_result = if provisional_staged {
         write_provisional_payloads_par_with_mtime_floor_observed(
             &targets,
             &payloads_to_write,
-            &mtime_floor_paths,
+            floor_paths,
             &delivery_policies,
             materialization_mode,
         )
@@ -398,7 +410,7 @@ pub(super) fn materialize_cached_compile_hit(
         write_payloads_par_with_mtime_floor_and_policies_observed(
             &targets,
             &payloads_to_write,
-            &mtime_floor_paths,
+            floor_paths,
             &delivery_policies,
             materialization_mode,
         )

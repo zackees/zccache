@@ -555,3 +555,119 @@ async fn warm_hit_materialization_under_budget() {
     );
     assert_eq!(state.stats.snapshot().hits as u32, SAMPLES * ITERATIONS);
 }
+
+/// Materialize one cached C/C++ or rustc output with `floor_input` as the
+/// only mtime-floor input, and return the output's resulting mtime.
+fn materialize_with_floor_input(
+    rustc_archive_hardlink_eligible: Option<bool>,
+    output_name: &str,
+    floor_input: &Path,
+    dir: &Path,
+) -> std::time::SystemTime {
+    let server = crate::daemon::server::tests::bind_isolated_server(dir);
+    let state = server.state.as_ref();
+    let source_path: NormalizedPath = dir.join("unit.src").into();
+    let output_path: NormalizedPath = dir.join(output_name).into();
+    let cache_path = state.artifact_dir.join("floor-key_0");
+    std::fs::write(&cache_path, b"object bytes").unwrap();
+    write_authoritative_blob_digest(&cache_path).unwrap();
+    let sid = state.sessions.create(crate::depgraph::SessionConfig {
+        client_pid: std::process::id(),
+        working_dir: dir.into(),
+        log_file: None,
+        track_stats: false,
+        journal_path: None,
+        profile: false,
+        private_env: Vec::new(),
+        owner_pids: Vec::new(),
+    });
+    state.artifacts.insert(
+        "floor-key".to_string(),
+        CachedArtifact::from_file_payloads(
+            ArtifactIndex::new(
+                vec![output_name.to_string()],
+                vec![12],
+                Arc::new(Vec::new()),
+                Arc::new(Vec::new()),
+                0,
+            ),
+            vec![cache_path],
+        ),
+    );
+    materialize_cached_compile_hit(CachedHitMaterializeRequest {
+        state,
+        sid: &sid,
+        artifact_key_hex: "floor-key",
+        verdict_key_hex: None,
+        source_path: &source_path,
+        output_path: &output_path,
+        secondary_output_dir: dir.into(),
+        current_depfile_dest: None,
+        current_rustc_out_dir: None,
+        depfile_key_root: None,
+        compile_start: Instant::now(),
+        hit_label: "HIT_TEST",
+        cached_error_label: "CACHED_ERROR_TEST",
+        record_compilation: false,
+        downgrade_output_metadata: false,
+        mtime_floor_paths: vec![floor_input.into()],
+        rustc_metadata_compat_outputs: None,
+        rustc_archive_hardlink_eligible,
+        materialization_mode: MaterializationMode::Auto,
+        phases: CachedHitPhases::request_cache(0, 0),
+    })
+    .expect("cached hit materializes");
+    std::fs::metadata(output_path.as_path())
+        .unwrap()
+        .modified()
+        .unwrap()
+}
+
+fn future_dated_file(path: &Path) -> std::time::SystemTime {
+    std::fs::write(path, b"input").unwrap();
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(24 * 60 * 60);
+    kernal_api::platform::fs::set_file_mtime(
+        path,
+        kernal_api::platform::fs::FileTime::from_system_time(future),
+    )
+    .unwrap();
+    std::fs::metadata(path).unwrap().modified().unwrap()
+}
+
+/// A C/C++ hit is stamped with the batch floor's `now()` seed, exactly as a
+/// bare compiler stamps its output; make/ninja compare that against the
+/// source and headers. It must not stat every recorded input to find a
+/// larger mtime: with ~70 headers that was 165 us of a ~0.4 ms warm hit, and
+/// it grows with the include set. So a future-dated header is not consulted.
+#[tokio::test(flavor = "current_thread")]
+async fn perf_cc_hit_mtime_floor_does_not_stat_recorded_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let header = dir.path().join("future.h");
+    let header_mtime = future_dated_file(&header);
+
+    let output_mtime = materialize_with_floor_input(None, "unit.o", &header, dir.path());
+
+    assert!(
+        output_mtime < header_mtime,
+        "a C/C++ hit must not floor its object to input mtimes; \
+         output={output_mtime:?}, future header={header_mtime:?}"
+    );
+}
+
+/// Rustc hits keep the input floor: cargo's fingerprint check treats an
+/// extern newer than the output as stale (#599), and the extern set is small.
+#[tokio::test(flavor = "current_thread")]
+async fn rustc_hit_mtime_floor_still_covers_recorded_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let extern_rlib = dir.path().join("libdep.rlib");
+    let extern_mtime = future_dated_file(&extern_rlib);
+
+    let output_mtime =
+        materialize_with_floor_input(Some(true), "libunit.rlib", &extern_rlib, dir.path());
+
+    assert!(
+        output_mtime >= extern_mtime,
+        "a rustc hit must stay at least as new as its externs; \
+         output={output_mtime:?}, future extern={extern_mtime:?}"
+    );
+}
