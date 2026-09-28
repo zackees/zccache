@@ -64,6 +64,9 @@ jobs:
         id: producer-barrier
         uses: actions/github-script@v7
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             const repo = context.repo;
             const branchHead = async () => (await github.rest.repos.getBranch({
@@ -164,6 +167,9 @@ jobs:
         env:
           EXPECTED_MAIN_SHA: ${{ steps.producer-barrier.outputs.expected-main-sha }}
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             const fs = require("node:fs");
             const expectedSha = process.env.EXPECTED_MAIN_SHA;
@@ -189,6 +195,9 @@ jobs:
         env:
           EXPECTED_MAIN_SHA: ${{ steps.producer-barrier.outputs.expected-main-sha }}
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             // Skip the cleanup when cache usage is under the high-water
             // mark. The 10 GB cap is GitHub's soft limit (LRU eviction
@@ -239,6 +248,9 @@ jobs:
           ROOT_LOCK_HASH_LF: ${{ steps.cargo-lock-hashes.outputs.lf }}
           ROOT_LOCK_HASH_CRLF: ${{ steps.cargo-lock-hashes.outputs.crlf }}
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             // Keep the newest generation of every live restore shape. The
             // planner also retires exact disabled families and prior
@@ -335,6 +347,9 @@ jobs:
           COUNT_PRUNED_IDS: ${{ steps.count-prune.outputs.pruned-cache-ids }}
           EXPECTED_MAIN_SHA: ${{ steps.producer-barrier.outputs.expected-main-sha }}
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             // Never delete the newest cache for a live restore shape or an
             // unlisted foundation family. If unique protected caches remain
@@ -481,6 +496,9 @@ jobs:
           COUNT_PRUNED_BYTES: ${{ steps.count-prune.outputs.pruned-bytes }}
           HARD_CAP_PRUNED_BYTES: ${{ steps.hard-cap.outputs.extra-pruned-bytes }}
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             const dryRun = process.env.DRY_RUN === "true";
             const plannedBytes =

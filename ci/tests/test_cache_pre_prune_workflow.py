@@ -696,3 +696,28 @@ def test_non_linux_cook_bases_are_retired_main_keys() -> None:
         text=True,
     )
     assert json.loads(result.stdout) == [True, True, False]
+
+
+def test_cache_barrier_github_scripts_retry_transient_api_errors() -> None:
+    """#1785: one 5xx from the GitHub API failed the pre-prune barrier and
+    blocked every main producer. Every github-script step in the barrier,
+    its waiter and the cleanup must retry transient errors; 404 stays exempt
+    (github-script's default) so explicit 404 handling still applies."""
+    paths = [
+        ".github/workflows/cache-pre-prune.yml",
+        ".github/workflows/cache-cleanup.yml",
+        ".github/actions/wait-cache-pre-prune/action.yml",
+    ]
+    seen = 0
+    for relative in paths:
+        doc = yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
+        jobs = doc.get("jobs") or {"composite": {"steps": (doc.get("runs") or {}).get("steps", [])}}
+        for job in jobs.values():
+            for step in job.get("steps") or []:
+                if not str(step.get("uses", "")).startswith("actions/github-script@"):
+                    continue
+                seen += 1
+                options = step.get("with") or {}
+                assert int(options.get("retries", 0)) >= 3, f"{relative}: {step.get('name')}"
+                assert "retry-exempt-status-codes" not in options, relative
+    assert seen >= 10

@@ -37,6 +37,9 @@ jobs:
         id: writer-barrier
         uses: actions/github-script@v7
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             const expectedSha = context.sha;
             if (!expectedSha) throw new Error("missing push SHA; refusing cache pruning");
@@ -116,6 +119,9 @@ jobs:
         if: steps.writer-barrier.outputs.ready == 'true'
         uses: actions/github-script@v7
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             const fs = require("node:fs");
             const { cargoLockHashes } = require(
@@ -133,6 +139,9 @@ jobs:
           ROOT_LOCK_HASH_LF: ${{ steps.lock-hashes.outputs.lf }}
           ROOT_LOCK_HASH_CRLF: ${{ steps.lock-hashes.outputs.crlf }}
         with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
           script: |
             const repo = context.repo;
             const expectedSha = context.sha;
