@@ -12,6 +12,10 @@ const RETIRED_MAIN_PREFIXES = [
 ];
 
 const RETIRED_MAIN_PATTERNS = [
+  // Cook bases run on Linux only (zackees/ci.yml#5, RUST-010; zccache#1758).
+  // The macOS and Windows generations (~3 GB) pushed a full lock-transition
+  // re-seed past the target, so the pre-prune failed closed on every push.
+  /^cook-base-v2-(?:macos|windows)-/i,
   /^cook-base-v2-windows-x64-msvc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
   /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23-xdylint$/i,
   /^setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,

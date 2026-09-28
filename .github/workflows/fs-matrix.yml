@@ -72,6 +72,8 @@ jobs:
           # The filesystem contract test had 245 compiler misses and no hits;
           # don't persist a macOS archive that this lane cannot reuse (#1677).
           build-cache: ${{ matrix.os != 'macos-15' }}
+          # Cook bases run on Linux only (zackees/ci.yml#5 RUST-010, #1758).
+          prebuild-deps: ${{ startsWith(matrix.os, 'ubuntu') && 'soldr-cook' || 'none' }}
           linker: fast
       - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
         if: matrix.os == 'windows-latest'
@@ -86,8 +88,8 @@ jobs:
           # The FS contract lane records no build-cache compiler hits.
           build-cache: false
           cargo-registry-cache: true
-          prebuild-deps: soldr-cook
-          prebuild-deps-flags: ""
+          # Cook bases run on Linux only (zackees/ci.yml#5 RUST-010, #1758).
+          prebuild-deps: none
           linker: fast
       - name: Install Linux filesystem tools
         if: runner.os == 'Linux'
@@ -166,6 +168,8 @@ jobs:
           toolchain: 1.95.0
           cache: true
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
+          # Cook bases run on Linux only (zackees/ci.yml#5 RUST-010, #1758).
+          prebuild-deps: ${{ startsWith(matrix.os, 'ubuntu') && 'soldr-cook' || 'none' }}
           linker: fast
       - name: Install btrfs fixture tools
         if: runner.os == 'Linux'

@@ -356,7 +356,9 @@ def test_windows_lf_cache_is_stale_when_main_writers_normalize_to_crlf() -> None
         text=True,
     )
     plans = json.loads(result.stdout)
-    assert {cache["id"] for cache in plans["post"]["stale"]} == {3}
+    # The CRLF-keyed current build supersedes the LF-keyed row 3. The Windows
+    # cook base (1) is also collected: cook runs on Linux only (#1758).
+    assert {cache["id"] for cache in plans["post"]["stale"]} == {1, 3}
     assert {cache["id"] for cache in plans["cook"]["stale"]} == {1}
     assert plans["transition"]["staleCookIds"] == [1]
     assert plans["transition"]["deleteIds"] == [1, 3]
@@ -632,3 +634,65 @@ def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> No
     expected_push_if = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
     assert primer.get("if") == expected_push_if
     assert cli_save.get("if") == expected_push_if
+
+
+def _plan_live_lock_transition() -> dict:
+    fixture = json.loads(
+        (ROOT / "ci/tests/fixtures/cache_lock_transition_1758.json").read_text(encoding="utf-8")
+    )
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const f=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "const lock={linux:f.lock_hashes.lf,macos:f.lock_hashes.lf,windows:[f.lock_hashes.crlf]};"
+        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(f.caches,lock,f.usage_bytes,f.usage_bytes)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps(fixture),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return {"plan": json.loads(result.stdout), "caches": fixture["caches"]}
+
+
+def test_live_lock_transition_forecast_fits_with_linux_only_cook() -> None:
+    """zccache#1758: the 2026-09-28 lock transition failed closed on every push.
+
+    Re-seeding every profile at its old size projected 9.95 GB against the
+    9.2 GB target, so producers never ran and the gate could never open.
+    Cook bases run on Linux only (zackees/ci.yml#5, RUST-010); the macOS and
+    Windows generations (~3.0 GB) are retired rather than forecast.
+    """
+    result = _plan_live_lock_transition()
+    plan = result["plan"]
+    non_linux_cooks = {
+        cache["id"]
+        for cache in result["caches"]
+        if cache["ref"] == "refs/heads/main"
+        and cache["key"].startswith(("cook-base-v2-macos-", "cook-base-v2-windows-"))
+    }
+
+    assert plan["ok"] is True, plan.get("reason")
+    assert plan["projectedPeakBytes"] <= 9_200_000_000
+    assert len(non_linux_cooks) == 4
+    assert non_linux_cooks <= set(plan["deleteIds"])
+
+
+def test_non_linux_cook_bases_are_retired_main_keys() -> None:
+    script = (
+        "const {isRetiredMainKey}=require(process.argv[1]);"
+        "process.stdout.write(JSON.stringify(["
+        "'cook-base-v2-windows-x64-msvc-rustc1.95.0-fnone-l373d63beb34d7b6e-soldrv0.9.23',"
+        "'cook-base-v2-macos-arm64-darwin-rustc1.95.0-f9e7e4902-l27ed8f2e0ba4ca9d-soldrv0.9.23',"
+        "'cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l27ed8f2e0ba4ca9d-soldrv0.9.23',"
+        "].map(isRetiredMainKey)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(result.stdout) == [True, True, False]

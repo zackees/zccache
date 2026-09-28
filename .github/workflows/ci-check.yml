@@ -44,7 +44,8 @@ jobs:
           cache: true
           build-cache: ${{ inputs.os != 'macos-15' }}
           linker: fast
-          prebuild-deps: soldr-cook
+          # Cook bases run on Linux only (zackees/ci.yml#5 RUST-010, #1758).
+          prebuild-deps: ${{ startsWith(inputs.os, 'ubuntu') && 'soldr-cook' || 'none' }}
           prebuild-deps-flags: ""
           verify-compile-cache: warn
           # #1677: install the pinned toolchain normally; the standalone
@@ -84,7 +85,8 @@ jobs:
           # remains the only lib/bin test-profile compilation.
           ci-tests: true
           linker: fast
-          prebuild-deps: soldr-cook
+          # Cook bases run on Linux only (zackees/ci.yml#5 RUST-010, #1758).
+          prebuild-deps: ${{ startsWith(inputs.os, 'ubuntu') && 'soldr-cook' || 'none' }}
           prebuild-deps-flags: ""
           # #240: seed the isolated test SOLDR_CACHE_DIR (per-OS) from the
           # restored build-cache so the daemon-isolated test phase starts warm

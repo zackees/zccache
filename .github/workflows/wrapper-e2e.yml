@@ -97,7 +97,8 @@ jobs:
           linker: fast
           # Keep the well-performing Apple Silicon cook base; Linux's
           # 824 MB release base was low-value for this smoke test.
-          prebuild-deps: ${{ matrix.os == 'macos-15' && 'soldr-cook' || 'none' }}
+          # Cook bases run on Linux only (zackees/ci.yml#5 RUST-010, #1758).
+          prebuild-deps: none
           prebuild-deps-flags: "--release"
 
       - name: setup soldr without cook prebuild (Windows)

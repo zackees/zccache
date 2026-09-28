@@ -22,7 +22,12 @@ Fails when:
   ref listed in ``COOK_DELTA_REFS``, unless the job is listed in
   ``JUSTIFIED_COOK_DELTA``.  The cook-delta layer saves one
   ``cook-delta-v2-*`` generation per commit and nothing prunes it
-  (zackees/setup-soldr#528); cook bases stay on.
+  (zackees/setup-soldr#528); cook bases stay on;
+* a cache-enabled setup-soldr step that can run on a non-Linux runner
+  cooks dependencies.  Cook bases run on Linux only (zackees/ci.yml#5,
+  RUST-010; zccache#1758): the macOS/Windows generations pushed a full
+  lock-transition re-seed past the pre-prune target.  Such a step must set
+  ``prebuild-deps: none`` or ``LINUX_ONLY_COOK`` for its OS context.
 
 The repository-wide cache total is checked separately, online, by
 ``ci/check_cache_budget.py``.
@@ -75,8 +80,8 @@ JUSTIFIED_COOK_DELTA: dict[str, str] = {}
 JUSTIFIED_PR_SAVES: dict[str, str] = {}
 
 # #1677 budget policy: retire low-return archives identified by exact hosted
-# probes. Keep cook bases for core platform tests, cross-checks and macOS
-# wrapper validation; keep Windows wrapper build-cache and all registries.
+# probes. #1758: cook bases are Linux-only (zackees/ci.yml#5 RUST-010); keep
+# Windows wrapper build-cache and all registries.
 MACOS_BUILD_CACHE_JOBS = {
     "ci-check.yml:check": ("inputs.os", "macOS Check"),
     "fs-matrix.yml:matrix": ("matrix.os", "macOS filesystem matrix"),
@@ -85,7 +90,7 @@ MACOS_BUILD_CACHE_JOBS = {
 # Measured steady-state cuts. These are exact workflow call sites so a new or
 # defaulted producer cannot silently recreate a retired cache identity.
 COOK_OFF_CALLS = {
-    "wrapper-e2e.yml:wrapper-e2e#2": "${{ matrix.os == 'macos-15' && 'soldr-cook' || 'none' }}",
+    "wrapper-e2e.yml:wrapper-e2e#2": "none",
     "wrapper-e2e.yml:wrapper-e2e#3": "none",
     "ci.yml:dylint#3": "none",
 }
@@ -98,6 +103,12 @@ WINDOWS_TEST_BUILD_CACHE = (
     "${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' "
     "&& inputs.os != 'windows-11-arm' }}"
 )
+# The only accepted cook expression on a step that can run off Linux.
+LINUX_ONLY_COOK = "${{ startsWith(%s, 'ubuntu') && 'soldr-cook' || 'none' }}"
+# Reusable workflows whose `inputs.os` callers are all Linux, with why.
+LINUX_ONLY_REUSABLE = {
+    "ci-check-cross.yml": "called only from ci-linux.yml, on ubuntu runners",
+}
 SHAPE_INPUTS = (
     "toolchain",
     "prebuild-deps",
@@ -277,14 +288,13 @@ def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
     expected_windows = {
         "build-cache": False,
         "cargo-registry-cache": True,
-        "prebuild-deps": "soldr-cook",
-        "prebuild-deps-flags": "",
+        "prebuild-deps": "none",
     }
     for key, expected in expected_windows.items():
         if windows_with.get(key) != expected:
             errors.append(
                 f"fs-matrix.yml:matrix Windows setup must keep {key}={expected!r}; "
-                "this lane shares the fnone cook base and does not save build-cache"
+                "cook bases are Linux-only (#1758) and this lane saves no build-cache"
             )
     if windows_with.get("save-cache") != expected_save:
         errors.append(
@@ -304,11 +314,41 @@ def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
     return errors
 
 
+def _non_linux_cook_errors(steps: list[Step]) -> list[str]:
+    """#1758: only Linux runners may produce cook-base caches."""
+    allowed = {
+        _normal_expression(LINUX_ONLY_COOK % context)
+        for context in ("inputs.os", "matrix.os")
+    }
+    errors: list[str] = []
+    for step in steps:
+        if not step.main_action or not _cache_on(step):
+            continue
+        # Composite actions take `prebuild_deps` from their callers; the
+        # release matrix passes `none` for every non-Linux target.
+        if step.where.startswith("actions/"):
+            continue
+        if step.where.split(":", 1)[0] in LINUX_ONLY_REUSABLE:
+            continue
+        if not any(os == ANY_OS or not os.startswith("ubuntu") for os in step.oses):
+            continue
+        value = _normal_expression(step.inputs.get("prebuild-deps", "soldr-cook"))
+        if value == "none" or value in allowed:
+            continue
+        errors.append(
+            f"{step.where} can run on a non-Linux runner and cooks dependencies; "
+            "cook bases are Linux-only (#1758): set prebuild-deps: none or "
+            f"{LINUX_ONLY_COOK % 'matrix.os'!r}"
+        )
+    return errors
+
+
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     errors.extend(_local_action_errors(root))
     errors.extend(_fs_matrix_windows_profile_errors(root))
     steps = collect(root)
+    errors.extend(_non_linux_cook_errors(steps))
 
     refs = sorted({s.ref for s in steps})
     if len(refs) > 1:

@@ -154,11 +154,12 @@ def test_windows_fs_matrix_cache_profile_is_guarded_red_green(tmp_path: Path) ->
     errors = guard.check(tmp_path)
     assert any("Windows setup must keep build-cache=False" in error for error in errors)
 
-    # So must emitting the measured 1 GiB release-profile cook instead of the
-    # already-warm fnone base.
-    path.write_text(content.replace('prebuild-deps-flags: ""', 'prebuild-deps-flags: "--release"', 1))
+    # So must cooking again on Windows: cook bases are Linux-only (#1758).
+    path.write_text(
+        content.replace("prebuild-deps: none", "prebuild-deps: soldr-cook", 1)
+    )
     errors = guard.check(tmp_path)
-    assert any("Windows setup must keep prebuild-deps-flags=''" in error for error in errors)
+    assert any("Windows setup must keep prebuild-deps='none'" in error for error in errors)
 
 
 def test_rejects_distinct_suffixes_for_same_shape(tmp_path: Path) -> None:
@@ -178,7 +179,7 @@ def test_allows_justified_suffix_and_different_shapes(tmp_path: Path) -> None:
         _job("test")
         + _job("dylint", **{"cache-key-suffix": "dylint"})
         + _job("e2e", **{"cache-key-suffix": "e2e", "prebuild-deps-flags": "--release"})
-        + _job("mac", os="macos-15", **{"cache-key-suffix": "mac"}),
+        + _job("mac", os="macos-15", **{"cache-key-suffix": "mac", "prebuild-deps": "none"}),
     )
     assert guard.check(tmp_path) == []
 
@@ -307,3 +308,25 @@ def test_cook_delta_false_on_ref_without_input_is_red(tmp_path: Path) -> None:
 def test_cook_delta_ignored_when_cache_off(tmp_path: Path) -> None:
     _workflow(tmp_path, "a.yml", _job("a", cache="false", **{"cook-delta": "true"}))
     assert guard.check(tmp_path) == []
+
+
+def test_non_linux_cook_producer_is_red_green(tmp_path: Path) -> None:
+    """#1758: cook bases are Linux-only (zackees/ci.yml#5, RUST-010)."""
+    _workflow(tmp_path, "mac.yml", _job("mac", os="macos-15"))
+    errors = guard.check(tmp_path)
+    assert any("cook bases are Linux-only" in error for error in errors)
+
+    _workflow(tmp_path, "mac.yml", _job("mac", os="macos-15", **{"prebuild-deps": "none"}))
+    assert not any("cook bases are Linux-only" in e for e in guard.check(tmp_path))
+
+
+def test_linux_only_cook_expression_passes_on_a_mixed_matrix(tmp_path: Path) -> None:
+    expression = "${{ startsWith(matrix.os, 'ubuntu') && 'soldr-cook' || 'none' }}"
+    _workflow(
+        tmp_path,
+        "mixed.yml",
+        _job("mixed", os="${{ matrix.os }}", **{"prebuild-deps": expression}),
+    )
+    assert not any("cook bases are Linux-only" in e for e in guard.check(tmp_path))
+    _workflow(tmp_path, "linux.yml", _job("linux", os="ubuntu-latest"))
+    assert not any("cook bases are Linux-only" in e for e in guard.check(tmp_path))
