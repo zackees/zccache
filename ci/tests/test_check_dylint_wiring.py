@@ -180,3 +180,20 @@ def test_cfg_coverage_os_set_matches_the_lint_targets() -> None:
     from ci import lint
 
     assert check_dylint_wiring.DYLINT_OSES == frozenset(lint.DYLINT_OS_TARGETS)
+
+
+def test_dylint_library_tests_share_one_target_dir() -> None:
+    """Each lint library is its own workspace; without a shared target dir every
+    step rebuilt dylint_linting/clippy_utils/dylint_testing (~30 s each)."""
+    import re as _re
+
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    steps = _re.findall(
+        r"      - name: Test Dylint Library \([a-z_]+\)\n(.*?)(?=\n      - name: |\Z)",
+        workflow,
+        flags=_re.DOTALL,
+    )
+    assert steps
+    for step in steps:
+        assert "CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests" in step

@@ -166,36 +166,50 @@ jobs:
       - name: Check Dylint Library Formatting (ban_normalized_path_deref_containment)
         run: soldr cargo fmt --manifest-path dylints/ban_normalized_path_deref_containment/Cargo.toml --all -- --check
       - name: Test Dylint Library (ban_std_pathbuf)
+        # All lint libraries share one target dir, so their common
+        # dylint_linting / clippy_utils / dylint_testing deps build once.
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-28
           soldr rustup run nightly-2026-05-28 cargo test --manifest-path dylints/ban_std_pathbuf/Cargo.toml
       - name: Test Dylint Library (ban_unrooted_tempdir)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-28
           soldr rustup run nightly-2026-05-28 cargo test --manifest-path dylints/ban_unrooted_tempdir/Cargo.toml
       - name: Test Dylint Library (ban_tmp_literal)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-28
           soldr rustup run nightly-2026-05-28 cargo test --manifest-path dylints/ban_tmp_literal/Cargo.toml
       - name: Test Dylint Library (ban_raw_subprocess_in_daemon)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-28
           soldr rustup run nightly-2026-05-28 cargo test --manifest-path dylints/ban_raw_subprocess_in_daemon/Cargo.toml
       - name: Test Dylint Library (ban_legacy_artifact_path)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-28
           soldr rustup run nightly-2026-05-28 cargo test --manifest-path dylints/ban_legacy_artifact_path/Cargo.toml
       - name: Test Dylint Library (ban_normalized_path_deref_containment)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
@@ -204,6 +218,8 @@ jobs:
       - name: Check Dylint Library Formatting (ban_dashmap_guard_across_blocking)
         run: soldr cargo fmt --manifest-path dylints/ban_dashmap_guard_across_blocking/Cargo.toml --all -- --check
       - name: Test Dylint Library (ban_dashmap_guard_across_blocking)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
@@ -212,6 +228,8 @@ jobs:
       - name: Check Dylint Library Formatting (ban_discarded_write_result)
         run: soldr cargo fmt --manifest-path dylints/ban_discarded_write_result/Cargo.toml --all -- --check
       - name: Test Dylint Library (ban_discarded_write_result)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
@@ -222,12 +240,16 @@ jobs:
       - name: Check Dylint Library Formatting (ban_registered_env_read)
         run: soldr cargo fmt --manifest-path dylints/ban_registered_env_read/Cargo.toml --all -- --check
       - name: Test Dylint Library (enforce_platform_boundary)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
           export RUSTUP_TOOLCHAIN=nightly-2026-05-28
           soldr rustup run nightly-2026-05-28 cargo test --manifest-path dylints/enforce_platform_boundary/Cargo.toml
       - name: Test Dylint Library (ban_registered_env_read)
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/dylint-library-tests
         run: |
           export PATH="${DYLINT_CARGO_SHIM}:${PATH}"
           export RUSTC="$(soldr rustup which --toolchain nightly-2026-05-28 rustc)"
