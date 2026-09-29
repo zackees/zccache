@@ -102,6 +102,13 @@ SAVE_CACHE_POLICY = (
     "${{ env.ACT && 'true' || (github.event_name == 'push' "
     "&& github.ref == 'refs/heads/main' && 'auto' || 'false') }}"
 )
+# ci-check.yml's Test job: SAVE_CACHE_POLICY, except its Windows legs never
+# save; they restore wrapper-e2e's windows-x64 caches (#1741 budget unchanged).
+WINDOWS_TEST_SAVE_CACHE_POLICY = (
+    "${{ env.ACT && 'true' || (github.event_name == 'push' "
+    "&& github.ref == 'refs/heads/main' && inputs.os != 'windows-latest' "
+    "&& inputs.os != 'windows-11-arm' && 'auto' || 'false') }}"
+)
 # The composite build-target action forwards its caller's GitHub policy and
 # adds the act prefix once, so callers keep MAIN_PUSH_ONLY_SAVE or "false".
 COMPOSITE_SAVE_CACHE_POLICY = "${{ env.ACT && 'true' || inputs.save_cache }}"
@@ -117,7 +124,11 @@ def evaluate_save_policy(
     Supports the subset the save policies use: single-quoted strings,
     ``env.ACT``, ``github.event_name``, ``github.ref``, ``==``/``!=``,
     ``&&``/``||`` (value-returning, empty string is falsy) and parentheses.
-    Anything else raises ``ValueError`` so an unprovable policy fails closed.
+    ``inputs.*`` (a reusable workflow's inputs) is unknown: it may appear only
+    where short-circuiting makes it irrelevant, e.g. after a
+    ``github.event_name == 'push' &&`` that is false on ``pull_request``.
+    Anything else, or a result that depends on an input, raises
+    ``ValueError`` so an unprovable policy fails closed.
     """
     body = expression.strip()
     if not (body.startswith("${{") and body.endswith("}}")):
@@ -146,6 +157,8 @@ def evaluate_save_policy(
             return token[1:-1], i + 1
         if token in names:
             return names[token], i + 1
+        if token.startswith("inputs."):
+            return None, i + 1
         raise ValueError(f"unsupported token {token!r} in {expression!r}")
 
     def compare(i: int) -> tuple[str, int]:
@@ -153,6 +166,9 @@ def evaluate_save_policy(
         while i < len(tokens) and tokens[i] in {"==", "!="}:
             op = tokens[i]
             right, i = primary(i + 1)
+            if left is None or right is None:
+                left = None
+                continue
             equal = left.lower() == right.lower()
             left = "true" if equal == (op == "==") else ""
         return left, i
@@ -161,19 +177,27 @@ def evaluate_save_policy(
         left, i = compare(i)
         while i < len(tokens) and tokens[i] == "&&":
             right, i = compare(i + 1)
-            left = right if left else left
+            if left is None:
+                left = "" if right == "" else None
+            elif left:
+                left = right
         return left, i
 
     def either(i: int) -> tuple[str, int]:
         left, i = both(i)
         while i < len(tokens) and tokens[i] == "||":
             right, i = both(i + 1)
-            left = left if left else right
+            if left is None:
+                left = None
+            elif not left:
+                left = right
         return left, i
 
     value, end = either(0)
     if end != len(tokens):
         raise ValueError(f"trailing tokens in {expression!r}")
+    if value is None:
+        raise ValueError(f"result depends on a workflow input: {expression!r}")
     return value
 
 
@@ -218,10 +242,9 @@ REGISTRY_RESTORE_CALLS = {
     "wrapper-e2e.yml:wrapper-e2e#3": True,
 }
 LINUX_WRAPPER_BUILD_CACHE = "false"
-WINDOWS_TEST_BUILD_CACHE = (
-    "${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' "
-    "&& inputs.os != 'windows-11-arm' }}"
-)
+# Windows x64 Test restores wrapper-e2e's windows-x64 build cache but never
+# saves (its save-cache excludes Windows), so the #1741 budget is unchanged.
+WINDOWS_TEST_BUILD_CACHE = "${{ inputs.os != 'macos-15' && inputs.os != 'windows-11-arm' }}"
 # The only accepted cook expression on a step that can run off Linux.
 LINUX_ONLY_COOK = "${{ startsWith(%s, 'ubuntu') && 'soldr-cook' || 'none' }}"
 # Reusable workflows whose `inputs.os` callers are all Linux, with why.
@@ -340,11 +363,23 @@ def _cannot_save_on_pr(step: Step) -> bool:
     # _save_policy_errors re-proves that on every check.
     if value == _normal_expression(SAVE_CACHE_POLICY):
         return True
-    return value.lower() == "false" or value in {main_push_only, main_push_boolean} or value in {
+    if value.lower() == "false" or value in {main_push_only, main_push_boolean} or value in {
         "${{github.event_name!='pull_request'}}",
         "${{github.event_name=='push'}}",
         "${{github.ref=='refs/heads/main'}}",
-    }
+    }:
+        return True
+    # Any other expression must evaluate to a non-saving value on a GitHub
+    # pull_request, whatever its workflow inputs are.
+    try:
+        on_pr = evaluate_save_policy(
+            str(step.inputs.get("save-cache", "")),
+            event_name="pull_request",
+            ref="refs/pull/1/merge",
+        )
+    except ValueError:
+        return False
+    return on_pr.lower() in {"", "false"}
 
 
 def _normal_expression(value: object) -> str:
@@ -551,12 +586,15 @@ def check(root: Path = ROOT) -> list[str]:
             "while retaining the Windows wrapper cache"
         )
     windows_test = by_location.get("ci-check.yml:test#2")
-    if windows_test and _normal_expression(
-        windows_test.inputs.get("build-cache", "true")
-    ) != _normal_expression(WINDOWS_TEST_BUILD_CACHE):
+    if windows_test and (
+        _normal_expression(windows_test.inputs.get("build-cache", "true"))
+        != _normal_expression(WINDOWS_TEST_BUILD_CACHE)
+        or _normal_expression(windows_test.inputs.get("save-cache", ""))
+        != _normal_expression(WINDOWS_TEST_SAVE_CACHE_POLICY)
+    ):
         errors.append(
-            "ci-check.yml:test#1 must disable Windows x64/ARM64 build-cache "
-            "while retaining Linux Test"
+            "ci-check.yml:test#1 must restore (never save) the Windows x64 "
+            "build-cache, disable ARM64/macOS, and retain Linux Test"
         )
 
     for target, (os_context, label) in MACOS_BUILD_CACHE_JOBS.items():

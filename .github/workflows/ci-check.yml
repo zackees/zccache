@@ -77,11 +77,14 @@ jobs:
       - uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1 # v0.9.82
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}
+          # Windows legs restore but never save: their build/registry caches are
+          # the windows-x64 entries wrapper-e2e already saves on main (#1741 budget).
+          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' && 'auto' || 'false') }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
-          build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' }}
+          build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-11-arm' }}
+          cargo-registry-cache: ${{ inputs.os == 'windows-latest' }}
           # Bound compile and test concurrency for the 8-GB ARM runner. This
           # is the prescribed ci-tests resource contract; the Test step below
           # remains the only lib/bin test-profile compilation.

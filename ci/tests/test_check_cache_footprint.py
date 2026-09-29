@@ -59,9 +59,15 @@ def test_measured_cache_cuts_cannot_be_reintroduced(tmp_path: Path) -> None:
         ),
         (
             "ci-check.yml",
-            "build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' }}",
+            "build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-11-arm' }}",
             "build-cache: true",
-            "disable Windows x64/ARM64 build-cache",
+            "restore (never save) the Windows x64 build-cache",
+        ),
+        (
+            "ci-check.yml",
+            "&& inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' && 'auto'",
+            "&& 'auto'",
+            "restore (never save) the Windows x64 build-cache",
         ),
     )
     for index, (filename, old, new, diagnostic) in enumerate(cases):
@@ -401,6 +407,8 @@ def test_repository_setup_soldr_steps_use_the_act_policy() -> None:
         expected = (
             guard.COMPOSITE_SAVE_CACHE_POLICY
             if step.where.startswith("actions/")
+            else guard.WINDOWS_TEST_SAVE_CACHE_POLICY
+            if step.where == "ci-check.yml:test#2"
             else guard.SAVE_CACHE_POLICY
         )
         assert step.inputs.get("save-cache") == expected, step.where
@@ -417,3 +425,26 @@ def test_composite_without_act_prefix_is_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert any("COMPOSITE_SAVE_CACHE_POLICY" in e for e in guard.check(tmp_path))
+
+
+WINDOWS_RESTORE_ONLY_SAVE = guard.WINDOWS_TEST_SAVE_CACHE_POLICY
+
+
+def test_workflow_inputs_are_allowed_only_behind_a_false_short_circuit() -> None:
+    """Windows Test restores but never saves: `inputs.os` sits behind
+    `github.event_name == 'push' &&`, so it cannot change a pull_request result."""
+    assert guard.evaluate_save_policy(
+        WINDOWS_RESTORE_ONLY_SAVE, event_name="pull_request", ref="refs/pull/1/merge"
+    ) == "false"
+    # On a main push the result depends on the input: unprovable, so it raises.
+    with pytest.raises(ValueError):
+        guard.evaluate_save_policy(
+            WINDOWS_RESTORE_ONLY_SAVE, event_name="push", ref="refs/heads/main"
+        )
+    # An input that decides the pull_request result fails closed too.
+    with pytest.raises(ValueError):
+        guard.evaluate_save_policy(
+            "${{ inputs.save && 'true' || 'false' }}",
+            event_name="pull_request",
+            ref="refs/pull/1/merge",
+        )
