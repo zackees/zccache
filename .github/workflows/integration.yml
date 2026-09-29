@@ -146,14 +146,21 @@ jobs:
           unset ZCCACHE_CACHE_DIR
           echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
           start=$SECONDS
-          soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast -- --test-threads=1 2>&1 | tee test-output.txt
+          # nextest runs each test in its own process, so tests execute in
+          # parallel without sharing in-process state. It does not run
+          # doctests; the second command covers them.
+          soldr cargo nextest run --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast 2>&1 | tee test-output.txt
           status=${PIPESTATUS[0]}
+          soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --doc 2>&1 | tee -a test-output.txt
+          doc_status=${PIPESTATUS[0]}
+          [ $status -eq 0 ] && status=$doc_status
           dur=$((SECONDS - start))
           echo "- **Integration (Linux)**: ${dur}s" >> "$GITHUB_STEP_SUMMARY"
           if [ $status -ne 0 ]; then
             {
               echo '## Integration Test Failures'
               echo '```'
+              grep -E '^\s+(FAIL|SIGSEGV|SIGABRT|TIMEOUT) \[' test-output.txt
               awk '/^failures:$/,/^test result:/' test-output.txt
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"

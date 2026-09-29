@@ -72,7 +72,11 @@ def test_workspace_test_phases_bound_compile_and_runtime_concurrency() -> None:
     for suite in (full_suite, ignored_suite):
         assert 'CARGO_BUILD_JOBS: "1"' in suite
         assert 'SOLDR_JOBS: "1"' in suite
-        assert "--test-threads=1" in suite
+    # The full suite runs under nextest (one process per test, parallel) plus
+    # a separate doctest pass; the ignored stress suite stays serialized.
+    assert "soldr cargo nextest run --workspace" in full_suite
+    assert "--doc" in full_suite
+    assert "--test-threads=1" in ignored_suite
 
 
 def _step_names(workflow: str) -> list[str]:
