@@ -214,7 +214,14 @@ def lint_dylint_only():
     env = self_build_env()
     env.pop("RUSTFLAGS", None)  # Preserve each lint crate's dylint-link config.
     env.pop("RUSTUP_TOOLCHAIN", None)  # setup-soldr exports stable for CI.
-    env["SOLDR_DYLINT_TOOLCHAIN"] = DYLINT_TOOLCHAIN
+    if env.get("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN"):
+        # setup-soldr (dylint: true) already configured the pinned toolchain.
+        # SOLDR_DYLINT_TOOLCHAIN is soldr's *nested-scope* marker: setting it
+        # here made every `soldr dylint` look recursive, so soldr never wrote
+        # the success marker and setup-soldr skipped both Dylint cache saves.
+        env.pop("SOLDR_DYLINT_TOOLCHAIN", None)
+    else:
+        env["SOLDR_DYLINT_TOOLCHAIN"] = DYLINT_TOOLCHAIN
     env["SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS"] = "1"
     workspace = ["soldr", "dylint", "--all", "--", "--workspace", "--lib", "--bins"]
     cross_targets = dylint_cross_targets()
