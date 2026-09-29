@@ -136,3 +136,15 @@ def test_ignored_suite_gives_env_driven_ignored_tests_their_inputs() -> None:
         "Remove ignored-suite harness journals before strict audit",
     )
     assert "ZCCACHE_SCAN_CORPUS_DIR: /usr/include" in ignored_suite
+
+
+def test_prebuild_shares_the_test_step_wrapper_and_cache() -> None:
+    """Cargo fingerprints the rustc wrapper: a prebuild with a different wrapper
+    or cache is invalidated and the test step recompiles everything."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    prebuild = _step_block(workflow, "Build integration test binaries", "Stop setup-soldr builder cache before tests")
+    full_suite = _step_block(workflow, "Test (full workspace)", "Remove build-harness journals before strict audit")
+    assert "ZCCACHE_DISABLE:" not in prebuild.split("        run:", 1)[0]
+    cache_dir = "SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration"
+    assert cache_dir in prebuild
+    assert cache_dir in full_suite
