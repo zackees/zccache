@@ -86,13 +86,25 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       # --- Test the action ---
-      - name: Setup zccache (action under test)
+      # The action keys its compilation cache by commit SHA, so every
+      # main-push save is a fresh ~0.2-0.3 GB entry that no later commit
+      # restores exactly. Saving from all six legs wrote ~1.5 GB of
+      # never-reused cache per push (zackees/ci.yml CACHE-002). Exercise the
+      # save path on one leg only; the cold->warm hit check below is
+      # self-contained within each job and needs no restored cache.
+      - name: Setup zccache (action under test, saving leg)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: ./
         with:
           shared-key: test-${{ matrix.target }}
-          # Keep PR runs warm from shared caches without writing a private
-          # per-PR generation. Main continues to seed the reusable caches.
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Setup zccache (action under test)
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        uses: ./
+        with:
+          shared-key: test-${{ matrix.target }}
+          save-cache: false
 
       - name: Verify RUSTC_WRAPPER is set
         shell: bash

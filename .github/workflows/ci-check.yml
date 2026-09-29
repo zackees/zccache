@@ -119,7 +119,7 @@ jobs:
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
         run: |
           unset ZCCACHE_CACHE_DIR
-          soldr cargo test --workspace --lib --bins --no-fail-fast --no-run
+          soldr cargo nextest run --workspace --lib --bins --no-fail-fast --no-run
       - name: Test
         shell: bash
         env:
@@ -135,7 +135,10 @@ jobs:
           unset ZCCACHE_CACHE_DIR
           echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
           start=$SECONDS
-          soldr cargo test --workspace --lib --bins --no-fail-fast 2>&1 | tee test-output.txt
+          # nextest runs each test in its own process, in parallel (the
+          # .config/nextest.toml overrides serialize timing-sensitive tests).
+          # Integration has run the full workspace this way on Linux.
+          soldr cargo nextest run --workspace --lib --bins --no-fail-fast 2>&1 | tee test-output.txt
           status=${PIPESTATUS[0]}
           dur=$((SECONDS - start))
           echo "- **${{ inputs.os }} / Test**: ${dur}s" >> "$GITHUB_STEP_SUMMARY"
@@ -144,7 +147,7 @@ jobs:
             {
               echo '## Test Failures'
               echo '```'
-              awk '/^failures:$/,/^test result:/' test-output.txt
+              grep -E '^ *(FAIL|TIMEOUT|SIGSEGV|SIGABRT) ' test-output.txt || tail -n 40 test-output.txt
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
