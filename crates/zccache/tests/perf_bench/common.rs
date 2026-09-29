@@ -90,6 +90,17 @@ impl Drop for PerfCacheRoot {
 /// in the returned tuple is intentional: the cache root is declared first so
 /// Rust's reverse-order drop guarantees the daemon (`server_handle`) shuts
 /// down before the cache root is audited.
+/// The delivery chain every benchmark row runs under, stated explicitly so
+/// the published numbers name it (#1792): `ZCCACHE_MODE` when the harness
+/// sets one, else `REFLINK_OR_LINK_OR_COPY` (reflink, else hardlink, else
+/// copy). The bench's IPC requests carry no environment, so the daemon's
+/// default is what applies.
+pub fn bench_materialization_mode() -> zccache::core::config::MaterializationMode {
+    zccache::core::config::materialization_mode_from_env()
+        .expect("ZCCACHE_MODE must name a valid mode")
+        .unwrap_or(zccache::core::config::MaterializationMode::ReflinkOrLinkOrCopy)
+}
+
 pub async fn start_daemon() -> (
     PerfCacheRoot,
     String,
@@ -115,6 +126,7 @@ pub async fn start_daemon() -> (
     let endpoint = zccache::ipc::unique_test_endpoint();
     let normalized = zccache::core::NormalizedPath::new(cache_dir.path());
     let mut server = DaemonServer::bind_with_cache_dir(&endpoint, &normalized).unwrap();
+    server.set_materialization_mode_default(Some(bench_materialization_mode()));
     let shutdown = server.shutdown_handle();
     let handle = tokio::spawn(async move {
         server.run(0).await.unwrap();

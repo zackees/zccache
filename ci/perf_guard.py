@@ -332,6 +332,9 @@ def _benchmark_env(cache_dir: Path, language: str | None) -> dict[str, str]:
     env = os.environ.copy()
     env["ZCCACHE_CACHE_DIR"] = str(cache_dir)
     env["ZCCACHE_COMPILE_PRIORITY"] = "auto"
+    # #1792: gate the same explicit delivery chain the published benchmarks
+    # use (reflink, else hardlink, else copy), not the standalone AUTO.
+    env["ZCCACHE_MODE"] = "REFLINK_OR_LINK_OR_COPY"
     if language == "rust":
         env["ZCCACHE_PROFILE_RUST_MISS"] = "1"
     elif language in ("c", "c++", "emscripten"):

@@ -34,6 +34,10 @@ DEFAULT_PAGES_URL = "https://zackees.github.io/zccache/"
 DEFAULT_RAW_IMAGE_BASE_URL = "https://raw.githubusercontent.com/zackees/zccache/benchmark-stats"
 BENCHMARK_STATS_BRANCH_URL = "https://github.com/zackees/zccache/tree/benchmark-stats"
 HISTORY_MAX_LINES = 1000
+# #1792: the delivery chain the published numbers were measured under, named
+# explicitly: reflink, else hardlink, else copy. zccache's standalone AUTO is
+# reflink-else-copy; soldr and these benchmarks use the full chain.
+BENCHMARK_MATERIALIZATION_MODE = "REFLINK_OR_LINK_OR_COPY"
 LANGUAGES = ("c", "c++", "emscripten", "rust")
 LANGUAGE_LABELS = {
     "c": "C",
@@ -275,6 +279,7 @@ def collect_metadata() -> dict[str, Any]:
             " ".join(command) for command in benchmark_commands_for_all()
         ),
         "pages_url": os.environ.get("ZCCACHE_BENCHMARK_PAGES_URL", DEFAULT_PAGES_URL),
+        "materialization_mode": BENCHMARK_MATERIALIZATION_MODE,
         "raw_image_base_url": raw_image_base_url,
         "raw_image_urls": {
             language: f"{raw_image_base_url}/{image_file}"
@@ -301,8 +306,14 @@ def benchmark_env(cache_dir: Path) -> dict[str, str]:
     # land in the published bench log — letting future investigations
     # read C/C++ link-path phase data without re-running the bench.
     env["ZCCACHE_PROFILE_CC_MISS"] = "1"
+    env["ZCCACHE_MODE"] = BENCHMARK_MATERIALIZATION_MODE
     env.pop("RUSTC_WRAPPER", None)
     return env
+
+
+def materialization_label(metadata: dict[str, Any]) -> str:
+    """The delivery chain a run used; runs before #1792 did not record it."""
+    return f"ZCCACHE_MODE={metadata.get('materialization_mode') or 'AUTO (pre-#1792)'}"
 
 
 def run_benchmarks(log_path: Path) -> str:
@@ -795,7 +806,8 @@ def render_html(payload: dict[str, Any]) -> str:
       <p class="meta">
         Generated {escape(metadata['generated_at'])} |
         ref {escape(metadata.get('git_ref') or 'n/a')} |
-        sha {escape((metadata.get('git_sha') or 'n/a')[:12])}{run_link}
+        sha {escape((metadata.get('git_sha') or 'n/a')[:12])} |
+        {escape(materialization_label(metadata))}{run_link}
       </p>
       <p class="note">
         Raw machine-readable data: <a href="latest.json">latest.json</a> and
@@ -1181,7 +1193,7 @@ def render_language_jpg(payload: dict[str, Any], language: str, path: Path) -> N
     sha = (metadata.get("git_sha") or "n/a")[:12]
     metadata_line = (
         f"Generated {metadata['generated_at']} | ref {metadata.get('git_ref') or 'n/a'} | "
-        f"sha {sha}"
+        f"sha {sha} | {materialization_label(metadata)}"
     )
     draw_fit(
         margin,

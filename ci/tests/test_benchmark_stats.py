@@ -782,3 +782,22 @@ def test_percent_delta_format_covers_faster_slower_and_missing():
     assert benchmark_stats._format_percent_delta(0.8) == "25.0% slower"
     assert benchmark_stats._format_percent_delta(1.0) == "0.0%"
     assert benchmark_stats._format_percent_delta(None) == "n/a"
+
+
+def test_benchmarks_run_and_publish_an_explicit_materialization_chain(tmp_path, monkeypatch):
+    # #1792: the published numbers name the delivery chain they measured.
+    env = benchmark_stats.benchmark_env(tmp_path)
+    assert env["ZCCACHE_MODE"] == "REFLINK_OR_LINK_OR_COPY"
+    assert benchmark_stats.BENCHMARK_MATERIALIZATION_MODE == "REFLINK_OR_LINK_OR_COPY"
+    label = benchmark_stats.materialization_label(
+        {"materialization_mode": benchmark_stats.BENCHMARK_MATERIALIZATION_MODE}
+    )
+    assert label == "ZCCACHE_MODE=REFLINK_OR_LINK_OR_COPY"
+    assert "pre-#1792" in benchmark_stats.materialization_label({})
+
+
+def test_perf_guard_gates_the_same_materialization_chain(tmp_path):
+    from ci import perf_guard
+
+    env = perf_guard._benchmark_env(tmp_path, "rust")
+    assert env["ZCCACHE_MODE"] == benchmark_stats.BENCHMARK_MATERIALIZATION_MODE

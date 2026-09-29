@@ -174,7 +174,9 @@ fn reflink_e2e_parent_child_worktrees_per_mode() {
         assert!(!blobs.is_empty(), "{mode}: the cache must hold the rlib");
 
         match mode {
-            MaterializationMode::Reflink | MaterializationMode::Auto => {
+            MaterializationMode::Reflink
+            | MaterializationMode::Auto
+            | MaterializationMode::ReflinkOrLinkOrCopy => {
                 assert_eq!(links(&rlib), 1, "{mode}: a clone is its own inode");
                 assert_eq!(
                     extent_sharing(&rlib).unwrap(),

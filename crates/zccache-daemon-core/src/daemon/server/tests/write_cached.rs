@@ -83,14 +83,19 @@ fn cache_hit_copies_when_hardlink_registration_fails() {
         eprintln!("SKIP: test filesystem does not support hardlinks");
         return;
     }
+    // #1792: only LINK hardlinks, and it never tries a clone first.
     let fault = StagedFaultGuard::arm(
         &destination,
-        [
-            StagedFaultPoint::MaterializeReflink,
-            StagedFaultPoint::MaterializeHardlinkRegistration,
-        ],
+        [StagedFaultPoint::MaterializeHardlinkRegistration],
     );
-    let observed = write_cached_file_observed(&destination, &cache).unwrap();
+    let observed = materialize_cached_file_with_mode(
+        &destination,
+        &cache,
+        crate::compiler::DeliveryPolicy::HardlinkEligible,
+        MaterializationMode::Link,
+        true,
+    )
+    .unwrap();
     fault.assert_all_consumed();
     assert_eq!(observed.copy_count, 1);
     assert_eq!(
@@ -321,7 +326,8 @@ fn persist_artifact_file_uses_hardlink_when_reflink_unavailable() {
     let content = b"compiled rust artifact for hardlink fast path";
     std::fs::write(&source, content).unwrap();
 
-    let stats = persist_artifact_file(&cache, &source, MaterializationMode::Auto).unwrap();
+    // #1792: LINK is the mode that stores by hardlink; AUTO never does.
+    let stats = persist_artifact_file(&cache, &source, MaterializationMode::Link).unwrap();
 
     assert_eq!(std::fs::read(&cache).unwrap(), content);
     if stats.reflink_count == 0 {
@@ -467,13 +473,8 @@ fn staged_hit_tier_faults_fall_through_without_misattribution() {
         eprintln!("SKIP staged_hit_tier_faults: fixture has no hardlink capability");
         return;
     }
-    let faults = StagedFaultGuard::arm(
-        &output,
-        [
-            StagedFaultPoint::MaterializeReflink,
-            StagedFaultPoint::MaterializeHardlink,
-        ],
-    );
+    // #1792: LINK is the only mode with a hardlink tier to fault.
+    let faults = StagedFaultGuard::arm(&output, [StagedFaultPoint::MaterializeHardlink]);
     let payload = CachedPayload::File(payloads[0].clone());
     let targets = vec![&output];
     let observed = write_payloads_par_with_mtime_floor_and_policies_observed(
@@ -481,7 +482,7 @@ fn staged_hit_tier_faults_fall_through_without_misattribution() {
         &[payload],
         &Vec::<NormalizedPath>::new(),
         &[crate::compiler::DeliveryPolicy::HardlinkEligible],
-        MaterializationMode::Auto,
+        MaterializationMode::Link,
     )
     .unwrap();
     assert_eq!(observed.reflink_count, 0);
@@ -726,7 +727,14 @@ fn capability_verdict_is_cached_and_registry_tracks_hardlinks() {
     let first = fs_caps_raw(&cache, &out);
     let second = fs_caps_raw(&cache, &out);
     assert_eq!(first, second);
-    write_cached_output(&out, &cache, b"bytes").unwrap();
+    materialize_cached_file_with_mode(
+        &out,
+        &cache,
+        crate::compiler::DeliveryPolicy::HardlinkEligible,
+        MaterializationMode::Link,
+        false,
+    )
+    .unwrap();
     if crate::platform::fs::identity::same_file(&out, &cache).unwrap() {
         assert_eq!(registered_output_count(&cache), 1);
         assert_eq!(
@@ -1465,4 +1473,34 @@ fn replace_artifact_cache_file_does_not_retry_non_transient_errors() {
         "non-transient errors must not enter the retry sleep — took {elapsed:?}"
     );
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
+/// #1792: the standalone default never leaves a build output or a delivered
+/// hit sharing the cache blob's inode, even on a hardlink-capable volume, so
+/// a later rustc outside zccache can always replace it (#1791).
+#[test]
+fn auto_never_shares_the_cache_inode() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("libunit.rlib");
+    let cache = dir.path().join("artifact-key_0");
+    std::fs::write(&source, b"auto store").unwrap();
+    let stored = persist_artifact_file(&cache, &source, MaterializationMode::Auto).unwrap();
+    assert_eq!(stored.hardlink_count, 0, "AUTO stored by hardlink");
+    assert!(!crate::platform::fs::identity::same_file(&source, &cache).unwrap());
+
+    let out = dir.path().join("libapp.rlib");
+    let delivered = materialize_cached_file_with_mode(
+        &out,
+        &cache,
+        crate::compiler::DeliveryPolicy::HardlinkEligible,
+        MaterializationMode::Auto,
+        true,
+    )
+    .unwrap();
+    assert_eq!(delivered.hardlink_count, 0, "AUTO delivered a hardlink");
+    assert!(!crate::platform::fs::identity::same_file(&out, &cache).unwrap());
+    assert!(
+        !std::fs::metadata(&out).unwrap().permissions().readonly(),
+        "an AUTO hit must be writable so rustc accepts it"
+    );
 }

@@ -83,7 +83,19 @@ fn volume_supports_hardlinks(temp: &TempDir) -> bool {
     linked
 }
 
-/// (service default, request env, whether the hit must share the cache inode)
+fn volume_supports_reflink(temp: &TempDir) -> bool {
+    let probe = temp.path().join("reflink-probe");
+    std::fs::write(&probe, b"x").expect("probe");
+    let clone = temp.path().join("reflink-probe-2");
+    let cloned = kernal_api::platform::fs::reflink_file(&probe, &clone).is_ok();
+    let _ = std::fs::remove_file(clone);
+    let _ = std::fs::remove_file(probe);
+    cloned
+}
+
+/// (service default, request env, whether the hit must share the cache inode
+/// on a volume that can hardlink but not reflink; a reflink volume never
+/// shares, #1792)
 type ModeCase = (
     MaterializationMode,
     &'static [(&'static str, &'static str)],
@@ -99,9 +111,17 @@ async fn a_hit_is_delivered_by_the_resolved_mode() {
         eprintln!("SKIP a_hit_is_delivered_by_the_resolved_mode: rustc not found");
         return;
     };
-    let cases: [ModeCase; 3] = [
+    let cases: [ModeCase; 6] = [
         (MaterializationMode::Link, &[], true),
         (MaterializationMode::Copy, &[], false),
+        // #1792: AUTO never shares; the full chain links where it cannot clone.
+        (MaterializationMode::Auto, &[], false),
+        (MaterializationMode::ReflinkOrLinkOrCopy, &[], true),
+        (
+            MaterializationMode::ReflinkOrLinkOrCopy,
+            &[("ZCCACHE_MODE", "auto")],
+            false,
+        ),
         (
             MaterializationMode::Link,
             &[("ZCCACHE_MODE", "copy")],
@@ -122,6 +142,10 @@ async fn a_hit_is_delivered_by_the_resolved_mode() {
         std::fs::create_dir_all(temp.path().join("out")).expect("out dir");
         let rlib = temp.path().join("out").join("libmodecrate.rlib");
         let label = format!("default {service_default}, request {request_env:?}");
+        // LINK never clones; every other shared case clones first where it can.
+        let expect_shared = expect_shared
+            && (service_default == MaterializationMode::Link
+                || request_env.is_empty() && !volume_supports_reflink(&temp));
 
         let cold = start_service(&temp).await;
         cold.set_materialization_mode(Some(service_default));
@@ -146,9 +170,12 @@ async fn a_hit_is_delivered_by_the_resolved_mode() {
         assert!(hit.cached, "{label}: second compile must hit");
         let links = crate::platform::fs::links::hard_link_count(&rlib).expect("link count");
         if expect_shared {
-            assert!(links >= 2, "{label}: LINK must share the cache inode");
+            assert!(links >= 2, "{label}: the hit must share the cache inode");
         } else {
-            assert_eq!(links, 1, "{label}: COPY must deliver an independent rlib");
+            assert_eq!(
+                links, 1,
+                "{label}: the hit must deliver an independent rlib"
+            );
             assert!(!std::fs::metadata(&rlib)
                 .expect("rlib metadata")
                 .permissions()

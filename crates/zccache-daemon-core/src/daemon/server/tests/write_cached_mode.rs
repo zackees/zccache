@@ -5,7 +5,7 @@
 
 use super::super::*;
 use crate::compiler::DeliveryPolicy;
-use MaterializationMode::{Auto, Copy, Link, Reflink};
+use MaterializationMode::{Auto, Copy, Link, Reflink, ReflinkOrLinkOrCopy};
 
 const BYTES: &[u8] = b"immutable cached rust archive";
 
@@ -149,6 +149,63 @@ fn reflink_mode_falls_back_to_copy_when_the_clone_fails() {
     assert_independent_delivery(&out, &fixture.cache, cache_mtime);
 }
 
+/// #1792: AUTO is reflink-else-copy. Even an eligible Rust interface on a
+/// hardlink-capable volume gets its own writable inode, so rustc outside
+/// zccache can always replace it (#1791).
+#[test]
+fn auto_mode_delivers_an_independent_file_never_a_hardlink() {
+    for fixture in [Fixture::legacy(), Fixture::staged()] {
+        let cache_mtime = mtime(&fixture.cache).unix_seconds();
+        let out = fixture.out("auto.rlib");
+        let observed = fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, Auto);
+        assert_eq!(observed.hardlink_count, 0, "AUTO hardlinked");
+        assert_eq!(observed.reflink_count + observed.copy_count, 1);
+        assert_independent_delivery(&out, &fixture.cache, cache_mtime);
+    }
+}
+
+/// #1792: REFLINK_OR_LINK_OR_COPY is the full chain: a clone where the
+/// volume can, else a hardlink to the cache for an eligible output.
+#[test]
+fn reflink_or_link_or_copy_clones_else_hardlinks_an_eligible_output() {
+    let fixture = Fixture::legacy();
+    let caps = fs_caps_raw(&fixture.cache, &fixture.out("probe-target"));
+    let out = fixture.out("chain.rlib");
+    let observed = fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, ReflinkOrLinkOrCopy);
+    if caps.reflink {
+        assert_eq!(
+            (observed.reflink_count, observed.hardlink_count),
+            (1, 0),
+            "a reflink-capable volume clones first"
+        );
+        assert!(!same_file(&out, &fixture.cache));
+    } else if caps.hardlink {
+        assert_eq!(
+            (
+                observed.reflink_count,
+                observed.hardlink_count,
+                observed.copy_count
+            ),
+            (0, 1, 0)
+        );
+        assert_shared_delivery(&out, &fixture.cache);
+    } else {
+        assert_eq!(observed.copy_count, 1);
+    }
+}
+
+/// The chain still never shares an inode the output's policy keeps
+/// independent (#1683 decision D1).
+#[test]
+fn reflink_or_link_or_copy_demotes_an_independent_only_output() {
+    let fixture = Fixture::legacy();
+    let cache_mtime = mtime(&fixture.cache).unix_seconds();
+    let out = fixture.out("demoted-chain.bin");
+    let observed = fixture.deliver(&out, DeliveryPolicy::IndependentOnly, ReflinkOrLinkOrCopy);
+    assert_eq!(observed.hardlink_count, 0);
+    assert_independent_delivery(&out, &fixture.cache, cache_mtime);
+}
+
 #[test]
 fn link_mode_hardlinks_an_eligible_output() {
     let fixture = Fixture::legacy();
@@ -236,7 +293,7 @@ fn copy_failure_is_a_clean_error_in_every_mode() {
 /// existing output on its next hit instead of leaving the shared inode.
 #[test]
 fn switching_link_to_an_independent_mode_detaches_the_existing_hardlink() {
-    for independent in [Copy, Reflink] {
+    for independent in [Auto, Copy, Reflink] {
         let fixture = Fixture::legacy();
         if !fixture.hardlinks_supported() {
             eprintln!("SKIP switching_link_to_{independent}: no hardlinks on this volume");
@@ -244,7 +301,18 @@ fn switching_link_to_an_independent_mode_detaches_the_existing_hardlink() {
         }
         let cache_mtime = mtime(&fixture.cache).unix_seconds();
         let out = fixture.out("migrated.rlib");
-        fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, Link);
+        // Both linking modes leave a hardlink that the next hit must detach.
+        let linking = if independent == Auto {
+            ReflinkOrLinkOrCopy
+        } else {
+            Link
+        };
+        let caps = fs_caps_raw(&fixture.cache, &fixture.out("probe-target"));
+        if linking == ReflinkOrLinkOrCopy && caps.reflink {
+            eprintln!("SKIP switching_{linking}_to_{independent}: the chain clones here");
+            continue;
+        }
+        fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, linking);
         assert_shared_delivery(&out, &fixture.cache);
         let observed = fixture.deliver(&out, DeliveryPolicy::HardlinkEligible, independent);
         assert_eq!(observed.hardlink_count, 0, "{independent}");
@@ -276,7 +344,10 @@ fn switching_copy_to_link_shares_the_cache_inode() {
 #[test]
 fn capability_cache_is_mode_independent() {
     let fixture = Fixture::legacy();
-    for (index, mode) in [Copy, Auto, Link, Reflink, Auto].into_iter().enumerate() {
+    for (index, mode) in [Copy, Auto, Link, ReflinkOrLinkOrCopy, Reflink, Auto]
+        .into_iter()
+        .enumerate()
+    {
         let out = fixture.out(&format!("alternating-{index}.rlib"));
         fixture.deliver(&out, DeliveryPolicy::IndependentOnly, mode);
     }
@@ -288,7 +359,7 @@ fn capability_cache_is_mode_independent() {
 /// start.
 #[test]
 fn independent_modes_never_change_the_cache_file_permissions() {
-    for mode in [Copy, Reflink] {
+    for mode in [Auto, Copy, Reflink] {
         for start_readonly in [false, true] {
             let fixture = Fixture::legacy();
             crate::platform::fs::permissions::set_readonly(&fixture.cache, start_readonly).unwrap();

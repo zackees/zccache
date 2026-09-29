@@ -405,7 +405,8 @@ disables read-only enforcement. Neither setting adds an IPC roundtrip.
 
 | Mode | Delivery |
 |---|---|
-| `AUTO` (default) | Reflink, else hardlink (only outputs whose delivery policy allows sharing an inode), else copy. The tier order above, unchanged. |
+| `AUTO` (default) | Reflink, else copy. Never shares the cache file's inode (#1792): a hardlinked hit is read-only, and rustc refuses to rebuild over a read-only `.rmeta`/`.rlib` when it runs outside zccache (#1791). |
+| `REFLINK_OR_LINK_OR_COPY` | Reflink, else hardlink (only outputs whose delivery policy allows sharing an inode), else copy: the full tier order above (the pre-#1792 `AUTO`). For hosts where every writer of the target dir goes through zccache; the published benchmarks and Perf Guard run under it. |
 | `LINK` | Hardlink eligible outputs, never clone them. Outputs the policy keeps independent take reflink-else-copy. |
 | `COPY` | Always an independent, writable byte copy that owns its blocks. Never probes the volume, and writes the bytes itself: `std::fs::copy` uses `copy_file_range`, which btrfs/XFS may satisfy with a clone. |
 | `REFLINK` | An independent, writable clone; where the volume cannot clone, a copy (never a hardlink), with a one-time `materialization_reflink_fallback` warning. |
@@ -415,15 +416,17 @@ carrying the cache file's mtime, with the sibling floor applied — and differ
 only in the syscall. The mode can only *demote* an output to independent
 delivery; it never shares an inode the output's delivery policy forbids, so
 the ETXTBSY and in-place-edit guards hold in every mode. Switching from
-`LINK`/`AUTO` to `COPY`/`REFLINK` detaches an existing hardlinked output on its
-next hit. The former `ZCCACHE_DISABLE_REFLINK` switch was removed; use
+`LINK`/`REFLINK_OR_LINK_OR_COPY` to `AUTO`/`COPY`/`REFLINK` detaches an
+existing hardlinked output on its next hit. The former `ZCCACHE_DISABLE_REFLINK` switch was removed; use
 `ZCCACHE_MODE=COPY` to opt out of cloning.
 
 Resolution is per request, with no extra roundtrip: the wrapper forwards its
 environment on every compile/link/exec request, so a valid `ZCCACHE_MODE`
 there wins; otherwise the service default applies; otherwise `AUTO`. Only an
 embedded service has a default (the host process's `ZCCACHE_MODE` at start,
-or `ZccacheService::set_materialization_mode`). A standalone daemon has none:
+or `ZccacheService::set_materialization_mode`), as does an in-process
+`DaemonServer` whose host calls `set_materialization_mode_default` (the perf
+bench pins `REFLINK_OR_LINK_OR_COPY` this way). A standalone daemon has none:
 it is spawned lazily from whichever shell ran first, so its own environment
 must not decide later clients' delivery. The wrapper rejects an invalid value
 before dispatch (exit 1), an embedded service refuses to start on one, and
@@ -433,11 +436,11 @@ The pure decision is `plan_tiers` in
 
 The mode governs every delivery, not just cache hits. The *store* direction
 (`persist_artifact_file`, compiler output -> cache blob) never hardlinks under
-`COPY`/`REFLINK`, so the build output never shares the blob's inode; `COPY`
+`AUTO`/`COPY`/`REFLINK`, so the build output never shares the blob's inode; `COPY`
 also skips the clone. Staged miss-path delivery (compile, link, exec,
 multi-source) and rust-plan bundles are always independent and skip the clone
 under `COPY`. `zccache warm` keeps its historical hardlink-first order under
-`AUTO` and otherwise follows the shareable tiers; an independent warm output
+`REFLINK_OR_LINK_OR_COPY` and otherwise follows the shareable tiers; an independent warm output
 stamps the cache file directly so eviction still sees it as recently used. Every raw hardlink or
 reflink call lives in one of these mode-aware modules, which a guard test in
 `zccache-core` enforces.

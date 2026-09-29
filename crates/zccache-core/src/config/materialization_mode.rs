@@ -24,9 +24,18 @@ pub const MATERIALIZATION_MODE_ENV: &str = "ZCCACHE_MODE";
 /// How a cached artifact is delivered to its requested output path.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum MaterializationMode {
-    /// Reflink, else hardlink (policy permitting), else copy.
+    /// Reflink, else copy. Never shares the cache file's inode, so a tool
+    /// outside zccache (a plain `cargo`, rust-analyzer, `ZCCACHE_DISABLE=1`)
+    /// can always replace the output (#1791, #1792). Hosts that own the
+    /// whole build environment opt into hardlinks with `REFLINK_OR_LINK_OR_COPY`
+    /// or `LINK`.
     #[default]
     Auto,
+    /// Reflink, else hardlink (policy permitting), else copy: the full chain
+    /// (the pre-#1792 `AUTO`). The fastest, disk-sharing delivery, for hosts
+    /// where every writer of the target dir goes through zccache; the
+    /// published benchmarks run under it.
+    ReflinkOrLinkOrCopy,
     /// Hardlink policy-eligible outputs; others take reflink-else-copy.
     Link,
     /// Always an independent byte copy.
@@ -37,13 +46,20 @@ pub enum MaterializationMode {
 
 impl MaterializationMode {
     /// Every mode, in documentation order.
-    pub const ALL: [Self; 4] = [Self::Auto, Self::Link, Self::Copy, Self::Reflink];
+    pub const ALL: [Self; 5] = [
+        Self::Auto,
+        Self::ReflinkOrLinkOrCopy,
+        Self::Link,
+        Self::Copy,
+        Self::Reflink,
+    ];
 
     /// Canonical upper-case spelling, as documented and as `Display` prints.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "AUTO",
+            Self::ReflinkOrLinkOrCopy => "REFLINK_OR_LINK_OR_COPY",
             Self::Link => "LINK",
             Self::Copy => "COPY",
             Self::Reflink => "REFLINK",
@@ -80,13 +96,13 @@ pub struct MaterializationTiers {
 impl MaterializationMode {
     /// Tiers for a delivery with no per-output policy restriction (the
     /// cache store, `zccache warm`, rust-plan bundles), before volume
-    /// capabilities are known. LINK never clones; COPY neither clones nor
-    /// links; REFLINK never links.
+    /// capabilities are known. AUTO and REFLINK only clone; LINK only
+    /// links; REFLINK_OR_LINK_OR_COPY tries both; COPY does neither.
     #[must_use]
     pub const fn tiers_for_shareable(self) -> MaterializationTiers {
         MaterializationTiers {
-            reflink: matches!(self, Self::Auto | Self::Reflink),
-            hardlink: matches!(self, Self::Auto | Self::Link),
+            reflink: matches!(self, Self::Auto | Self::ReflinkOrLinkOrCopy | Self::Reflink),
+            hardlink: matches!(self, Self::ReflinkOrLinkOrCopy | Self::Link),
         }
     }
 }
@@ -171,7 +187,7 @@ impl FromStr for MaterializationMode {
     }
 }
 
-/// A `ZCCACHE_MODE` value that is not one of the four modes.
+/// A `ZCCACHE_MODE` value that is not one of the modes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidMaterializationMode {
     value: String,
@@ -189,7 +205,7 @@ impl fmt::Display for InvalidMaterializationMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "invalid {MATERIALIZATION_MODE_ENV} value {:?}: expected one of AUTO, LINK, COPY, REFLINK",
+            "invalid {MATERIALIZATION_MODE_ENV} value {:?}: expected one of AUTO, REFLINK_OR_LINK_OR_COPY, LINK, COPY, REFLINK",
             self.value
         )
     }

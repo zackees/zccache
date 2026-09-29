@@ -43,7 +43,12 @@ fn hardlinks_supported(dir: &Path) -> bool {
 /// cache file is read-only.
 #[test]
 fn independent_modes_restore_a_private_output_and_touch_the_cache_file() {
-    for mode in [MaterializationMode::Copy, MaterializationMode::Reflink] {
+    // #1792: AUTO (reflink-else-copy) restores a private output too.
+    for mode in [
+        MaterializationMode::Auto,
+        MaterializationMode::Copy,
+        MaterializationMode::Reflink,
+    ] {
         for cache_readonly in [false, true] {
             let (_dir, src, dst) = fixture();
             kernal_api::platform::fs::set_readonly(&src, cache_readonly).unwrap();

@@ -22,7 +22,9 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 #[test]
 fn independent_modes_never_hardlink_the_compiler_output_into_the_cache() {
-    for mode in [Copy, Reflink] {
+    // #1792: AUTO is independent too; only LINK and REFLINK_OR_LINK_OR_COPY
+    // may store by hardlink.
+    for mode in [Auto, Copy, Reflink] {
         let (_dir, source, cache) = fixture();
         let stats = persist_artifact_file(&cache, &source, mode).unwrap();
         assert_eq!(stats.hardlink_count, 0, "{mode}");

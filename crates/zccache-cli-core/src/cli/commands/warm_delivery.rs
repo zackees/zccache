@@ -4,9 +4,11 @@ use std::path::Path;
 
 /// Deliver one `zccache warm` payload per `ZCCACHE_MODE` (#1683).
 ///
-/// `zccache warm` has always linked first, and AUTO keeps that order: a clone
-/// attempt would add a failed syscall per file on every non-reflink volume.
-/// LINK, COPY and REFLINK follow [`MaterializationMode::tiers_for_shareable`].
+/// `zccache warm` has always linked first, and REFLINK_OR_LINK_OR_COPY (the
+/// pre-#1792 AUTO) keeps that order: a clone attempt would add a failed
+/// syscall per file on every non-reflink volume. AUTO (reflink-else-copy,
+/// never a shared inode), LINK, COPY and REFLINK follow
+/// [`MaterializationMode::tiers_for_shareable`].
 ///
 /// `now` is zccache's LRU recency stamp for the cache file, not a cargo
 /// freshness signal. A hardlinked output carries it to the shared inode; an
@@ -23,7 +25,7 @@ pub(crate) fn deliver_warm_file(
 ) -> std::io::Result<()> {
     use crate::core::config::{MaterializationMode, MaterializationTiers};
     let tiers = match mode {
-        MaterializationMode::Auto => MaterializationTiers {
+        MaterializationMode::ReflinkOrLinkOrCopy => MaterializationTiers {
             reflink: false,
             hardlink: true,
         },

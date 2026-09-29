@@ -64,6 +64,14 @@ zccache --version
 
 [![Latest zccache Rust benchmark stats](https://raw.githubusercontent.com/zackees/zccache/benchmark-stats/benchmark-rust.jpg)](https://github.com/zackees/zccache/tree/benchmark-stats)
 
+All benchmark rows run with `ZCCACHE_MODE=REFLINK_OR_LINK_OR_COPY`: each
+cache hit is delivered by reflink where the volume supports it, else by a
+hardlink to the cache, else by a copy. Each image header names the mode.
+Standalone zccache defaults to `AUTO` (reflink, else copy; no shared inodes),
+and soldr probes its cache/target volume once and passes the explicit
+mode that fits (`REFLINK`, else `LINK`, else `COPY`). See
+[Materialization mode](docs/architecture/artifact-store.md#materialization-mode-zccache_mode-1683).
+
 The benchmark images show the latest **successful** benchmark run, whether
 scheduled or manually triggered. The UTC timestamp and source commit in each
 image header reveal when that was. A failed run leaves the previous images in
@@ -537,15 +545,27 @@ hardlinks and are never stamped with the current time. On Windows, placing both
 the cache and build target on a ReFS Dev Drive provides the strongest true-COW
 tier; prefer a real partition-backed Dev Drive over a VHDX for daily use.
 
-`ZCCACHE_MODE` (`AUTO` | `LINK` | `COPY` | `REFLINK`, read per compile, no
-daemon restart) picks how a hit is delivered. If a tool later writes to
-delivered outputs, such as `.rmeta`/`.rlib` files that a wrapper-less `rustc`
-replaces (see #1722 for the open Windows case), use `ZCCACHE_MODE=COPY`, which
-always delivers an independent writable file, or `ZCCACHE_MODE=REFLINK`. Under
-soldr, set it with `SOLDR_ZCCACHE_MODE=copy`, `soldr --zccache-mode copy`, or
-`[zccache] mode = "copy"` in soldr's `config.toml`. soldr forwards the result as
-`ZCCACHE_MODE`. A project-level `Cargo.toml` setting is tracked in
-zackees/soldr#3434.
+`ZCCACHE_MODE` (read per compile, no daemon restart) picks how a hit is
+delivered:
+
+| Mode | Delivery |
+|---|---|
+| `AUTO` (default) | Reflink, else copy. Never shares the cache file's inode. |
+| `REFLINK_OR_LINK_OR_COPY` | Reflink, else hardlink, else copy: the fastest chain, and the one the published benchmarks use. |
+| `LINK` | Hardlink, else copy. |
+| `COPY` | Always an independent, writable byte copy. |
+| `REFLINK` | Reflink, else copy, with a warning. |
+
+`AUTO` never hardlinks because a hardlinked hit is a read-only file shared
+with the cache, and rustc refuses to rebuild over a read-only `.rmeta`/`.rlib`
+(`output file ... is not writeable`) when it runs outside zccache: a plain
+`cargo`, rust-analyzer, or `ZCCACHE_DISABLE=1` (#1791, #1792). Choose
+`REFLINK_OR_LINK_OR_COPY` or `LINK` when every build of the target dir goes
+through zccache. soldr, which owns its build environment, probes the volume
+once and passes `REFLINK`, `LINK` or `COPY` explicitly.
+Under soldr, set a mode with `SOLDR_ZCCACHE_MODE`, `soldr --zccache-mode`, or
+`[zccache] mode` in soldr's `config.toml`; soldr forwards it as `ZCCACHE_MODE`.
+A project-level `Cargo.toml` setting is tracked in zackees/soldr#3434.
 
 zccache can share cache entries across sibling Git worktrees when the compile is
 equivalent. This targets multi-agent workflows where several checkouts of the

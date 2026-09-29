@@ -214,10 +214,12 @@ fn materialize_verified_cached_file_tiers(
             StagedMaterializationStats::default()
         }
     };
-    let hardlink_eligible =
-        !staged || matches!(delivery, crate::compiler::DeliveryPolicy::HardlinkEligible);
-    // The mode can only demote: a same-inode output left by an earlier LINK
-    // or AUTO delivery is detached below when this mode forbids sharing, so
+    // Legacy (non-staged) blobs honor the output's delivery policy exactly
+    // like staged ones: an independent-only output (an executable, a depfile)
+    // never shares the cache inode in any mode (#1653, #1792).
+    let hardlink_eligible = matches!(delivery, crate::compiler::DeliveryPolicy::HardlinkEligible);
+    // The mode can only demote: a same-inode output left by an earlier
+    // linking delivery is detached below when this mode forbids sharing, so
     // switching modes migrates existing outputs on their next hit (#1683).
     let hardlink_allowed = hardlink_permitted(mode, hardlink_eligible);
     if crate::platform::fs::identity::same_file(out_path, cache_file).unwrap_or(false) {

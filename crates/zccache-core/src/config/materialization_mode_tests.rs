@@ -114,7 +114,12 @@ fn shareable_tiers_per_mode() {
         let tiers = mode.tiers_for_shareable();
         (tiers.reflink, tiers.hardlink)
     };
-    assert_eq!(tiers(MaterializationMode::Auto), (true, true));
+    // #1792: AUTO is reflink-else-copy; REFLINK_OR_LINK_OR_COPY is the old AUTO.
+    assert_eq!(tiers(MaterializationMode::Auto), (true, false));
+    assert_eq!(
+        tiers(MaterializationMode::ReflinkOrLinkOrCopy),
+        (true, true)
+    );
     assert_eq!(tiers(MaterializationMode::Link), (false, true));
     assert_eq!(tiers(MaterializationMode::Copy), (false, false));
     assert_eq!(tiers(MaterializationMode::Reflink), (true, false));
@@ -245,4 +250,22 @@ fn production_sources() -> Vec<(String, String)> {
         }
     }
     sources
+}
+
+#[test]
+fn reflink_or_link_or_copy_parses_in_any_case() {
+    for raw in [
+        "REFLINK_OR_LINK_OR_COPY",
+        "reflink_or_link_or_copy",
+        " Reflink_Or_Link_Or_Copy ",
+    ] {
+        assert_eq!(
+            MaterializationMode::parse(raw),
+            Ok(Some(MaterializationMode::ReflinkOrLinkOrCopy))
+        );
+    }
+    assert_eq!(
+        MaterializationMode::ReflinkOrLinkOrCopy.as_str(),
+        "REFLINK_OR_LINK_OR_COPY"
+    );
 }

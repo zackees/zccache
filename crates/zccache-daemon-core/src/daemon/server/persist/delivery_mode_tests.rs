@@ -1,7 +1,7 @@
 //! Layer B (resolution) and layer C (tier planner) of the #1683 test design.
 
 use super::*;
-use MaterializationMode::{Auto, Copy, Link, Reflink};
+use MaterializationMode::{Auto, Copy, Link, Reflink, ReflinkOrLinkOrCopy};
 
 fn caps(reflink: bool, hardlink: bool) -> VolumeCaps {
     VolumeCaps {
@@ -96,18 +96,56 @@ type PlanRow = (
 #[test]
 fn plan_tiers_truth_table() {
     let rows: &[PlanRow] = &[
-        ("AUTO eligible FULL", Auto, true, FULL, 1, true, true),
-        ("AUTO eligible HL", Auto, true, HL, 1, false, true),
+        // #1792: AUTO is reflink-else-copy; it never shares an inode.
+        ("AUTO eligible FULL", Auto, true, FULL, 1, true, false),
+        ("AUTO eligible HL (copies)", Auto, true, HL, 1, false, false),
+        ("AUTO independent FULL", Auto, false, FULL, 1, true, false),
+        // REFLINK_OR_LINK_OR_COPY is the pre-#1792 AUTO.
         (
-            "AUTO eligible HL at limit",
-            Auto,
+            "RLC eligible FULL",
+            ReflinkOrLinkOrCopy,
+            true,
+            FULL,
+            1,
+            true,
+            true,
+        ),
+        (
+            "RLC eligible HL",
+            ReflinkOrLinkOrCopy,
+            true,
+            HL,
+            1,
+            false,
+            true,
+        ),
+        (
+            "RLC eligible HL at limit",
+            ReflinkOrLinkOrCopy,
             true,
             HL,
             AT_LIMIT,
             false,
             false,
         ),
-        ("AUTO independent FULL", Auto, false, FULL, 1, true, false),
+        (
+            "RLC independent FULL",
+            ReflinkOrLinkOrCopy,
+            false,
+            FULL,
+            1,
+            true,
+            false,
+        ),
+        (
+            "RLC eligible NONE",
+            ReflinkOrLinkOrCopy,
+            true,
+            NONE,
+            1,
+            false,
+            false,
+        ),
         ("AUTO eligible NONE", Auto, true, NONE, 1, false, false),
         ("AUTO independent NONE", Auto, false, NONE, 1, false, false),
         ("LINK eligible FULL", Link, true, FULL, 1, false, true),
@@ -185,7 +223,10 @@ fn plan_never_hardlinks_an_output_its_policy_keeps_independent() {
     for (mode, eligible, _, _, plan) in every_case() {
         if plan.hardlink {
             assert!(eligible, "{mode}: hardlinked an independent-only output");
-            assert!(matches!(mode, Auto | Link), "{mode} hardlinked");
+            assert!(
+                matches!(mode, Link | ReflinkOrLinkOrCopy),
+                "{mode} hardlinked"
+            );
         }
     }
 }
@@ -274,4 +315,15 @@ fn copy_mode_plans_against_copy_only_caps_without_probing() {
     let caps = delivery_caps(Copy, &cache, &dir.path().join("out.bin"));
     assert!(!caps.reflink && !caps.hardlink);
     assert_eq!(probes_under(dir.path()), 0);
+}
+
+/// #1792: the standalone default must never hand out an output that shares
+/// the cache blob's inode, whatever the volume supports.
+#[test]
+fn plan_auto_never_hardlinks() {
+    for (mode, _, _, _, plan) in every_case() {
+        if mode == Auto {
+            assert!(!plan.hardlink, "AUTO planned a hardlink");
+        }
+    }
 }
