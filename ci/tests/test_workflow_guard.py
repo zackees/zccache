@@ -27,7 +27,7 @@ jobs:
   mac:
     runs-on: macos-15
     steps:
-      - uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1
+      - uses: zackees/setup-soldr@v0
         with:
           toolchain: 1.95.0
           cook-delta: false

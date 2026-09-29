@@ -66,6 +66,7 @@ JUSTIFIED_SUFFIXES: dict[str, str] = {
 # with `auto` (the default) skipping durable saves on pull_request
 # (zackees/setup-soldr#527).  Add the new ref on each pin bump.
 SAVE_CACHE_REFS: dict[str, str] = {
+    "v0": "setup-soldr v0 (floating major, v0.9.82 or later)",
     "a07bab94f16124b5c6857b137a237a53a61e06d1": "setup-soldr v0.9.82",
     "4df8db93438594f50505574d9dc8117505d33362": "setup-soldr v0.9.80",
     "dfbe9627f6cb0226716b61625b99a58949162720": "setup-soldr dfbe962 (#532)",
@@ -75,6 +76,7 @@ SAVE_CACHE_REFS: dict[str, str] = {
 # setup-soldr refs whose main action honors `cook-delta: true|false`
 # (zackees/setup-soldr#528).  Add the new ref on each pin bump.
 COOK_DELTA_REFS: dict[str, str] = {
+    "v0": "setup-soldr v0 (floating major, v0.9.82 or later)",
     "a07bab94f16124b5c6857b137a237a53a61e06d1": "setup-soldr v0.9.82",
     "4df8db93438594f50505574d9dc8117505d33362": "setup-soldr v0.9.80",
 }

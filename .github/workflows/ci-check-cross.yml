@@ -49,7 +49,7 @@ jobs:
       # The newer action revision regresses native ARM-musl compiler selection
       # (GNU std paired with a musl linker). Keep this unrelated cross-only
       # lane on its last known-good action while ci-test consumers use v0.
-      - uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1 # v0.9.82
+      - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           # Local act runs (bosn; pull_request events) save fully; GitHub keeps
