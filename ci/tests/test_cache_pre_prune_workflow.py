@@ -771,3 +771,120 @@ def test_cache_barrier_github_scripts_retry_transient_api_errors() -> None:
                 assert int(options.get("retries", 0)) >= 3, f"{relative}: {step.get('name')}"
                 assert "retry-exempt-status-codes" not in options, relative
     assert seen >= 10
+
+
+def _barrier_skip(caches: list[dict[str, object]], usage: int, target: int | None = None) -> dict:
+    """Run the planner then planWriterBarrierSkip on one inventory (#1822)."""
+    args = "" if target is None else f",{target}"
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune,planWriterBarrierSkip}=require(process.argv[1]);"
+        "const {caches,usage}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "const lock={linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']};"
+        f"const plan=planLockTransitionPrePrune(caches,lock,usage,usage{args});"
+        "process.stdout.write(JSON.stringify({plan,decision:planWriterBarrierSkip(caches,plan)}));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps({"caches": caches, "usage": usage}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+_SHA = "a" * 40
+_CURRENT_COOK = "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l2222222222222222-soldrv0.9.23"
+_OLD_COOK = "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l1111111111111111-soldrv0.9.23"
+# The native-Python release cook; the planner reserves a re-seed when absent.
+_F9_COOK = _CURRENT_COOK.replace("-fnone-", "-f9e7e4902-")
+
+
+def _row(cache_id: int, key: str, size: int) -> dict[str, object]:
+    return {
+        "id": cache_id,
+        "key": key,
+        "ref": "refs/heads/main",
+        "size_in_bytes": size,
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+
+
+def test_writer_barrier_is_skipped_when_no_deletes_and_reserve_fits() -> None:
+    """#1822: 7.05 GB + the 1.6 GB per-SHA reserve is under the 9.2 GB target."""
+    caches = [
+        _row(1, _CURRENT_COOK, 3_000_000_000),
+        _row(2, f"zccache-Linux-X64-test-x86_64-unknown-linux-gnu-{_SHA}", 1_600_000_000),
+        _row(3, _F9_COOK, 1_090_000_000),
+    ]
+    out = _barrier_skip(caches, 7_050_000_000)
+    assert out["plan"]["ok"] is True and out["plan"]["deleteIds"] == []
+    assert out["decision"]["skip"] is True
+    assert out["decision"]["reserveBytes"] == 1_600_000_000
+
+
+def test_writer_barrier_waits_when_deletes_are_planned() -> None:
+    caches = [
+        _row(1, _OLD_COOK, 3_000_000_000),
+        _row(2, _CURRENT_COOK, 100),
+    ]
+    out = _barrier_skip(caches, 3_000_000_100)
+    assert out["plan"]["deleteIds"] == [1]
+    assert out["decision"]["skip"] is False
+    assert "deletes planned" in out["decision"]["reason"]
+
+
+def test_writer_barrier_waits_when_peak_plus_reserve_exceeds_target() -> None:
+    # Peak alone (7.8 GB) fits 9.2 GB, but the 1.6 GB reserve does not.
+    caches = [_row(1, _CURRENT_COOK, 6_000_000_000), _row(2, _F9_COOK, 1_800_000_000)]
+    out = _barrier_skip(caches, 7_800_000_000)
+    assert out["plan"]["ok"] is True and out["plan"]["deleteIds"] == []
+    assert out["decision"]["skip"] is False
+    assert "in-flight reserve" in out["decision"]["reason"]
+
+
+def test_writer_barrier_waits_when_forecast_fails_closed() -> None:
+    out = _barrier_skip([_row(1, _CURRENT_COOK, 9_100_000_000)], 9_100_000_000, 9_000_000_000)
+    assert out["plan"]["ok"] is False
+    assert out["decision"]["skip"] is False
+
+
+def test_in_flight_reserve_counts_each_per_sha_shape_once_at_its_largest() -> None:
+    caches = [
+        _row(1, f"zccache-Linux-X64-test-x86_64-unknown-linux-gnu-{_SHA}", 1_000_000_000),
+        _row(2, f"zccache-Linux-X64-test-x86_64-unknown-linux-gnu-{'b' * 40}", 1_500_000_000),
+        _row(3, f"zccache-Windows-X64-test-x86_64-pc-windows-msvc-{_SHA}", 900_000_000),
+        _row(4, _CURRENT_COOK, 5_000_000_000),  # lock-keyed, not a per-SHA shape
+    ]
+    script = (
+        "const fs=require('node:fs');"
+        "const {inFlightWriterReserveBytes}=require(process.argv[1]);"
+        "process.stdout.write(String(inFlightWriterReserveBytes(JSON.parse(fs.readFileSync(0,'utf8')))));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps(caches),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert int(result.stdout) == 1_500_000_000 + 900_000_000
+
+
+def test_pre_prune_workflow_forecasts_before_the_barrier_and_gates_on_skip() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/cache-pre-prune.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["pre-prune"]["steps"]
+    ids = [step.get("id") for step in steps]
+    assert ids.index("lock-hashes") < ids.index("early-forecast") < ids.index("writer-barrier")
+    gate = "steps.early-forecast.outputs.skip != 'true'"
+    barrier = steps[ids.index("writer-barrier")]
+    assert barrier["if"] == gate
+    retire = next(s for s in steps if s.get("name") == "Forecast and retire old-lock cache generations")
+    assert gate in retire["if"] and "writer-barrier.outputs.ready == 'true'" in retire["if"]
+    early = steps[ids.index("early-forecast")]["with"]["script"]
+    assert "planWriterBarrierSkip" in early
+    # The early step is read-only and never deletes.
+    assert "deleteActionsCacheById" not in early

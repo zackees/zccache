@@ -25,6 +25,11 @@ const LOCK_TRANSITION_TARGET_BYTES = 9_200_000_000;
 // Reserve 1,120,000,000 B so small payload growth does not make the forecast
 // depend on that one archive being exactly repeatable.
 const NATIVE_PYTHON_F9_RESERVE_BYTES = 1_120_000_000;
+// #1822: floor for what still-running older main writers can add before they
+// finish. Per-commit `zccache-<OS>-test-*-<sha>` action entries dominate at
+// about 1.6 GB per generation; the floor applies when the live inventory
+// carries no such entry to measure.
+const IN_FLIGHT_WRITER_MIN_RESERVE_BYTES = 1_600_000_000;
 
 // Old-lock fallbacks deliberately retired at a lock transition. These are
 // the four measured profiles selected to keep the replacement peak below
@@ -410,6 +415,45 @@ function planLockTransitionPrePrune(
   };
 }
 
+// #1822: bytes the still-running older main writers could add. Only per-SHA
+// producer shapes (cacheShape != null) are keyed by commit, so each older push
+// can add one new generation per shape; lock-keyed setup-soldr layers dedupe on
+// an exact key and are already covered by the forecast's projected peak.
+function inFlightWriterReserveBytes(caches) {
+  const largestByShape = new Map();
+  for (const cache of caches) {
+    if (cache.ref !== "refs/heads/main" || typeof cache.key !== "string") continue;
+    const shape = cacheShape(cache.key);
+    if (shape === null) continue;
+    const bytes = Number(cache.size_in_bytes) || 0;
+    if (bytes > (largestByShape.get(shape) || 0)) largestByShape.set(shape, bytes);
+  }
+  let reserve = 0;
+  for (const bytes of largestByShape.values()) reserve += bytes;
+  return Math.max(reserve, IN_FLIGHT_WRITER_MIN_RESERVE_BYTES);
+}
+
+// #1822: decide whether the pre-prune may release producers without waiting
+// for older writers. The wait only orders deletes after older saves, so it is
+// unnecessary when the forecast plans no deletes and the projected peak plus
+// the in-flight reserve still fits the target.
+function planWriterBarrierSkip(caches, plan) {
+  if (!plan || !plan.ok) return { skip: false, reason: "forecast did not pass" };
+  if (plan.deleteIds.length > 0) {
+    return { skip: false, reason: `${plan.deleteIds.length} deletes planned` };
+  }
+  const reserveBytes = inFlightWriterReserveBytes(caches);
+  const totalBytes = plan.projectedPeakBytes + reserveBytes;
+  if (totalBytes > plan.targetBytes) {
+    return {
+      skip: false,
+      reason: `projected peak ${plan.projectedPeakBytes} + in-flight reserve ${reserveBytes} exceeds target ${plan.targetBytes}`,
+      reserveBytes,
+    };
+  }
+  return { skip: true, reason: "no deletes and peak plus in-flight reserve fit the target", reserveBytes };
+}
+
 function supersededCargoRegistryIds(caches, currentRootLockHashes) {
   if (!currentRootLockHashes) return new Set();
   const hashesForOs = (os) => {
@@ -524,6 +568,7 @@ function planHardCap(caches, currentBytes, targetBytes, alreadyPlannedIds = []) 
 
 module.exports = {
   CACHE_PREFIXES,
+  IN_FLIGHT_WRITER_MIN_RESERVE_BYTES,
   LOCK_TRANSITION_TARGET_BYTES,
   MAIN_CACHE_WRITER_WORKFLOW_NAMES,
   NATIVE_PYTHON_F9_RESERVE_BYTES,
@@ -534,8 +579,10 @@ module.exports = {
   cacheShape,
   cargoLockHashes,
   effectiveCacheBytes,
+  inFlightWriterReserveBytes,
   isRetiredMainKey,
   isEligible,
+  planWriterBarrierSkip,
   planCountPrune,
   planHardCap,
   parseCookBaseKey,

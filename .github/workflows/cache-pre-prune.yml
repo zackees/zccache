@@ -7,7 +7,9 @@ name: Cache Pre-prune
 # composite action. The forecast reserves measured payload headroom but is not
 # an upload-time hard cap; trailing Cache Cleanup verifies the settled live
 # usage after all same-SHA producers finish. This workflow waits only for
-# older-SHA producers, never same-SHA runs that are waiting here.
+# older-SHA producers, never same-SHA runs that are waiting here. #1822: an
+# early forecast skips that wait when no deletes are planned and the projected
+# peak plus an in-flight writer reserve fits the target.
 on:
   push:
     branches: [main]
@@ -33,8 +35,78 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Hash root Cargo.lock in native and checkout-normalized forms
+        id: lock-hashes
+        uses: actions/github-script@v7
+        with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
+          script: |
+            const fs = require("node:fs");
+            const { cargoLockHashes } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
+            );
+            const hashes = cargoLockHashes(fs.readFileSync("Cargo.lock"));
+            core.setOutput("lf", hashes.lf);
+            core.setOutput("crlf", hashes.crlf);
+            core.info(`Current Cargo.lock hashes: LF=${hashes.lf}, CRLF=${hashes.crlf}`);
+
+      - name: Forecast before waiting for older writers
+        id: early-forecast
+        uses: actions/github-script@v7
+        env:
+          ROOT_LOCK_HASH_LF: ${{ steps.lock-hashes.outputs.lf }}
+          ROOT_LOCK_HASH_CRLF: ${{ steps.lock-hashes.outputs.crlf }}
+        with:
+          # #1785: retry transient GitHub API errors (5xx) with backoff;
+          # 404 and other 4xx are exempt and keep their explicit handling.
+          retries: 5
+          script: |
+            // #1822: skip the ~10 min older-writer barrier when nothing will
+            // be deleted and peak + in-flight reserve fits the target. Every
+            // uncertain outcome (unstable inventory, failed forecast, main
+            // advanced) falls back to the barrier, which keeps its own checks.
+            const repo = context.repo;
+            const { planLockTransitionPrePrune, planWriterBarrierSkip } = require(
+              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
+            );
+            const lockHashes = {
+              linux: process.env.ROOT_LOCK_HASH_LF,
+              macos: process.env.ROOT_LOCK_HASH_LF,
+              windows: [process.env.ROOT_LOCK_HASH_CRLF],
+            };
+            const wait = (reason) => {
+              core.info(`Waiting for older main cache writers: ${reason}`);
+              core.setOutput("skip", "false");
+            };
+            if (!lockHashes.linux || !lockHashes.macos || lockHashes.windows.some((hash) => !hash)) {
+              return wait("current Cargo.lock hashes unavailable");
+            }
+            const head = (await github.rest.repos.getBranch({ ...repo, branch: "main" })).data.commit.sha;
+            if (head !== context.sha) return wait("main advanced");
+            const [usage, caches] = await Promise.all([
+              github.rest.actions.getActionsCacheUsage(repo),
+              github.paginate(github.rest.actions.getActionsCacheList, { ...repo, per_page: 100 }),
+            ]);
+            const usageBytes = usage.data.active_caches_size_in_bytes;
+            const listedBytes = caches.reduce((sum, cache) => sum + cache.size_in_bytes, 0);
+            // Live writers make usage/list drift; an unconverged single read
+            // is not trustworthy enough to skip the barrier.
+            if (Math.abs(usageBytes - listedBytes) > 1_000_000) {
+              return wait(`inventory not converged (${usageBytes} usage / ${listedBytes} listed)`);
+            }
+            const plan = planLockTransitionPrePrune(caches, lockHashes, usageBytes, listedBytes);
+            const decision = planWriterBarrierSkip(caches, plan);
+            core.info(
+              `Early forecast: ${decision.reason}` +
+              (decision.reserveBytes === undefined ? "" : ` (in-flight reserve ${decision.reserveBytes} B)`),
+            );
+            core.setOutput("skip", decision.skip ? "true" : "false");
+
       - name: Wait for older main cache writers
         id: writer-barrier
+        if: steps.early-forecast.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           # #1785: retry transient GitHub API errors (5xx) with backoff;
@@ -114,26 +186,8 @@ jobs:
             }
             throw new Error(`older main cache writers did not settle for ${expectedSha}`);
 
-      - name: Hash root Cargo.lock in native and checkout-normalized forms
-        id: lock-hashes
-        if: steps.writer-barrier.outputs.ready == 'true'
-        uses: actions/github-script@v7
-        with:
-          # #1785: retry transient GitHub API errors (5xx) with backoff;
-          # 404 and other 4xx are exempt and keep their explicit handling.
-          retries: 5
-          script: |
-            const fs = require("node:fs");
-            const { cargoLockHashes } = require(
-              `${process.env.GITHUB_WORKSPACE}/ci/cache_cleanup_plan.js`,
-            );
-            const hashes = cargoLockHashes(fs.readFileSync("Cargo.lock"));
-            core.setOutput("lf", hashes.lf);
-            core.setOutput("crlf", hashes.crlf);
-            core.info(`Current Cargo.lock hashes: LF=${hashes.lf}, CRLF=${hashes.crlf}`);
-
       - name: Forecast and retire old-lock cache generations
-        if: steps.writer-barrier.outputs.ready == 'true'
+        if: steps.early-forecast.outputs.skip != 'true' && steps.writer-barrier.outputs.ready == 'true'
         uses: actions/github-script@v7
         env:
           ROOT_LOCK_HASH_LF: ${{ steps.lock-hashes.outputs.lf }}
