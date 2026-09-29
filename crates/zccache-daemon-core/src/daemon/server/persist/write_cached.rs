@@ -164,7 +164,7 @@ pub(in crate::daemon::server) fn materialize_cached_file_with_mode(
     )
 }
 
-fn materialize_verified_cached_file_observed(
+pub(in crate::daemon::server) fn materialize_verified_cached_file_observed(
     out_path: &Path,
     cache_file: &Path,
     delivery: crate::compiler::DeliveryPolicy,

@@ -180,8 +180,13 @@ async fn link_hit_delivery_copies_no_bytes_within_budget() {
     std::fs::write(&hit.blob, &big).unwrap();
     write_authoritative_blob_digest(&hit.blob).unwrap();
 
+    // Verification hashes the whole blob; in a debug test build on a slow
+    // runner that alone can exceed the budget (345 ms on macOS, #1823). It is
+    // identical in every mode, so verify outside the timer and budget only
+    // the delivery that LINK changes.
+    verify_registered_blob(&hit.blob).unwrap();
     let start = Instant::now();
-    let stats = materialize_cached_file_with_mode(
+    let stats = materialize_verified_cached_file_observed(
         &hit.root().join("out.o"),
         &hit.blob,
         crate::compiler::DeliveryPolicy::HardlinkEligible,
