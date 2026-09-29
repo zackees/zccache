@@ -965,7 +965,7 @@ def test_perf_workflow_has_dedicated_cow_materialization_gate():
     assert "--no-cache" not in job + build_job + speed_floor_job
     assert (
         "--language c --test perf_c_zccache_vs_bare \\\n"
-        "            --attempts 3 --cold-bare-threshold 0.80"
+        "            --attempts 3 --cold-bare-threshold 0.75"
         in speed_floor_job
     )
     assert (

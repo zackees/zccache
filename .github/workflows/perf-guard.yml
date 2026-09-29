@@ -232,11 +232,13 @@ jobs:
           # Hosted cold-start samples on the August 2026 image repeatedly
           # settled at 0.806x-0.844x while warm hits stayed above 22x. The
           # stable local Docker matrix remains the authoritative timing gate;
-          # retain a 0.80x hosted smoke floor for gross cold regressions.
+          # retain a 0.75x hosted smoke floor for gross cold regressions.
+          # 0.80x (a 542 ms added-time budget) flaked on main by ~10 ms
+          # (#1824); 0.75x gives a 723 ms budget over the 2.17s reference.
           # On a runner whose bare run beats the calibration runner's, the
           # floor keeps its added-time budget (ci/perf_floor.py, #1445).
           uv run --no-project python -m ci.perf_guard --run-benchmarks --language c --test perf_c_zccache_vs_bare \
-            --attempts 3 --cold-bare-threshold 0.80 \
+            --attempts 3 --cold-bare-threshold 0.75 \
             --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_c_zccache_vs_bare || true
 
