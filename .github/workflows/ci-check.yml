@@ -119,7 +119,7 @@ jobs:
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
         run: |
           unset ZCCACHE_CACHE_DIR
-          soldr cargo nextest run --workspace --lib --bins --no-fail-fast --no-run
+          soldr cargo nextest run --workspace --lib --bins --no-run
       - name: Test
         shell: bash
         env:
