@@ -611,3 +611,76 @@ fn mutable_page_writer_never_shares_backend_inode() {
     assert_ne!(fs::read(&destination).unwrap(), fs::read(&backend).unwrap());
     assert!(!crate::platform::fs::identity::same_file(&payloads[0], &destination).unwrap());
 }
+
+/// #1774 acceptance: publication hashes each output exactly once, and stays
+/// under a small fixed fsync budget instead of fsyncing a now-removed
+/// `.cowhash` sidecar per output on top of the output/manifest syncs.
+#[test]
+fn staged_publication_hashes_once_and_bounds_fsyncs_per_output() {
+    let _serial = perf_counters::guard();
+    perf_counters::reset();
+
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let sources = source_files(dir.path());
+    let output_count = sources.len() as u64;
+
+    persist_staged_artifact_paths(&artifact_dir, &"5".repeat(64), &sources).unwrap();
+
+    let (hash_calls, file_syncs, _dir_syncs) = perf_counters::snapshot();
+
+    // One hash per output: `digest_file` computes it, and the `.cowhash`
+    // sidecar writer reuses that digest instead of re-hashing the file.
+    assert_eq!(
+        hash_calls, output_count,
+        "each staged output must be hashed exactly once"
+    );
+
+    // One data-only fsync per output (durability of the output bytes) plus
+    // one for the manifest — the sidecar fsync is gone entirely, so the
+    // budget no longer grows with the number of outputs beyond that.
+    let expected_file_syncs = output_count + 1; // outputs + manifest
+    assert_eq!(
+        file_syncs, expected_file_syncs,
+        "fsync budget must be exactly one per output plus one for the manifest"
+    );
+}
+
+/// The same budget holds for the in-memory payload path (`zccache warm`
+/// restores, multi-source publication), and it no longer double-writes each
+/// payload through a `.staged-payloads-*` scratch file.
+#[test]
+fn staged_payload_publication_hashes_once_and_writes_each_payload_once() {
+    let _serial = perf_counters::guard();
+    perf_counters::reset();
+
+    let dir = tempfile::tempdir().unwrap();
+    let artifact_dir = dir.path().join("artifacts");
+    fs::create_dir_all(&artifact_dir).unwrap();
+    let payloads: Vec<Arc<Vec<u8>>> = vec![
+        Arc::new(b"first in-memory payload".to_vec()),
+        Arc::new(b"second in-memory payload".to_vec()),
+    ];
+
+    let stats =
+        persist_staged_artifact_payloads(&artifact_dir, &"6".repeat(64), &payloads).unwrap();
+
+    let (hash_calls, file_syncs, _dir_syncs) = perf_counters::snapshot();
+    assert_eq!(hash_calls, payloads.len() as u64);
+    assert_eq!(file_syncs, payloads.len() as u64 + 1);
+    assert_eq!(stats.copy_count, payloads.len() as u64);
+
+    // No `.staged-payloads-*` scratch directory is left in the artifact dir:
+    // payloads are written straight into the generation.
+    let stray_scratch = fs::read_dir(&artifact_dir).unwrap().flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".staged-payloads-")
+    });
+    assert!(
+        !stray_scratch,
+        "payload publication must not stage a scratch copy"
+    );
+}

@@ -22,7 +22,7 @@ pub(crate) use maintenance::{
 mod materialize;
 pub(in crate::daemon::server) use materialize::{
     materialization_error, materialization_error_progress, materialize_independent_with_mode,
-    StagedMaterializationStats,
+    StagedMaterializationStats, StagedSource,
 };
 mod read_guard;
 use read_guard::validate_key;
@@ -296,15 +296,26 @@ fn temporary_path(path: &Path, suffix: &str) -> NormalizedPath {
     .into()
 }
 
+#[cfg(test)]
+pub(in crate::daemon::server) mod perf_counters;
+
+/// Syncs file *content* only (`fdatasync`/`sync_data`), not metadata: the
+/// staged pipeline never depends on an output or manifest file's own mtime or
+/// permission bits surviving a crash independent of its bytes, so the
+/// cheaper data-only sync suffices (#1774).
 fn sync_file(path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    perf_counters::record_file_sync();
     OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)?
-        .sync_all()
+        .sync_data()
 }
 
 fn sync_directory(path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    perf_counters::record_dir_sync();
     crate::platform::fs::durability::sync_directory(path)
 }
 
@@ -349,61 +360,13 @@ fn remove_uncommitted_generation(pointer: &Path, generation_hex: &str, generatio
     }
 }
 
-fn copy_independent(
-    source: &Path,
-    destination: &Path,
-    mode: MaterializationMode,
-) -> io::Result<(bool, u64)> {
-    let reflink_allowed = mode != MaterializationMode::Copy && {
-        #[cfg(test)]
-        {
-            fault::inject(destination, StagedFaultPoint::MaterializeReflink).is_ok()
-        }
-        #[cfg(not(test))]
-        {
-            true
-        }
-    };
-    if reflink_allowed && kernal_api::platform::fs::reflink_file(source, destination).is_ok() {
-        return Ok((true, 0));
-    }
-    // A failed reflink probe may leave a partial destination, including
-    // platform-specific attributes. Remove it before attempting the copy tier.
-    if fs::metadata(destination).is_ok() {
-        let _ = crate::platform::fs::permissions::make_writable(destination);
-    }
-    let _ = fs::remove_file(destination);
+/// Hashes `path` once and returns its size, hex digest, and raw digest bytes.
+/// The raw bytes let the caller feed the `.cowhash` sidecar writer directly
+/// (see [`write_authoritative_blob_digest_for_precomputed`]) instead of
+/// re-hashing the same file a second time (#1774).
+fn digest_file(path: &Path) -> io::Result<(u64, String, [u8; 32])> {
     #[cfg(test)]
-    fault::inject(destination, StagedFaultPoint::MaterializeCopy)?;
-    let bytes = mode.copy_file(source, destination)?;
-    Ok((false, bytes))
-}
-
-/// Independent delivery or store: a reflink (unless `COPY`) else the mode's
-/// copy tier, then writable with the source's mtime (#1683).
-fn copy_output_with(
-    source: &Path,
-    destination: &Path,
-    mode: MaterializationMode,
-) -> io::Result<(bool, u64)> {
-    let source_metadata = fs::metadata(source)?;
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let result = copy_independent(source, destination, mode);
-    if result.is_err() {
-        let _ = fs::remove_file(destination);
-        return result;
-    }
-    // Keep the destination writable while restoring timestamps. On Windows,
-    // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
-    crate::platform::fs::permissions::make_writable(destination)?;
-    let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&source_metadata);
-    kernal_api::platform::fs::set_file_mtime(destination, mtime)?;
-    result
-}
-
-fn digest_file(path: &Path) -> io::Result<(u64, String)> {
+    perf_counters::record_hash();
     let mut file = File::open(path)?;
     let mut hasher = kernal_api::hash::Blake3Hasher::new();
     let mut buffer = [0_u8; 1024 * 1024];
@@ -416,7 +379,9 @@ fn digest_file(path: &Path) -> io::Result<(u64, String)> {
         hasher.update(&buffer[..read]);
         size = size.saturating_add(read as u64);
     }
-    Ok((size, hasher.finalize().to_hex().to_string()))
+    let finalized = hasher.finalize();
+    let digest = *finalized.as_bytes();
+    Ok((size, finalized.to_hex().to_string(), digest))
 }
 
 fn generation_digest(key_hex: &str, outputs: &[StagedOutput]) -> String {
@@ -483,7 +448,7 @@ fn validate_staged_generation(
                 "staged output size does not match its manifest",
             ));
         }
-        let (_, digest_hex) = digest_file(&path)?;
+        let (_, digest_hex, _) = digest_file(&path)?;
         if digest_hex != output.digest_hex {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -500,6 +465,12 @@ fn validate_staged_generation(
     Ok(())
 }
 
+// Production code always goes through `persist_staged_artifact_paths_with_mode`
+// (an explicit `ZCCACHE_MODE`) or, for in-memory payloads,
+// `persist_staged_artifact_payloads`. This `Auto`-mode convenience wrapper is
+// only reached by tests now that #1774 routes payload publication straight
+// into `persist_staged_generation` instead of through this function.
+#[cfg(test)]
 pub(in crate::daemon::server) fn persist_staged_artifact_paths(
     artifact_dir: &Path,
     key_hex: &str,
@@ -520,6 +491,19 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths_with_mode(
     artifact_dir: &Path,
     key_hex: &str,
     sources: &[NormalizedPath],
+    mode: MaterializationMode,
+) -> io::Result<PersistArtifactFileStats> {
+    let sources: Vec<StagedSource<'_>> = sources
+        .iter()
+        .map(|source| StagedSource::Path(source.as_path()))
+        .collect();
+    persist_staged_generation(artifact_dir, key_hex, &sources, mode)
+}
+
+fn persist_staged_generation(
+    artifact_dir: &Path,
+    key_hex: &str,
+    sources: &[StagedSource<'_>],
     mode: MaterializationMode,
 ) -> io::Result<PersistArtifactFileStats> {
     let publish_started = std::time::Instant::now();
@@ -572,20 +556,19 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths_with_mode(
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::OutputCopy(index))
                 .map_err(|error| publish_error(StagedPublishFailure::OutputCopy, error))?;
-            let (reflink, copied_bytes) = copy_output_with(source.as_path(), &destination, mode)
-                .map_err(|error| {
-                    publish_error(
-                        StagedPublishFailure::OutputCopy,
-                        io::Error::new(
-                            error.kind(),
-                            format!(
-                                "staged output copy failed: {} -> {}: {error}",
-                                source.display(),
-                                destination.display()
-                            ),
+            let (reflink, copied_bytes) = source.write_to(&destination, mode).map_err(|error| {
+                publish_error(
+                    StagedPublishFailure::OutputCopy,
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "staged output copy failed: {} -> {}: {error}",
+                            source.describe(),
+                            destination.display()
                         ),
-                    )
-                })?;
+                    ),
+                )
+            })?;
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::OutputSync(index))
                 .map_err(|error| publish_error(StagedPublishFailure::OutputDurability, error))?;
@@ -617,7 +600,7 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths_with_mode(
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::OutputHash(index))
                 .map_err(|error| publish_error(StagedPublishFailure::Hash, error))?;
-            let (size, digest_hex) = digest_file(&destination).map_err(|error| {
+            let (size, digest_hex, digest_bytes) = digest_file(&destination).map_err(|error| {
                 publish_error(
                     StagedPublishFailure::Hash,
                     io::Error::new(
@@ -635,18 +618,22 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths_with_mode(
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::DurableDigest(index))
                 .map_err(|error| publish_error(StagedPublishFailure::DurableDigest, error))?;
-            write_authoritative_blob_digest_for(&destination, &destination).map_err(|error| {
-                publish_error(
-                    StagedPublishFailure::DurableDigest,
-                    io::Error::new(
-                        error.kind(),
-                        format!(
-                            "staged output durable digest failed: {}: {error}",
-                            destination.display()
+            // #1774: reuse the digest just computed above instead of having
+            // the sidecar writer hash `destination` a second time.
+            write_authoritative_blob_digest_for_precomputed(digest_bytes, &destination)
+                .map(|digest| digest.commit())
+                .map_err(|error| {
+                    publish_error(
+                        StagedPublishFailure::DurableDigest,
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "staged output durable digest failed: {}: {error}",
+                                destination.display()
+                            ),
                         ),
-                    ),
-                )
-            })?;
+                    )
+                })?;
             outputs.push(StagedOutput {
                 index,
                 size,
@@ -908,16 +895,15 @@ pub(in crate::daemon::server) fn persist_staged_artifact_payloads(
             "cannot publish an empty staged artifact",
         ));
     }
-    let staging = tempfile::Builder::new()
-        .prefix(".staged-payloads-")
-        .tempdir_in(artifact_dir)?;
-    let mut sources = Vec::with_capacity(payloads.len());
-    for (index, payload) in payloads.iter().enumerate() {
-        let source = staging.path().join(format!("output-{index}"));
-        fs::write(&source, payload.as_slice())?;
-        sources.push(source.into());
-    }
-    persist_staged_artifact_paths(artifact_dir, key_hex, &sources)
+    // #1774: write each in-memory payload straight into the temporary
+    // generation instead of staging it to a `.staged-payloads-*` scratch
+    // file first and copying it again from there — a payload already held
+    // in memory has nowhere else useful to live before publication.
+    let sources: Vec<StagedSource<'_>> = payloads
+        .iter()
+        .map(|payload| StagedSource::Bytes(payload.as_slice()))
+        .collect();
+    persist_staged_generation(artifact_dir, key_hex, &sources, MaterializationMode::Auto)
 }
 
 #[cfg(test)]

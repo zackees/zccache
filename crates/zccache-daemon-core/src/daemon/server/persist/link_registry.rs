@@ -50,6 +50,9 @@ fn output_ids() -> &'static dashmap::DashMap<NormalizedPath, FileIdentity> {
 fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
     use std::io::Read;
 
+    #[cfg(test)]
+    super::staged_store::perf_counters::record_hash();
+
     let mut file = std::fs::File::open(path)?;
     let mut hasher = kernal_api::hash::Blake3Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -89,6 +92,19 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for(
     write_authoritative_blob_digest_for_with_cleanup(hash_source, named_as).map(|digest| {
         digest.commit();
     })
+}
+
+/// Same contract as [`write_authoritative_blob_digest_for_with_cleanup`], but
+/// for a caller that already hashed `named_as`'s bytes (e.g. staged
+/// publication's own output digest). Reusing that digest instead of hashing
+/// the file a second time is the fix for #1774: publication used to hash
+/// each output once for its own manifest and a second time here for the
+/// `.cowhash` sidecar.
+pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_precomputed(
+    digest: [u8; 32],
+    named_as: &Path,
+) -> std::io::Result<AuthoritativeBlobDigest> {
+    write_digest_sidecar(digest, named_as)
 }
 
 #[cfg(test)]
@@ -164,9 +180,24 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_with_cleanu
     hash_source: &Path,
     named_as: &Path,
 ) -> std::io::Result<AuthoritativeBlobDigest> {
+    let digest = hash_file(hash_source)?;
+    write_digest_sidecar(digest, named_as)
+}
+
+/// Shared sidecar-write body for both the hash-here and hash-already-known
+/// callers.
+///
+/// #1774: the sidecar is not fsynced. It merely mirrors the blake3 digest the
+/// manifest (or the artifact index) already records durably, so a lost
+/// sidecar after a crash costs nothing but an eviction — the next lookup
+/// re-hashes and misses. Fsyncing it on every publication bought no
+/// additional durability for that cost.
+fn write_digest_sidecar(
+    digest: [u8; 32],
+    named_as: &Path,
+) -> std::io::Result<AuthoritativeBlobDigest> {
     use std::io::Write;
 
-    let digest = hash_file(hash_source)?;
     let final_path = digest_path(named_as);
 
     // `create_new` prevents two writers from sharing a temporary file. A
@@ -191,7 +222,6 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_with_cleanu
         };
         let result = (|| {
             temp.write_all(&digest)?;
-            temp.sync_all()?;
             drop(temp);
             replace_digest_sidecar(&temp_path, &final_path)
         })();

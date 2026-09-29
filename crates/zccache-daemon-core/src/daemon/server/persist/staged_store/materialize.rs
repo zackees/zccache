@@ -1,9 +1,104 @@
 //! Independent requested-path materialization and physical-work observations.
 
-use super::copy_output_with;
+use crate::core::config::MaterializationMode;
 use std::fs;
 use std::io;
 use std::path::Path;
+
+fn copy_independent(
+    source: &Path,
+    destination: &Path,
+    mode: MaterializationMode,
+) -> io::Result<(bool, u64)> {
+    let reflink_allowed = mode != MaterializationMode::Copy && {
+        #[cfg(test)]
+        {
+            super::fault::inject(destination, super::StagedFaultPoint::MaterializeReflink).is_ok()
+        }
+        #[cfg(not(test))]
+        {
+            true
+        }
+    };
+    if reflink_allowed && kernal_api::platform::fs::reflink_file(source, destination).is_ok() {
+        return Ok((true, 0));
+    }
+    // A failed reflink probe may leave a partial destination, including
+    // platform-specific attributes. Remove it before attempting the copy tier.
+    if fs::metadata(destination).is_ok() {
+        let _ = crate::platform::fs::permissions::make_writable(destination);
+    }
+    let _ = fs::remove_file(destination);
+    #[cfg(test)]
+    super::fault::inject(destination, super::StagedFaultPoint::MaterializeCopy)?;
+    let bytes = mode.copy_file(source, destination)?;
+    Ok((false, bytes))
+}
+
+/// Independent delivery or store: a reflink (unless `COPY`) else the mode's
+/// copy tier, then writable with the source's mtime (#1683).
+fn copy_output_with(
+    source: &Path,
+    destination: &Path,
+    mode: MaterializationMode,
+) -> io::Result<(bool, u64)> {
+    let source_metadata = fs::metadata(source)?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let result = copy_independent(source, destination, mode);
+    if result.is_err() {
+        let _ = fs::remove_file(destination);
+        return result;
+    }
+    // Keep the destination writable while restoring timestamps. On Windows,
+    // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
+    crate::platform::fs::permissions::make_writable(destination)?;
+    let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&source_metadata);
+    kernal_api::platform::fs::set_file_mtime(destination, mtime)?;
+    result
+}
+
+/// One output to publish into a staged generation: either bytes already
+/// held in memory (already-materialized cache payloads) or a path to copy
+/// or reflink from (materialized compiler outputs).
+pub(in crate::daemon::server) enum StagedSource<'a> {
+    Path(&'a Path),
+    Bytes(&'a [u8]),
+}
+
+impl StagedSource<'_> {
+    pub(in crate::daemon::server) fn describe(&self) -> String {
+        match self {
+            StagedSource::Path(path) => path.display().to_string(),
+            StagedSource::Bytes(bytes) => format!("<{} in-memory bytes>", bytes.len()),
+        }
+    }
+
+    /// Writes this output straight into its generation `destination`.
+    ///
+    /// A `Bytes` source is written directly rather than staged to a
+    /// temporary file and then copied into the generation: the payload is
+    /// already resident in memory, so copying it first into a
+    /// `.staged-payloads-*` scratch file only to copy it again into the
+    /// generation duplicated the write for no benefit (#1774).
+    pub(in crate::daemon::server) fn write_to(
+        &self,
+        destination: &Path,
+        mode: MaterializationMode,
+    ) -> io::Result<(bool, u64)> {
+        match self {
+            StagedSource::Path(source) => copy_output_with(source, destination, mode),
+            StagedSource::Bytes(bytes) => {
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(destination, bytes)?;
+                Ok((false, bytes.len() as u64))
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::daemon::server) struct StagedMaterializationStats {
