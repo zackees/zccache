@@ -9,6 +9,7 @@ pub mod defender;
 pub mod error;
 /// zccache-owned host policy shared by product crates.
 pub mod host;
+pub mod key_env;
 pub mod lifecycle;
 pub mod mtime;
 pub mod path;

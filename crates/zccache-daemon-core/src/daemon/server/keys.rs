@@ -433,79 +433,56 @@ pub(super) fn normalize_request_arg(arg: &str, key_root: Option<&Path>) -> Strin
 pub(super) fn request_env_fingerprint_vars(
     client_env: Option<&[(String, String)]>,
 ) -> Vec<(&str, &str)> {
-    let mut vars: Vec<(&str, &str)> = client_env
-        .into_iter()
-        .flatten()
+    let env = client_env.unwrap_or_default();
+    // Mirror the rustc context key's CARGO_* filter (issue #396): the
+    // request-level fingerprint must drop exactly what the slow path drops,
+    // otherwise worktrees with different target-dir leaf names never reach
+    // the artifact lookup. `key_env` owns the never-keyed list (#1806).
+    let mut vars: Vec<(&str, &str)> = env
+        .iter()
         .filter_map(|(key, value)| {
             let key = key.as_str();
-            // MSVC reads these variables as extra compiler arguments (`CL`
-            // before argv, `_CL_` after it). They therefore affect both the
-            // request cache and the depgraph context even though zccache does
-            // not synthesize them into argv. Windows environment names are
-            // case-insensitive, so canonicalize their names before hashing.
-            if key.eq_ignore_ascii_case("CL") || key.eq_ignore_ascii_case("_CL_") {
-                // Added below from the final matching entry. This mirrors
-                // `Command::env` replacement semantics if an untrusted IPC
-                // payload contains duplicate case variants.
-                return None;
-            }
-            // Mirror `VOLATILE_CARGO_ENV_VARS` in `depgraph::context`: the
-            // request-level fingerprint must drop the same path-cascading
-            // CARGO_* vars the rustc context key drops, otherwise the
-            // fast-path miss/hit decision diverges from the slow-path key
-            // computation and worktrees with different target-dir leaf names
-            // never reach the artifact lookup (issue #396).
             let include = (key.starts_with("CARGO_")
                 && !crate::depgraph::is_volatile_cargo_env_var(key)
-                && key != "CARGO_MAKEFLAGS"
-                && key != "CARGO_INCREMENTAL")
-                || matches!(
-                    key,
-                    "ZCCACHE_FAST"
-                        | "ZCCACHE_SCAN_SYSTEM_HEADERS"
-                        | crate::compiler::DYLINT_CACHE_INPUT_HASH_ENV
-                );
+                && !zccache_core::key_env::is_never_keyed_env(key))
+                || zccache_core::key_env::REQUEST_CONTROL_ENV_KEYED.contains(&key);
             include.then_some((key, value.as_str()))
         })
         .collect();
-    for name in ["CL", "_CL_"] {
-        if let Some(value) = client_env.and_then(|env| {
-            env.iter()
-                .rev()
-                .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
-        }) {
-            vars.push((name, value));
-        }
-    }
+    // C/C++ output-affecting variables (CL/_CL_/INCLUDE match
+    // case-insensitively; the policy returns canonical names and last-wins
+    // values).
+    vars.extend(zccache_core::key_env::keyed_cc_env(
+        env,
+        zccache_core::key_env::CcEnvScope::Any,
+    ));
     vars.sort_unstable();
     vars
 }
 
-/// Return cache-key flags for MSVC's command-line environment variables.
+/// Return cache-key flags for the C/C++ variables that change compiler output
+/// or the include set (`key_env` allowlist, #1806).
 ///
-/// `cl.exe` reads `CL` and `_CL_` in addition to argv. Preserve their raw
-/// values rather than expanding them: the compiler remains the authority for
-/// its quoting and precedence semantics, while distinct environments cannot
-/// share a cached artifact. The names are case-insensitive on Windows.
-pub(super) fn msvc_env_key_flags(
+/// `cl.exe` reads `CL` and `_CL_` in addition to argv; gcc/clang read
+/// `CPATH`, `SOURCE_DATE_EPOCH`, `SDKROOT` and friends. Raw values are
+/// preserved: the compiler remains the authority for its own semantics, while
+/// distinct environments cannot share a cached artifact.
+pub(super) fn cc_env_key_flags(
     family: crate::compiler::CompilerFamily,
     client_env: &[(String, String)],
 ) -> Vec<String> {
-    if family != crate::compiler::CompilerFamily::Msvc {
-        return Vec::new();
-    }
-
-    let mut flags = Vec::with_capacity(2);
-    for name in ["CL", "_CL_"] {
-        if let Some(value) = client_env
-            .iter()
-            .rev()
-            .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
-        {
-            flags.push(format!("zccache:msvc-env:{name}={value}"));
+    use zccache_core::key_env::{keyed_cc_env, CcEnvScope};
+    let scope = match family {
+        crate::compiler::CompilerFamily::Msvc => CcEnvScope::Msvc,
+        crate::compiler::CompilerFamily::Gcc | crate::compiler::CompilerFamily::Clang => {
+            CcEnvScope::Gnu
         }
-    }
-    flags
+        _ => return Vec::new(),
+    };
+    keyed_cc_env(client_env, scope)
+        .into_iter()
+        .map(|(name, value)| format!("zccache:env:{name}={value}"))
+        .collect()
 }
 
 /// Key flag separating MSVC compiles by who asked for `/showIncludes`.
@@ -844,3 +821,7 @@ mod show_includes_key_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "keys_env_tests.rs"]
+mod keys_env_tests;

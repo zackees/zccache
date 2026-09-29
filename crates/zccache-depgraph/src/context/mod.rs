@@ -520,8 +520,7 @@ impl RustcCompileContext {
             .iter()
             .filter(|(k, _)| {
                 k.starts_with("CARGO_")
-                    && k != "CARGO_MAKEFLAGS"
-                    && k != "CARGO_INCREMENTAL"
+                    && !zccache_core::key_env::is_never_keyed_env(k)
                     && !is_volatile_cargo_env_var(k)
             })
             .cloned()
@@ -743,7 +742,10 @@ impl RustcCompileContext {
         // for the rationale (issue #139).
         hasher.update(b"env\0");
         for (key, val) in &self.env_vars {
-            if is_volatile_cargo_env_var(key) || key == DYLINT_CACHE_INPUT_HASH_ENV {
+            if is_volatile_cargo_env_var(key)
+                || key == DYLINT_CACHE_INPUT_HASH_ENV
+                || zccache_core::key_env::is_never_keyed_env(key)
+            {
                 continue;
             }
             hasher.update(key.as_bytes());
@@ -919,7 +921,10 @@ impl RustcCompileContext {
 
         hasher.update(b"env\0");
         for (key, val) in &self.env_vars {
-            if is_volatile_cargo_env_var(key) || key == DYLINT_CACHE_INPUT_HASH_ENV {
+            if is_volatile_cargo_env_var(key)
+                || key == DYLINT_CACHE_INPUT_HASH_ENV
+                || zccache_core::key_env::is_never_keyed_env(key)
+            {
                 continue;
             }
             hasher.update(key.as_bytes());

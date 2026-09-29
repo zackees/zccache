@@ -72,7 +72,7 @@ fn build_cc_compile_context(
     let dep_flags = parsed.dep_flags.clone();
     let mut ctx = CompileContext::from_parsed_args(parsed, compiler_hash);
     ctx.flags
-        .extend(msvc_env_key_flags(compilation.family, client_env));
+        .extend(cc_env_key_flags(compilation.family, client_env));
     // Issue #1530: a caller-passed `/showIncludes` changes what the stored
     // stdout must contain, but the parser drops the flag, so without this the
     // two shapes would share one entry.

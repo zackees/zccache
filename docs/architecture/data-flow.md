@@ -206,6 +206,16 @@ its own:
   of large system libraries. Revisit if a real-world stale-bin report
   lands.
 
+## Environment Keying Policy (#1806)
+
+`zccache_core::key_env` owns which environment variables reach a key. C/C++
+compiles key a per-family allowlist (`CPATH`, `SOURCE_DATE_EPOCH`, `SDKROOT`,
+`INCLUDE`, `CL`, ...) through `cc_env_key_flags` and the request fingerprint.
+A never-keyed list (`SOLDR_*`, `ZCCACHE_*` except the three request-control
+vars, `CI`, `GITHUB_*`, `TERM`, `CARGO_TERM_*`, jobserver vars) is dropped from
+both the request fingerprint and the rustc context key. Other `CARGO_*`
+variables stay keyed until env-dep tracking replaces the blanket rule.
+
 ## Explicit Rustc Host Policy
 
 `zccache_compiler::parse_rustc_invocation_with_host` runs the existing Rustc
