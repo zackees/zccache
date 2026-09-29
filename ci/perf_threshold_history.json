@@ -1,5 +1,199 @@
 [
   {
+    "commit": "0174df259f4662f93227c9af92188d4592781a5d",
+    "paths": [
+      "ci/perf_floor.py",
+      "ci/perf_guard.py"
+    ],
+    "subject": "perf(guard): ratchet floors to release-profile distributions (#1773)",
+    "threshold_lines": [
+      "+WARM_RATIO_FLOORS: dict[tuple[str, str, str], float] = {",
+      "+    not in `WARM_RATIO_FLOORS` -- e.g. emscripten warm rows, which this",
+      "+    return WARM_RATIO_FLOORS.get((benchmark, scenario, baseline))"
+    ]
+  },
+  {
+    "commit": "0496ab06cae5b16d961f43c314d81d02e51809b4",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "feat(materialize): AUTO = reflink-else-copy; explicit REFLINK_OR_LINK_OR_COPY for benchmarks (#1792) (#1794)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "1c4b95f2aff1491a6218310ec657d033f5e57080",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "fix(perf-local): unblock the local perf gate; sqlite-link cells pass on main (#1601) (#1712)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "f979115dcb6a56287c2f1132faa758570033c8fe",
+    "paths": [
+      "ci/perf_floor.py",
+      "ci/perf_guard.py"
+    ],
+    "subject": "fix(perf-guard): hold fixed-overhead cold floors to a runner-invariant added-time budget (#1445) (#1705)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "03d6ebb13cc0c18cdc9626eced5c68bf973c9d57",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "refactor: route platform, process, IPC and async through kernal-api 0.1.17 from crates.io (#1600)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "d8890ab2212bd4236ba23763c97759d632073a00",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "perf: remove top cold and startup regressions (#1512)",
+    "threshold_lines": [
+      "-    warm_limits = thresholds.get(\"maximum_warm_ms\")",
+      "-    if not isinstance(thresholds.get(\"minimum_speedup\"), (int, float)):",
+      "-        raise ValueError(\"threshold manifest minimum_speedup must be numeric\")",
+      "-    staged_limits = thresholds.get(\"maximum_staged_overhead_ms_per_publication\")",
+      "-LOCAL_MIN_SPEEDUP = float(PERF_THRESHOLDS[\"minimum_speedup\"])",
+      "-LOCAL_MAX_WARM_MS = PERF_THRESHOLDS[\"maximum_warm_ms\"]",
+      "-LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION = PERF_THRESHOLDS[\"maximum_staged_overhead_ms_per_publication\"]"
+    ]
+  },
+  {
+    "commit": "d805279664571beff5831c04f18104698922da9c",
+    "paths": [
+      "PERF.md"
+    ],
+    "subject": "docs(perf): correct the kind-1 deadline example \u2014 it is not kind 1 (#1456)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "58a39e27431b80bb4341318f02dfc096edcfd428",
+    "paths": [
+      "PERF.md"
+    ],
+    "subject": "docs(perf): classify a test deadline before choosing its number (#1455)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "8b66d21920becf221e3bb5fa8bc922bad34fc9f2",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci(perf): report the wall-clock margin a failed floor missed by (#1449)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "ffd83e280c9c1dbecb6eb36692810001e3b8a989",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci(perf): show every attempt ratio when a perf floor fails (#1448)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "5e5fec31356760793d62cd8641d6abc8bbc4854e",
+    "paths": [
+      "PERF.md"
+    ],
+    "subject": "fix(perf): preserve standalone fixture across resume (#1413)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "36ac69cbbeec14620d0e683c7f841d0e03022410",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "fix(docker): add incremental storage gc (#1374)",
+    "threshold_lines": [
+      "-    \"maximum_staged_overhead_ms_per_publication\"",
+      "+LOCAL_MAX_STAGED_OVERHEAD_MS_PER_PUBLICATION = PERF_THRESHOLDS[\"maximum_staged_overhead_ms_per_publication\"]"
+    ]
+  },
+  {
+    "commit": "65ce5fd9855782dec4f296ce50dc87eb98a8551b",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "fix(perf-local): let the soldr builder rewrite its Cargo.lock (#1306)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "a16f10e2c3813f0582e0e51eb3b9932c727435f1",
+    "paths": [
+      "ci/perf_local.py",
+      "ci/perf_thresholds.json"
+    ],
+    "subject": "fix: harden embedded cache durability and source safety (#1185 rebased) (#1193)",
+    "threshold_lines": [
+      "+    staged_limits = thresholds.get(\"maximum_staged_overhead_ms_per_publication\")",
+      "-LOCAL_MAX_STAGED_OVERHEAD_MS = int(PERF_THRESHOLDS[\"maximum_staged_overhead_ms\"])",
+      "+    \"maximum_staged_overhead_ms_per_publication\"",
+      "-  \"maximum_staged_overhead_ms\": 15000,",
+      "+  \"maximum_staged_overhead_ms_per_publication\": {"
+    ]
+  },
+  {
+    "commit": "72e0afa94d498af3938b59e8e41364c0fc4b7865",
+    "paths": [
+      "PERF.md",
+      "ci/perf_guard.py"
+    ],
+    "subject": "feat(phase-0): guards & telemetry burn-down wave (#1154 phase 0) (#1189)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "3b02f11f6619cdd94bfce6d6a5f2d3aabbb473fd",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "Fix C++ dependency policy, warm-cache deadlock, and perf watchdog (#1151)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "cfa782a9fcf0eb924edeef87966be96e32c7231d",
+    "paths": [
+      "PERF.md",
+      "ci/perf_local.py"
+    ],
+    "subject": "perf: baseline soldr-embedded mixed-language paths (#1121)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "ae0d7a536403128f67a407bd59eccf1d84488c13",
+    "paths": [
+      "PERF.md"
+    ],
+    "subject": "perf: add standalone Linux Docker campaign (#1116) (#1120)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "3ae45bf9c2a9b4e59a76d283f961e3c47fbec9cc",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "perf(ci): retain full attempt distributions (#1118)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "7abfb6a7dc5b5647e0070c06ee7efacaec728331",
+    "paths": [
+      "ci/perf_local.py"
+    ],
+    "subject": "ci: run application suites in local pre-pr harness (#1110)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "57ce88a191dfb40bf285fa3797166f12cfc881f1",
+    "paths": [
+      "PERF.md"
+    ],
+    "subject": "perf(ci): audit threshold history and enforce ratchets (#1109)",
+    "threshold_lines": []
+  },
+  {
     "commit": "c65989907abf2b46857e19cb2523b818bc4a887d",
     "paths": [
       "PERF.md",
@@ -26,6 +220,14 @@
       "+  \"maximum_warm_ms\": {",
       "+  \"maximum_staged_overhead_ms\": 15000,"
     ]
+  },
+  {
+    "commit": "ff234278a936aaff57b6c3f6d02b3afaa4e2c66a",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "fix(ci): run only registered benchmark stats tests (#1100)",
+    "threshold_lines": []
   },
   {
     "commit": "772be9ae638ca1469973019be98157c6d357c7d0",
@@ -64,11 +266,35 @@
     "threshold_lines": []
   },
   {
+    "commit": "5b89a8126be386360ad3be237feb66f16d1ced0b",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "Calibrate C archive cold perf floor (#918)",
+    "threshold_lines": []
+  },
+  {
     "commit": "4690900ab55b9f99e5ddc7d4c91599ecf47fe976",
     "paths": [
       "ci/perf_local.py"
     ],
     "subject": "reuse build metadata for cargo check",
+    "threshold_lines": []
+  },
+  {
+    "commit": "199e3f7e1bd88182ad24c87b30d83061c7fa6a50",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "perf(diag): emit zccache_cc_miss_profile on non-rustc cold miss (refs #535) (#536)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "3770a2d8c68fdb08105b09d6aa08d51a082977fb",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "perf(guard): gate rust-workspace-link Cold ratio (issue #517) (#519)",
     "threshold_lines": []
   },
   {
@@ -221,6 +447,118 @@
       "PERF.md"
     ],
     "subject": "feat(perf): add perf-rust-cluster.yml scenario sweep (mirrors soldr's pattern) (#326)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "359811c8ff0e0574cb300d3430f00fb7c0d329e5",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "perf(perf-guard): split benchmarks into per-test workflow steps (#259)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "11423f2e0b17c4fa4919416a5ac1f597d76328a4",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "fix(perf-guard): handle rounded zero timings (#254)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "1913e747f9fb940edb5c7e45136b38ae3a1d8166",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "fix(perf-guard): split C++ sibling remap floors (#249)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "287632ac0dd5acdcc35d1e2178b7b753dc019b21",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "feat(bench, perf-guard): report per-call latency and absolute times (#243)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "b35a871e8b2bd30f90ee94d40cc7e8c9dcd57c96",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "feat(bench): add Emscripten benchmarks + path-remap-auto coverage (#242)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "e81b944a70dce8aeeba64ff1396959b6c6e7cf15",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "feat: auto-throttle compiler child priority (#236)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "b456993a8eca002ca7f69741a2bca54a62b884b3",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: run perf guard compilers at benchmark priority (#233)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "e9054bafd8a777276680e506a482f4af74181f7f",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: print perf guard benchmark summary before failing (#228)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "6b6f005bafb2c41a1ae9d6cdc052db2cc993b1c4",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: relax perf guard cold floors (#223)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "badf3c6617cc89c54a4fc705596f6f6a83ba7788",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: share perf guard benchmark binary (#221)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "a9efc1ccdd7a132fbe6feeae8ecc4a12df1dbd2c",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: split perf guard by language (#212)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "1124a2d06b0766b4202da649de1f5ca1926feb14",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: publish perf guard json artifacts (#211)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "9acbb2260ee6b8d862f8ca519b46de0778336d74",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: gate perf guard against pinned sccache (#208)",
+    "threshold_lines": []
+  },
+  {
+    "commit": "51925391e830254869d89c0b92bd7a9a8c9ff7e2",
+    "paths": [
+      "ci/perf_guard.py"
+    ],
+    "subject": "ci: add compiler perf regression guard (#207)",
     "threshold_lines": []
   }
 ]
