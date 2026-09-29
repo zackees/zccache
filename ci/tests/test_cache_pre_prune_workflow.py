@@ -197,7 +197,9 @@ def test_lock_transition_forecast_selects_only_measured_buildcache_fallbacks() -
     assert plan["projectedPeakBytes"] == 8_733_248_839
 
 
-def test_transition_forecast_reserves_perf_guard_profile_when_row_is_absent() -> None:
+def test_transition_forecast_ignores_required_profiles_that_no_cache_carries() -> None:
+    """A hardcoded profile digest with no listed cache is an orphan from an older
+    toolchain; charging its minimum on every push failed pre-prune closed."""
     script = (
         "const {planLockTransitionPrePrune}=require(process.argv[1]);"
         "const p=planLockTransitionPrePrune([],{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},1_000_000_000,1_000_000_000);"
@@ -211,7 +213,41 @@ def test_transition_forecast_reserves_perf_guard_profile_when_row_is_absent() ->
     )
     plan = json.loads(result.stdout)
     assert plan["ok"] is True
-    assert plan["estimatedNewBytes"] >= 400_000_000
+    # Only the native-Python reserve remains.
+    assert plan["estimatedNewBytes"] == 1_120_000_000
+
+
+def test_no_lock_change_deletes_orphaned_old_lock_build_caches() -> None:
+    """Live 2026-09-29 shape: the lock is unchanged, but toolchain digests moved.
+    Old-lock build caches whose family has a current-lock generation under a new
+    digest are orphans: delete them and forecast no re-seed for them."""
+    caches = [
+        {"id": 1, "key": "setup-soldr-buildcache-v2-linux-x64-67ddfadb5b3c0042-check-linux-x86-musl-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 222_818_750, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 2, "key": "setup-soldr-buildcache-v2-linux-x64-f87c9084b4c91b6a-check-linux-x86-musl-2222222222222222", "ref": "refs/heads/main", "size_in_bytes": 205_000_000, "created_at": "2026-01-02T00:00:00Z"},
+        {"id": 3, "key": "setup-soldr-buildcache-v2-linux-x64-73ae636dd0fd865d-dylint-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 240_411_914, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 4, "key": "setup-soldr-buildcache-v2-linux-x64-223016ae85f4db41-dylint-2222222222222222", "ref": "refs/heads/main", "size_in_bytes": 229_000_000, "created_at": "2026-01-02T00:00:00Z"},
+        # Old-lock with no current generation in its family: not an orphan.
+        {"id": 5, "key": "setup-soldr-buildcache-v2-linux-arm64-aaaaaaaaaaaaaaaa-solo-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 50, "created_at": "2026-01-01T00:00:00Z"},
+    ]
+    total = sum(cache["size_in_bytes"] for cache in caches)
+    script = (
+        "const fs=require('node:fs');"
+        "const {planLockTransitionPrePrune}=require(process.argv[1]);"
+        "const {caches,total}=JSON.parse(fs.readFileSync(0,'utf8'));"
+        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(caches,{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},total,total)));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps({"caches": caches, "total": total}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["ok"] is True
+    assert plan["deleteIds"] == [1, 3]
+    # Survivors, plus id 5's re-seed and the native-Python reserve.
+    assert plan["projectedPeakBytes"] == 205_000_000 + 229_000_000 + 50 + 50 + 1_120_000_000
 
 
 def test_transition_forecast_does_not_double_reserve_existing_native_python_f9() -> None:
@@ -334,7 +370,9 @@ def test_transition_forecast_keeps_case_sensitive_cook_suffix_profiles_distinct(
     plan = json.loads(result.stdout)
     assert plan["ok"] is True
     assert plan["staleCookIds"] == [1]
-    assert plan["estimatedNewBytes"] == 3_542_946_930
+    # 100 B cook re-seed + native-Python reserve. No build-profile minimums:
+    # none of their shapes is listed, so none will be re-seeded.
+    assert plan["estimatedNewBytes"] == 1_120_000_100
 
 
 def test_windows_lf_cache_is_stale_when_main_writers_normalize_to_crlf() -> None:

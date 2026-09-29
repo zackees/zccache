@@ -243,10 +243,22 @@ function buildCacheShape(parts) {
   return `${parts.os}\u0000${parts.arch}\u0000${parts.digest}\u0000${parts.suffix}`;
 }
 
+function buildCacheFamily(parts) {
+  return `${parts.os}\u0000${parts.arch}\u0000${parts.suffix}`;
+}
+
 function profileBytes(rows, parseParts, currentHashes, shapeFor, requiredProfiles = []) {
   const groups = new Map();
+  // A required minimum only applies to a shape that is still produced, i.e.
+  // listed now. A hardcoded digest that no listed cache carries is an
+  // orphan from an older toolchain/config and will never be re-seeded.
+  const listedShapes = new Set(rows
+    .map((cache) => parseParts(cache.key))
+    .filter(Boolean)
+    .map(shapeFor));
   for (const profile of requiredProfiles) {
     const shape = shapeFor(profile);
+    if (!listedShapes.has(shape)) continue;
     groups.set(shape, { current: false, maxBytes: profile.minimumBytes });
   }
   for (const cache of rows) {
@@ -322,6 +334,17 @@ function planLockTransitionPrePrune(
     .sort((a, b) => a - b);
   const selectedBuilds = staleBuilds.filter((cache) => selectedBuildCacheIds.includes(cache.id));
   const retiredBuilds = staleBuilds.filter((cache) => isRetiredMainKey(cache.key));
+  // An old-lock build cache whose family (os, arch, suffix) already has a
+  // current-lock generation under any digest is orphaned: its producer now
+  // writes the current shape. Delete it rather than forecasting a re-seed.
+  const currentBuildFamilies = new Set(buildRows
+    .map((cache) => setupSoldrBuildCacheKeyParts(cache.key))
+    .filter((parts) => currentHashes.get(parts.os).has(parts.lockHash))
+    .map(buildCacheFamily));
+  const orphanedBuilds = staleBuilds.filter((cache) =>
+    currentBuildFamilies.has(buildCacheFamily(setupSoldrBuildCacheKeyParts(cache.key))),
+  );
+  const orphanedBuildIds = new Set(orphanedBuilds.map((cache) => cache.id));
 
   const cookEstimate = profileBytes(
     mainRows.filter((cache) => cache.key.startsWith("cook-base-v2-") && !isRetiredMainKey(cache.key)),
@@ -336,7 +359,7 @@ function planLockTransitionPrePrune(
     (parts) => `${parts.format}\u0000${parts.os}\u0000${parts.arch}\u0000${parts.digest}`,
   );
   const buildEstimate = profileBytes(
-    buildRows.filter((cache) => !isRetiredMainKey(cache.key)),
+    buildRows.filter((cache) => !isRetiredMainKey(cache.key) && !orphanedBuildIds.has(cache.id)),
     setupSoldrBuildCacheKeyParts,
     currentHashes,
     buildCacheShape,
@@ -359,7 +382,9 @@ function planLockTransitionPrePrune(
   const nativePythonReserve = hasCurrentNativePythonF9
     ? 0
     : Math.max(0, NATIVE_PYTHON_F9_RESERVE_BYTES - nativePythonObservedBytes);
-  const deletedCaches = [...staleCooks, ...staleRegistries, ...selectedBuilds, ...retiredBuilds];
+  const deletedCaches = [...new Map([
+    ...staleCooks, ...staleRegistries, ...selectedBuilds, ...retiredBuilds, ...orphanedBuilds,
+  ].map((cache) => [cache.id, cache])).values()];
   const deletedBytes = deletedCaches
     .reduce((sum, cache) => sum + (Number(cache.size_in_bytes) || 0), 0);
   const newBytes = cookEstimate + registryEstimate + buildEstimate + nativePythonReserve;
