@@ -159,6 +159,12 @@ fn sibling_floor_raises_every_mode_without_touching_the_cache_object() {
             at(OBJECT_SECS),
             "{mode}: the sibling floor rewrote the cache object"
         );
+        // A raised hit is independent and writable in every mode, so rustc's
+        // read-only refusal (#1791) cannot apply to it either.
+        assert!(
+            !crate::platform::fs::identity::same_file(&out, &cache).unwrap(),
+            "{mode}: a floor-raised output must not share the cache inode"
+        );
         vec![mtime(&out)]
     });
 }

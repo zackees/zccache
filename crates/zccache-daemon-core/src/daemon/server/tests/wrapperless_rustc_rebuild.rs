@@ -108,6 +108,14 @@ fn hit_then_wrapperless_rebuild(
     std::fs::create_dir_all(&artifact_dir).unwrap();
     let mut delivered = Vec::new();
     let mut any_shared = false;
+    let mut all_shared = true;
+    // Stage every blob first, then deliver both interfaces in ONE batch, as a
+    // compile hit does. Delivering them one call at a time let the first
+    // output's batch stamp (`now()`) become a "newer sibling" of the second
+    // blob, so the sibling floor (#1771) rightly detached the second output as
+    // an independent, writable file and rustc's read-only refusal (#1791) no
+    // longer applied to it.
+    let mut blobs = Vec::new();
     for (index, output) in outputs.iter().enumerate() {
         let original = std::fs::read(output).unwrap();
         let staged_source = root.join(format!("staged-{index}"));
@@ -118,15 +126,25 @@ fn hit_then_wrapperless_rebuild(
             .unwrap()
             .unwrap()
             .remove(0);
-        let target = NormalizedPath::from(output.as_path());
-        write_payloads_par_with_mtime_floor_and_policies_observed(
-            &[&target],
-            &[CachedPayload::File(blob.clone())],
-            &Vec::<NormalizedPath>::new(),
-            &[crate::compiler::DeliveryPolicy::HardlinkEligible],
-            mode,
-        )
-        .unwrap();
+        blobs.push((blob, original));
+    }
+    let targets: Vec<NormalizedPath> = outputs
+        .iter()
+        .map(|output| NormalizedPath::from(output.as_path()))
+        .collect();
+    let payloads: Vec<CachedPayload> = blobs
+        .iter()
+        .map(|(blob, _)| CachedPayload::File(blob.clone()))
+        .collect();
+    write_payloads_par_with_mtime_floor_and_policies_observed(
+        &targets,
+        &payloads,
+        &Vec::<NormalizedPath>::new(),
+        &vec![crate::compiler::DeliveryPolicy::HardlinkEligible; targets.len()],
+        mode,
+    )
+    .unwrap();
+    for (output, (blob, original)) in outputs.iter().zip(blobs) {
         let shared = crate::platform::fs::identity::same_file(output, &blob).unwrap();
         if shared && !kernal_api::platform::host::target_is_windows() && !privileged(root) {
             assert!(
@@ -144,8 +162,16 @@ fn hit_then_wrapperless_rebuild(
             );
         }
         any_shared |= shared;
+        all_shared &= shared;
         delivered.push((blob, original));
     }
+    // The Windows expectation below is only meaningful when rustc sees every
+    // interface as a read-only hardlink; a mix would make it depend on which
+    // output rustc checks first.
+    assert_eq!(
+        any_shared, all_shared,
+        "{mode}: the interfaces must be delivered all shared or all independent"
+    );
 
     // A source change newer than every recorded fingerprint forces cargo to
     // rerun rustc over the same output paths.
