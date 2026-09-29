@@ -112,6 +112,9 @@ jobs:
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
+          # Full-parallel compile on a loaded hosted runner can take >2 s to
+          # get the broker's first response (zackees/soldr#3449).
+          SOLDR_BROKER_FIRST_RESPONSE_MS: "30000"
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
         run: |

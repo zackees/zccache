@@ -100,6 +100,9 @@ jobs:
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
           SOLDR_TARGET_BLOCK_FREE_GB: "2"
+          # Full-parallel compile on a loaded hosted runner can take >2 s to
+          # get the broker's first response (zackees/soldr#3449).
+          SOLDR_BROKER_FIRST_RESPONSE_MS: "30000"
           # Compile-only (`--no-run`): no test executes here, so the #1532
           # serialization that protects timing-sensitive tests does not apply.
           # CARGO_BUILD_JOBS/SOLDR_JOBS stay unset so the build uses every core.
