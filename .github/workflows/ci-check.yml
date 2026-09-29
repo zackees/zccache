@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Wait for current-main cache pre-prune
         uses: ./.github/actions/wait-cache-pre-prune
-      - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+      - uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1 # v0.9.82
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           # Local act runs (bosn; pull_request events) save fully; GitHub keeps
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Wait for current-main cache pre-prune
         uses: ./.github/actions/wait-cache-pre-prune
-      - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+      - uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1 # v0.9.82
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}

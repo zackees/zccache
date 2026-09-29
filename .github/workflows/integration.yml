@@ -70,7 +70,7 @@ jobs:
       - name: Wait for current-main cache pre-prune
         uses: ./.github/actions/wait-cache-pre-prune
       - uses: astral-sh/setup-uv@v6
-      - uses: zackees/setup-soldr@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+      - uses: zackees/setup-soldr@a07bab94f16124b5c6857b137a237a53a61e06d1 # v0.9.82
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           # Local act runs (bosn; pull_request events) save fully; GitHub keeps
@@ -119,7 +119,7 @@ jobs:
           soldr cargo test --workspace --features "$ZCCACHE_INTEGRATION_FEATURES" --no-fail-fast --no-run
           soldr cargo build -p zccache --features ci-bin --bin zccache-ci
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@4df8db93438594f50505574d9dc8117505d33362 # v0.9.80
+        uses: zackees/setup-soldr/cleanup@a07bab94f16124b5c6857b137a237a53a61e06d1 # v0.9.82
       - name: Remove seeded runtime journals before tests
         shell: bash
         env:
