@@ -56,6 +56,20 @@
 use super::*;
 use kernal_api::platform::fs::FileTime;
 
+/// Whether the caller applies a batch policy after delivering, which decides
+/// whether the per-file sibling floor has anything left to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::daemon::server) enum SiblingFloorPass {
+    /// Nothing follows: the sibling floor decides the final mtime, and a raised
+    /// hit is delivered independently so the shared blob is never rewritten.
+    PerFile,
+    /// [`apply_batch_policy`] runs after delivery and stamps every output to at
+    /// least its `now()` seed, which is never below a sibling's mtime, so the
+    /// per-file floor could not change the final value. It is skipped: the
+    /// hit keeps its hardlink and saves the `read_dir` of the output directory.
+    BatchFollows,
+}
+
 /// The mtime a hit's output must carry, and whether a floor raised it.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::daemon::server) struct HitMtime {
@@ -77,8 +91,15 @@ pub(in crate::daemon::server) struct HitMtime {
 pub(in crate::daemon::server) fn resolve_hit_mtime(
     out_path: &Path,
     cache_file: &Path,
+    pass: SiblingFloorPass,
 ) -> std::io::Result<HitMtime> {
     let object = FileTime::from_last_modification_time(&std::fs::metadata(cache_file)?);
+    if pass == SiblingFloorPass::BatchFollows {
+        return Ok(HitMtime {
+            mtime: object,
+            raised: false,
+        });
+    }
     // A directory that cannot be listed degrades to plain preservation.
     Ok(
         match sibling_floor_above(out_path, object).unwrap_or(None) {

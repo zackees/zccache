@@ -495,11 +495,17 @@ three modes for a single-file C hit, a multi-source C hit and a rustc hit.
 | `NativeFreshHit` | batch materializer, C/C++/Emscripten/link/exec | `now()` seed only; recorded inputs are not statted (#1770) |
 | `RustcInputFloor` | batch materializer, rustc | `now()` seed plus the newest recorded input (#599); the seed is contested, see #1158 |
 
-Where a floor raises the mtime it does so in every mode, and the raised
-output is always an independent file: a hit whose floor is above the cache
-object's mtime skips the hardlink tier (the same rule that already detached a
-same-inode output), so `LINK` never rewrites a blob's mtime for the per-file
-floor. The batch policies still stamp a hardlinked output in place, which
+Where a floor raises the mtime it does so in every mode. Consumers that
+deliver without a batch floor afterwards (link, exec, multi-source C, cached
+artifact restore) get `SiblingFloorPass::PerFile`: a hit whose sibling floor is
+above the cache object's mtime skips the hardlink tier and is delivered as an
+independent file (the same rule that already detached a same-inode output), so
+under `LINK` a floor-raised per-file hit is delivered as a copy and `LINK`
+hardlinks less when siblings materialize out of order. Compile hits go through
+the batch materializer, which stamps every output afterwards, so they use
+`SiblingFloorPass::BatchFollows`: the per-file floor is skipped entirely (it
+could not change the final mtime), the hit keeps its hardlink and saves the
+`read_dir`. The batch policies still stamp a hardlinked output in place, which
 changes the shared blob's mtime under `LINK` (#1819); that behaviour is
 unchanged and left to the #1158 decision. Out of scope here: recording the
 object mtime in the manifest, and the same rule for `zccache warm`, rust-plan

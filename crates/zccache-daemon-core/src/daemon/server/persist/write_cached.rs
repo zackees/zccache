@@ -161,6 +161,7 @@ pub(in crate::daemon::server) fn materialize_cached_file_with_mode(
         delivery,
         mode,
         force_observation,
+        SiblingFloorPass::PerFile,
     )
 }
 
@@ -170,6 +171,7 @@ pub(in crate::daemon::server) fn materialize_verified_cached_file_observed(
     delivery: crate::compiler::DeliveryPolicy,
     mode: MaterializationMode,
     force_observation: bool,
+    pass: SiblingFloorPass,
 ) -> std::io::Result<StagedMaterializationStats> {
     // A legacy cache-file hit can restore a Cargo build-script executable. Hold
     // the same exclusion as staged delivery through every materialization tier:
@@ -184,6 +186,7 @@ pub(in crate::daemon::server) fn materialize_verified_cached_file_observed(
             delivery,
             mode,
             force_observation,
+            pass,
         )
     };
     if result.is_ok() {
@@ -198,6 +201,7 @@ fn materialize_verified_cached_file_tiers(
     delivery: crate::compiler::DeliveryPolicy,
     mode: MaterializationMode,
     force_observation: bool,
+    pass: SiblingFloorPass,
 ) -> std::io::Result<StagedMaterializationStats> {
     let staged = is_staged_artifact_path(cache_file);
     let observe = force_observation || staged;
@@ -229,12 +233,12 @@ fn materialize_verified_cached_file_tiers(
             // copy tier gives it, sibling floor included, so a mode switch
             // (LINK -> COPY) cannot leave it older than its siblings
             // (#466/#467).
-            let hit = resolve_hit_mtime(out_path, cache_file)?;
+            let hit = resolve_hit_mtime(out_path, cache_file, pass)?;
             detach_with_floored_mtime(out_path, cache_file, hit.mtime, mode)?;
             return Ok(observed(0, 0, 1, bytes));
         }
         crate::platform::fs::permissions::set_cache_blob_sealed(cache_file, readonly_enabled())?;
-        let hit = resolve_hit_mtime(out_path, cache_file)?;
+        let hit = resolve_hit_mtime(out_path, cache_file, pass)?;
         if hit.raised {
             let bytes = std::fs::metadata(cache_file)?.len();
             detach_with_floored_mtime(out_path, cache_file, hit.mtime, mode)?;
@@ -248,7 +252,7 @@ fn materialize_verified_cached_file_tiers(
     // by the sibling floor. A raised hit cannot share the cache inode, so the
     // hardlink tier below is skipped for it, exactly as the same-inode branch
     // above detaches instead of rewriting the shared blob.
-    let hit = resolve_hit_mtime(out_path, cache_file)?;
+    let hit = resolve_hit_mtime(out_path, cache_file, pass)?;
     let caps = delivery_caps(mode, cache_file, out_path);
     // The reflink decision never depends on the link count, so a successful
     // clone costs no link-count stat.
@@ -474,6 +478,18 @@ pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
     delivery: crate::compiler::DeliveryPolicy,
     mode: MaterializationMode,
 ) -> MaterializationResult<StagedMaterializationStats> {
+    write_cached_payload_with_floor(out_path, payload, delivery, mode, SiblingFloorPass::PerFile)
+}
+
+/// [`write_cached_payload_with_policy_stats`] told whether a batch floor
+/// follows delivery (see [`SiblingFloorPass`]).
+fn write_cached_payload_with_floor(
+    out_path: &Path,
+    payload: &CachedPayload,
+    delivery: crate::compiler::DeliveryPolicy,
+    mode: MaterializationMode,
+    pass: SiblingFloorPass,
+) -> MaterializationResult<StagedMaterializationStats> {
     match payload {
         CachedPayload::Bytes(data) => {
             // Inline payloads can also be executable outputs. Keep their direct
@@ -487,7 +503,7 @@ pub(in crate::daemon::server) fn write_cached_payload_with_policy_stats(
         }
         CachedPayload::File(path) => {
             verify_registered_blob(path).map_err(|error| classify_cache_read_error(path, error))?;
-            materialize_verified_cached_file_observed(out_path, path, delivery, mode, false)
+            materialize_verified_cached_file_observed(out_path, path, delivery, mode, false, pass)
                 .map_err(|error| classify_file_materialization_error(out_path, path, error))
         }
     }
@@ -709,12 +725,22 @@ where
                     )
                     .map_err(|error| classify_file_materialization_error(out, path, error))
                 }
-                CachedPayload::Bytes(_) => {
-                    write_cached_payload_with_policy_stats(out, payload, policy, mode)
-                }
+                CachedPayload::Bytes(_) => write_cached_payload_with_floor(
+                    out,
+                    payload,
+                    policy,
+                    mode,
+                    SiblingFloorPass::BatchFollows,
+                ),
             }
         } else {
-            write_cached_payload_with_policy_stats(out, payload, policy, mode)
+            write_cached_payload_with_floor(
+                out,
+                payload,
+                policy,
+                mode,
+                SiblingFloorPass::BatchFollows,
+            )
         }
     };
     let observed = if targets.len() < PAR_WRITE_THRESHOLD {

@@ -187,3 +187,36 @@ fn per_file_hit_without_a_floor_keeps_the_object_mtime_in_every_mode() {
         vec![mtime(&out)]
     });
 }
+
+/// A batch hit (compile hit, rustc or C) keeps its hardlink under LINK even
+/// when a newer sibling exists: the batch floor stamps the output afterwards
+/// anyway, so the per-file floor is skipped (`SiblingFloorPass::BatchFollows`)
+/// instead of demoting the hit to a copy. Measured on the rustc bench, the
+/// demotion cut warm LINK hardlinks from 500 to 5 of 750 deliveries.
+#[test]
+fn batch_hit_keeps_its_hardlink_when_a_newer_sibling_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = blob(dir.path(), "rlib-cache");
+    let out = dir.path().join("target/debug/deps/libdependent.rlib");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    if !fs_caps_raw(&cache, &out).hardlink {
+        eprintln!("SKIP: no hardlinks on this volume");
+        return;
+    }
+    with_mtime(&out.with_file_name("libdep.rlib"), 1_500_000_000);
+    let seed = secs_to_time(2_000_000_000);
+    write_payloads_par_with_mtime_floor_and_policies_observed_at(
+        &[&out],
+        &[CachedPayload::File(cache.clone().into())],
+        &Vec::<PathBuf>::new(),
+        &[DeliveryPolicy::HardlinkEligible],
+        MaterializationMode::Link,
+        seed,
+    )
+    .unwrap();
+    assert!(
+        crate::platform::fs::identity::same_file(&out, &cache).unwrap(),
+        "a batch hit must stay hardlinked under LINK"
+    );
+    assert_eq!(mtime(&out), at(2_000_000_000));
+}
