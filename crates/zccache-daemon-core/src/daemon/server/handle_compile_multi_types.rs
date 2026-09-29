@@ -7,7 +7,10 @@ pub(in crate::daemon::server) fn materialize_multi_hit(
     payloads: &[CachedPayload],
     mode: MaterializationMode,
 ) -> MaterializationResult<StagedMaterializationStats> {
-    write_payloads_par_observed(targets, payloads, mode)
+    // Multi-source hits are C/C++ objects: LINK may share their inodes (#1764).
+    write_payloads_par_with_delivery(targets, payloads, mode, |out| {
+        native_output_delivery(mode, out)
+    })
 }
 
 fn invalidate_graph_after_blob_loss(

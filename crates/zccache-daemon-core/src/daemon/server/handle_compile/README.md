@@ -17,5 +17,6 @@ Split-out modules from the original `handle_compile.rs`. The compile pipeline is
 
 Tests live in `cached_hit.rs::tests` (mtime preservation, materialization shape),
 `cached_hit_output_path_tests.rs` (a C/C++ hit writes the requested `-o`, rustc
-keeps its observed primary suffix), `miss_store_tests.rs` (artifact
+keeps its observed primary suffix), `cached_hit_link_tests.rs` (`ZCCACHE_MODE=LINK`
+hardlinks C/C++ objects and PCH; every other mode does not, #1764), `miss_store_tests.rs` (artifact
 publication), and `pipeline/` (phase wiring and request preparation).

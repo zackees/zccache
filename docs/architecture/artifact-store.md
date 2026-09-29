@@ -419,9 +419,24 @@ disables read-only enforcement. Neither setting adds an IPC roundtrip.
 |---|---|
 | `AUTO` (default) | Rust (rustc) outputs: reflink, else copy; never shares the cache file's inode (#1792). Outputs of every other compiler or tool: the full `REFLINK_OR_LINK_OR_COPY` chain (`for_non_rustc_outputs`). Why Rust: a hardlinked hit is read-only, and rustc refuses to rebuild over a read-only `.rmeta`/`.rlib` when it runs outside zccache (#1791). |
 | `REFLINK_OR_LINK_OR_COPY` | Reflink, else hardlink (only outputs whose delivery policy allows sharing an inode), else copy: the full tier order above (the pre-#1792 `AUTO`). For hosts where every writer of the target dir goes through zccache; the published benchmarks and Perf Guard run under it. |
-| `LINK` | Hardlink eligible outputs, never clone them. Outputs the policy keeps independent take reflink-else-copy. |
+| `LINK` | Hardlink eligible outputs, never clone them. Eligible means Rust `.rmeta`/`.rlib` and, only under `LINK`, C/C++ objects and PCH/modules (#1764, below). Outputs the policy keeps independent take reflink-else-copy. |
 | `COPY` | Always an independent, writable byte copy that owns its blocks. Never probes the volume, and writes the bytes itself: `std::fs::copy` uses `copy_file_range`, which btrfs/XFS may satisfy with a clone. |
 | `REFLINK` | An independent, writable clone; where the volume cannot clone, a copy (never a hardlink), with a one-time `materialization_reflink_fallback` warning. |
+
+**C/C++ outputs (#1764).** `.o`/`.obj` and `.pch`/`.gch`/`.pcm` are classified
+`AtomicReplaceOnly` (the compiler replaces the path; nothing edits it in
+place). The classification alone does not authorize sharing: a cache hit
+computes each target's policy with `native_output_delivery`
+(`persist/delivery_mode.rs`), which returns `HardlinkEligible` only when the
+mode is `LINK` and the output is `AtomicReplaceOnly`. `AUTO` therefore stays
+conservative for these outputs (reflink, else copy, exactly as before), as
+does every other mode. Depfiles (`MayEditInPlace`), executables and unknown
+names stay independent in every mode. Single-source hits (`cached_hit.rs`) and
+multi-source hits (`materialize_multi_hit`) both use it. A linked object is
+read-only and shares the blob's inode, so a rebuild first runs
+`break_output_hardlink_before_compile` on each declared output (path-based, so
+it covers objects and PCH the same as Rust archives); the compiler then writes
+a private copy and the cache blob is untouched.
 
 `COPY` and `REFLINK` deliver the same thing — an independent, writable inode
 carrying the cache file's mtime, with the sibling floor applied — and differ

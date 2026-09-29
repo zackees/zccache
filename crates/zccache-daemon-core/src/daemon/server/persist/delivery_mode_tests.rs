@@ -341,3 +341,33 @@ fn non_rustc_outputs_keep_the_full_chain_under_auto() {
         );
     }
 }
+
+/// #1764: only LINK promotes an `AtomicReplaceOnly` native output; the rest of
+/// the table (depfiles, executables, unknown names) is independent everywhere.
+#[test]
+fn native_output_delivery_only_promotes_atomic_replace_outputs_under_link() {
+    use crate::compiler::DeliveryPolicy::{HardlinkEligible, IndependentOnly};
+    for name in ["a.o", "a.obj", "a.pch", "a.gch", "a.pcm"] {
+        for mode in MaterializationMode::ALL {
+            let expected = if mode == Link {
+                HardlinkEligible
+            } else {
+                IndependentOnly
+            };
+            assert_eq!(
+                native_output_delivery(mode, Path::new(name)),
+                expected,
+                "{name} under {mode:?}"
+            );
+        }
+    }
+    for name in ["a.d", "a.exe", "a.so", "a", "a.rlib"] {
+        for mode in MaterializationMode::ALL {
+            assert_eq!(
+                native_output_delivery(mode, Path::new(name)),
+                IndependentOnly,
+                "{name} under {mode:?}"
+            );
+        }
+    }
+}

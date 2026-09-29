@@ -373,8 +373,10 @@ pub(super) fn materialize_cached_compile_hit(
     let delivery_policies = targets
         .iter()
         .map(|target| {
-            rustc_archive_hardlink_eligible.map_or(
-                crate::compiler::DeliveryPolicy::IndependentOnly,
+            rustc_archive_hardlink_eligible.map_or_else(
+                // C/C++ outputs follow their output classification; only
+                // `ZCCACHE_MODE=LINK` promotes objects and PCH (#1764).
+                || native_output_delivery(materialization_mode, target.as_path()),
                 |archive_eligible| {
                     crate::compiler::rustc_output_delivery(archive_eligible, target.as_path())
                 },
@@ -638,3 +640,7 @@ mod output_path_tests;
 #[cfg(test)]
 #[path = "cached_hit_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cached_hit_link_tests.rs"]
+mod link_tests;

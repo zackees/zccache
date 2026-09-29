@@ -512,6 +512,22 @@ pub(in crate::daemon::server) fn write_payloads_par_observed<P>(
 where
     P: AsRef<Path> + Sync,
 {
+    write_payloads_par_with_delivery(targets, payloads, mode, |_| {
+        crate::compiler::DeliveryPolicy::IndependentOnly
+    })
+}
+
+/// Deliver `payloads` with a per-target delivery policy and no mtime floor.
+/// `delivery` maps each target path to its policy; the mode can only demote it.
+pub(in crate::daemon::server) fn write_payloads_par_with_delivery<P>(
+    targets: &[P],
+    payloads: &[CachedPayload],
+    mode: MaterializationMode,
+    delivery: impl Fn(&Path) -> crate::compiler::DeliveryPolicy + Sync,
+) -> MaterializationResult<StagedMaterializationStats>
+where
+    P: AsRef<Path> + Sync,
+{
     if targets.len() != payloads.len() {
         return Err(payload_count_mismatch(targets.len(), payloads.len()));
     }
@@ -522,12 +538,7 @@ where
             std::fs::create_dir_all(parent)
                 .map_err(|error| destination_write_failure(out, error))?;
         }
-        write_cached_payload_with_policy_stats(
-            out,
-            payload,
-            crate::compiler::DeliveryPolicy::IndependentOnly,
-            mode,
-        )
+        write_cached_payload_with_policy_stats(out, payload, delivery(out), mode)
     };
     if targets.len() < PAR_WRITE_THRESHOLD {
         let mut observed = StagedMaterializationStats::default();

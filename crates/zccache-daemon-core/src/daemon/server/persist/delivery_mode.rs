@@ -75,6 +75,36 @@ pub(in crate::daemon::server) const fn for_non_rustc_outputs(
     }
 }
 
+/// Delivery policy for one C/C++ compile output on a cache hit (#1764).
+///
+/// A native object or PCH/module is classified `AtomicReplaceOnly`: the
+/// compiler replaces the path and no consumer edits it in place, so a shared
+/// inode is safe (the pre-compile detach in
+/// `break_output_hardlink_before_compile` covers a rebuild). That is still
+/// more sharing than AUTO promises, so only an explicit `LINK` opts in;
+/// every other mode, and every `MayEditInPlace`/`Unknown` output (depfiles,
+/// executables, unrecognised names), stays independent. All native families
+/// share one classification for these extensions, so the family is not needed.
+pub(in crate::daemon::server) fn native_output_delivery(
+    mode: MaterializationMode,
+    output: &Path,
+) -> crate::compiler::DeliveryPolicy {
+    use crate::compiler::{CompilerFamily, DeliveryPolicy, MutationContract, OutputClassification};
+    let name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let class = OutputClassification::for_compiler(CompilerFamily::Clang, name);
+    if mode == MaterializationMode::Link
+        && class.mutation == MutationContract::AtomicReplaceOnly
+        && class.delivery == DeliveryPolicy::ReflinkPreferred
+    {
+        DeliveryPolicy::HardlinkEligible
+    } else {
+        DeliveryPolicy::IndependentOnly
+    }
+}
+
 /// Tiers the *store* direction (compiler output -> cache blob) may try. The
 /// store has no delivery policy of its own: REFLINK_OR_LINK_OR_COPY and LINK
 /// may hardlink, but a hardlinked store leaves the build output sharing the
