@@ -37,10 +37,23 @@ fn should_cache_rustc_error(
     // turns a transient, load-dependent fault into a sticky replayed
     // `cached_error` for every later build of that unit, which is far worse
     // than simply recompiling.
+    //
+    // #1795: the same holds for an operating-system failure (a vanished
+    // output or staging dir, a full disk, too many open files). It is a
+    // verdict on the machine, not on the source, so replaying it would fail
+    // every later build of the unit. Not caching only costs a recompile.
     !stderr.is_empty()
         && exit_code > 0
+        && !reports_operating_system_failure(stderr)
         && rustc_depinfo_exists(rustc_args, cwd)
         && !rustc_args.emit_types.iter().any(|emit| emit == "link")
+}
+
+/// Whether rustc's stderr reports an I/O failure. Rust renders every
+/// `std::io::Error` with an `(os error N)` suffix on every platform.
+fn reports_operating_system_failure(stderr: &[u8]) -> bool {
+    const MARKER: &[u8] = b"(os error ";
+    stderr.windows(MARKER.len()).any(|window| window == MARKER)
 }
 
 fn commit_rustc_verdict(
@@ -307,6 +320,46 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    /// #1795: an operating-system failure (the output dir or a staging dir
+    /// vanished, a write failed) is not a verdict on the source. Caching it
+    /// replays the transient failure on every later build of the unit.
+    #[test]
+    fn rustc_error_cache_refuses_operating_system_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("probe.rs");
+        std::fs::write(&src, "fn main() {}\n").unwrap();
+        std::fs::write(tmp.path().join("probe.d"), "probe.d: probe.rs\n").unwrap();
+        let args = vec![
+            "--crate-name".to_string(),
+            "probe".to_string(),
+            "--emit=dep-info,metadata".to_string(),
+            "--out-dir".to_string(),
+            tmp.path().to_string_lossy().into_owned(),
+            src.to_string_lossy().into_owned(),
+        ];
+        let parsed = crate::depgraph::parse_rustc_args(&args, tmp.path());
+        for stderr in [
+            // The exact #1795 replay.
+            "error: couldn't create a temp dir: No such file or directory (os error 2) at path \"/w/target/debug/deps/rmetarKIzby\"\n\nerror: aborting due to 1 previous error\n",
+            "error: failed to write /w/target/debug/deps/libprobe.rmeta: No space left on device (os error 28)\n",
+            "error: could not write output to /w/target/debug/deps/probe.o: Permission denied (os error 13)\n",
+            "error: failed to create file encoder: Too many open files (os error 24)\n",
+        ] {
+            assert!(
+                !should_cache_rustc_error(&parsed, 1, tmp.path(), stderr.as_bytes()),
+                "an OS failure must not be cached: {stderr}"
+            );
+        }
+        // A genuine compile rejection is still cached.
+        let type_error = "error[E0308]: mismatched types\n --> probe.rs:1:14\n";
+        assert!(should_cache_rustc_error(
+            &parsed,
+            1,
+            tmp.path(),
+            type_error.as_bytes()
+        ));
     }
 
     #[test]
