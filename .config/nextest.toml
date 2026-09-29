@@ -1,0 +1,9 @@
+# cargo-nextest configuration (Integration CI runs the workspace under nextest).
+#
+# nextest runs tests in parallel, one process each. Tests that assert
+# wall-clock budgets or compare timings (startup budgets, perf_* rows,
+# overhead/latency checks) are skewed by CPU contention from their
+# neighbours, so each of them reserves every test slot and runs alone.
+[[profile.default.overrides]]
+filter = 'test(/budget|overhead|latency|(^|::)perf_|_vs_bare|_vs_sccache|throughput/)'
+threads-required = "num-cpus"
