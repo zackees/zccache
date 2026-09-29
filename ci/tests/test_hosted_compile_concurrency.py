@@ -15,11 +15,6 @@ def test_hosted_daemon_core_and_workspace_test_compiles_are_serialized() -> None
     required_steps = {
         "integration.yml": (
             (
-                "Build integration test binaries",
-                "Stop setup-soldr builder cache before tests",
-                "soldr cargo test --workspace",
-            ),
-            (
                 "Test (full workspace)",
                 "Remove build-harness journals before strict audit",
                 "soldr cargo test --workspace",
@@ -66,3 +61,13 @@ def test_hosted_daemon_core_and_workspace_test_compiles_are_serialized() -> None
             assert command in step
             assert 'CARGO_BUILD_JOBS: "1"' in environment
             assert 'SOLDR_JOBS: "1"' in environment
+
+
+def test_integration_compile_only_prebuild_uses_all_runner_cores() -> None:
+    """The `--no-run` prebuild runs no tests, so it must not be serialized."""
+    workflow = (ROOT / ".github" / "workflows" / "integration.yml").read_text(encoding="utf-8")
+    step = _step_block(workflow, "Build integration test binaries", "Stop setup-soldr builder cache before tests")
+    environment = step.split("        run:", 1)[0]
+    assert "--no-run" in step
+    assert 'CARGO_BUILD_JOBS: "4"' in environment
+    assert 'SOLDR_JOBS: "4"' in environment
