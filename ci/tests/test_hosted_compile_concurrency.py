@@ -71,3 +71,14 @@ def test_integration_compile_only_prebuild_uses_all_runner_cores() -> None:
     assert "--no-run" in step
     assert "CARGO_BUILD_JOBS:" not in environment
     assert "SOLDR_JOBS:" not in environment
+
+
+def test_platform_test_compile_only_prebuild_is_not_serialized() -> None:
+    """ci-check's `--no-run` prebuild runs no tests, so it must not be serialized."""
+    workflow = (ROOT / ".github" / "workflows" / "ci-check.yml").read_text(encoding="utf-8")
+    step = _step_block(workflow, "Build test binaries", "Test")
+    environment = step.split("        run:", 1)[0]
+    assert "if: ${{ false }}" not in step
+    assert "--no-run" in step
+    assert "CARGO_BUILD_JOBS:" not in environment
+    assert "SOLDR_JOBS:" not in environment
