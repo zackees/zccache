@@ -122,7 +122,11 @@ Directory producers use a hidden private sibling beside the requested bundle
 to preserve same-filesystem atomic installation. An advisory lock protects
 each live daemon's directory: startup cleanup reclaims only unlocked crash
 debris, while cache clear and eviction cannot delete outputs still needed for
-publication salvage or requested-path materialization.
+publication salvage or requested-path materialization. A released lock proves
+only that the owning daemon is gone, not that an orphaned compile child has
+stopped writing, so an unlocked directory is reclaimed only after nothing
+beneath it has changed for an hour (#1796); a directory with no lock file at
+all (a daemon that died before writing one) needs only a 60 s age.
 
 Rust staging adds
 `--remap-path-prefix=<private-root>=/__zccache_staged_output_7b6d6f0c5a944e8ba1c7e9634b287d91__`,

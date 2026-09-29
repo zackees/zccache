@@ -190,3 +190,42 @@ fn a_held_lock_still_protects_a_live_root_regardless_of_age() {
     assert_eq!(cleaner.cleanup_abandoned().unwrap(), 0);
     assert!(live.path().join("active.o").exists());
 }
+
+/// Backdate every entry under `root`, root included.
+fn backdate_tree(root: &Path, by: Duration) {
+    for entry in std::fs::read_dir(root).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            backdate_tree(&path, by);
+        } else {
+            backdate(&path, by);
+        }
+    }
+    backdate(root, by);
+}
+
+/// #1796: a released lock proves only that the owning daemon is gone, not
+/// that nothing still writes beneath it (an orphaned compile child outlived
+/// its daemon and failed with `couldn't create a temp dir … (os error 2)`).
+/// An unlocked root survives the sweep until its whole tree has been quiet.
+#[test]
+fn an_unlocked_root_with_recent_writes_survives_the_sweep() {
+    let temp = tempfile::tempdir().unwrap();
+    let cleaner = StagingRoot::new(temp.path(), None, 1).unwrap();
+    // A dead daemon's root: the lock file exists but nobody holds it.
+    let dead = temp.path().join("staging").join("4242-0-1");
+    let compile = dead.join(".compile-4242-7");
+    std::fs::create_dir_all(&compile).unwrap();
+    std::fs::write(dead.join(STAGING_LOCK_FILE), b"4242\n").unwrap();
+    std::fs::write(compile.join("partial.rmeta"), b"still being written").unwrap();
+    // The root itself looks old; only the compile output is fresh.
+    backdate(&dead, Duration::from_secs(2 * 3600));
+
+    assert_eq!(cleaner.cleanup_abandoned().unwrap(), 0);
+    assert!(compile.join("partial.rmeta").exists());
+
+    // Once every entry has been quiet past the period it is crash debris.
+    backdate_tree(&dead, Duration::from_secs(2 * 3600));
+    assert_eq!(cleaner.cleanup_abandoned().unwrap(), 1);
+    assert!(!dead.exists());
+}

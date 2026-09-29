@@ -22,6 +22,17 @@ const CONFIGURED_STAGING_CHILD: &str = "zccache-staging";
 /// magnitude is genuinely debris.
 const STAGING_ABANDONED_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long every entry under an *unlocked* staging root must have been
+/// untouched before the cleaner may remove it (#1796).
+///
+/// A released `.active.lock` proves only that the owning daemon is gone. A
+/// compile child it spawned can outlive it (an abrupt exit that bypassed
+/// child cleanup) and keep writing under the root; deleting the root then
+/// fails that compile with `couldn't create a temp dir … (os error 2)`. No
+/// single compile goes an hour without touching its outputs, and debris
+/// only costs disk until the next startup, so err far toward keeping it.
+const STAGING_ABANDONED_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// Per-daemon private output staging. The held lock distinguishes an active
 /// daemon from crash debris, so startup cleanup cannot remove another live
 /// daemon's compiler outputs.
@@ -116,6 +127,10 @@ impl StagingRoot {
             };
             drop(probe);
             drop(lock);
+            // The daemon is gone, but an orphaned compile child may not be.
+            if !staging_tree_is_quiet_for(&path, STAGING_ABANDONED_QUIET_PERIOD) {
+                continue;
+            }
             std::fs::remove_dir_all(&path)?;
             removed += 1;
         }
@@ -140,6 +155,34 @@ fn staging_dir_is_older_than(path: &Path, min_age: std::time::Duration) -> bool 
         return false;
     };
     age >= min_age
+}
+
+/// Has nothing under `root` (root included) been modified within `quiet`?
+///
+/// Errs toward "no" exactly like [`staging_dir_is_older_than`]: any entry
+/// that cannot be read, or looks newer than `quiet`, keeps the tree.
+fn staging_tree_is_quiet_for(root: &Path, quiet: std::time::Duration) -> bool {
+    if !staging_dir_is_older_than(root, quiet) {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let path = entry.path();
+        let quiet_entry = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => staging_tree_is_quiet_for(&path, quiet),
+            Ok(_) => staging_dir_is_older_than(&path, quiet),
+            Err(_) => false,
+        };
+        if !quiet_entry {
+            return false;
+        }
+    }
+    true
 }
 
 impl Drop for StagingRoot {
