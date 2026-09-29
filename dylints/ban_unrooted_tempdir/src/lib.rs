@@ -173,7 +173,11 @@ fn prepare_dylint_library() {
 
     let toolchain = std::env::var("RUSTUP_TOOLCHAIN").expect("RUSTUP_TOOLCHAIN should be set");
     let library_name = env!("CARGO_PKG_NAME").replace('-', "_");
-    let target_debug = manifest_dir.join("target").join("debug");
+    // Honor CARGO_TARGET_DIR like cargo does; CI shares one across lints.
+    let target_debug = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("target"))
+        .join("debug");
     let expected = target_debug.join(format!(
         "{}{}@{}{}",
         std::env::consts::DLL_PREFIX,
