@@ -146,3 +146,60 @@ def test_rust_check_cold_is_rebased_against_its_own_reference() -> None:
     assert 0.9 < RUST_REF < 1.5
     assert perf_floor.effective_floor(0.75, RUST_REF, RUST_REF) == 0.75
     assert perf_floor.effective_floor(0.75, RUST_REF, 0.9) < 0.75
+
+
+# #1773: release-profile warm floor ratchet.
+
+
+def test_warm_ratio_floor_is_none_for_unsampled_rows() -> None:
+    assert (
+        perf_floor.warm_ratio_floor("emscripten", "Single-file, Warm", "bare") is None
+    )
+
+
+def test_warm_ratio_floor_covers_every_row_perf_guard_evaluates() -> None:
+    # Every (benchmark, scenario, baseline) pair the workflow's three
+    # required-language matrix legs measure in warm mode must have a
+    # ratcheted floor, or the release-profile headroom regresses silently
+    # back to the pre-#1773 1.5x default for that row.
+    expected_rows = {
+        ("c-inline", "Single-file, Warm", "bare"),
+        ("c-inline", "Single-file, Warm", "sccache"),
+        ("c-static-library-link", "Static archive, Warm", "bare"),
+        ("c-static-library-link", "Static archive, Warm", "sccache"),
+        ("cpp-driver-link", "Driver link, Warm", "bare"),
+        ("cpp-driver-link", "Driver link, Warm", "sccache"),
+        ("cpp-inline", "Multi-file, Warm", "bare"),
+        ("cpp-inline", "Multi-file, Warm", "sccache"),
+        ("cpp-inline", "Single-file, Warm", "bare"),
+        ("cpp-inline", "Single-file, Warm", "sccache"),
+        ("cpp-response-file", "Multi-file RSP, Warm", "bare"),
+        ("cpp-response-file", "Multi-file RSP, Warm", "sccache"),
+        ("cpp-response-file", "Single-file RSP, Warm", "bare"),
+        ("cpp-response-file", "Single-file RSP, Warm", "sccache"),
+        ("cpp-sibling-remap", "Sibling-workspace no __FILE__, Warm", "bare"),
+        ("cpp-sibling-remap", "Sibling-workspace no __FILE__, Warm", "sccache"),
+        ("cpp-sibling-remap", "Sibling-workspace with __FILE__, Warm", "bare"),
+        ("cpp-sibling-remap", "Sibling-workspace with __FILE__, Warm", "sccache"),
+        ("rust", "Build, Warm", "bare"),
+        ("rust", "Build, Warm", "sccache"),
+        ("rust", "Check, Warm", "bare"),
+        ("rust", "Check, Warm", "sccache"),
+        ("rust-sibling-remap", "Sibling-workspace, Warm", "bare"),
+        ("rust-sibling-remap", "Sibling-workspace, Warm", "sccache"),
+        ("rust-workspace-link", "Workspace staticlib link, Warm", "bare"),
+        ("rust-workspace-link", "Workspace staticlib link, Warm", "sccache"),
+    }
+    assert set(perf_floor.WARM_RATIO_FLOORS) == expected_rows
+    for row, floor in perf_floor.WARM_RATIO_FLOORS.items():
+        assert floor > perf_guard.DEFAULT_WARM_BARE_THRESHOLD, row
+
+
+def test_dev_profile_level_warm_ratio_now_fails_the_ratchet() -> None:
+    # #1767's own evidence: dev-profile C warm hits landed around 20-30x
+    # (0.104s/0.099s zccache vs ~2.1-2.3s bare on this fixture size). That
+    # ratio used to clear the flat 1.5x floor; it must not clear the
+    # release-profile ratchet, which is what makes the ratchet meaningful.
+    floor = perf_floor.warm_ratio_floor("c-inline", "Single-file, Warm", "bare")
+    dev_profile_ratio = 2.2 / 0.104
+    assert dev_profile_ratio < floor

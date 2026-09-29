@@ -22,6 +22,17 @@ def test_manifest_relaxation_requires_evidence():
     ) == []
 
 
+def test_tracked_paths_cover_the_hosted_perf_guard_ratio_floors():
+    # #1773: the release-profile ratchet lives in ci/perf_guard.py /
+    # ci/perf_floor.py, not the local-matrix manifest this module originally
+    # tracked. Those files must get the same git-log provenance trail so
+    # `ci/perf_threshold_history.json` records who ratcheted a hosted floor
+    # and why.
+    assert "ci/perf_guard.py" in perf_history.TRACKED_PATHS
+    assert "ci/perf_floor.py" in perf_history.TRACKED_PATHS
+    assert "WARM_RATIO_FLOORS" in perf_history.RELAXATION_KEYS
+
+
 def test_history_inventory_uses_tracked_surfaces(monkeypatch, tmp_path):
     calls = []
 

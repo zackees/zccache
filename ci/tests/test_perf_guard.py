@@ -287,6 +287,114 @@ def test_rust_workspace_link_cold_regression_below_threshold_fails():
     assert "bare" in failing_baselines
 
 
+def test_rust_workspace_link_warm_ratchet_catches_injected_1ms_hit_regression():
+    # #1773 acceptance: a deliberately injected 1ms-per-hit regression (the
+    # size of #1768's fix, reverted) must fail a warm row under the
+    # release-profile ratchet. rust-workspace-link's warm row runs 5 trials
+    # (RUSTC_WARM_TRIALS in crates/zccache/tests/perf_bench/common.rs), so
+    # +1ms/hit adds 5ms of wall-clock to the reported zccache_seconds.
+    #
+    # Baseline numbers are a passing release-profile sample (run 36493296576,
+    # ci/perf_threshold_history.json): bare 0.043s, sccache 0.061s,
+    # zccache 0.010s -> 4.3x / 6.1x, both above the ratcheted floors
+    # (3.25x / 4.09x, ci/perf_floor.py WARM_RATIO_FLOORS).
+    passing_log = """
+## Rust Workspace Link Benchmark: 50 .rlib inputs, 5 warm trials
+
+| Scenario | Bare rustc | sccache | zccache | vs sccache | vs bare rustc |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|
+| Workspace staticlib link, Warm | 0.043s | 0.061s | **0.010s** | **6.1x faster** | **4.3x faster** |
+"""
+    regressed_log = passing_log.replace(
+        "| Workspace staticlib link, Warm | 0.043s | 0.061s | **0.010s** | **6.1x faster** | **4.3x faster** |",
+        # +5ms (5 warm trials * 1ms/hit): 0.010s -> 0.015s.
+        "| Workspace staticlib link, Warm | 0.043s | 0.061s | **0.015s** | **4.067x faster** | **2.867x faster** |",
+    )
+
+    passing_report = perf_guard.evaluate_attempts(
+        [rows(passing_log)],
+        languages=("rust",),
+        require_coverage=False,
+        apply_warm_ratchet=True,
+    )
+    regressed_report = perf_guard.evaluate_attempts(
+        [rows(regressed_log)],
+        languages=("rust",),
+        require_coverage=False,
+        apply_warm_ratchet=True,
+    )
+
+    warm_statuses = {
+        status.baseline: status
+        for status in passing_report.statuses
+        if status.scenario == "Workspace staticlib link, Warm"
+    }
+    assert all(status.passed for status in warm_statuses.values()), warm_statuses
+
+    regressed_statuses = {
+        status.baseline: status
+        for status in regressed_report.statuses
+        if status.scenario == "Workspace staticlib link, Warm"
+    }
+    assert not regressed_statuses["bare"].passed
+    assert not regressed_statuses["sccache"].passed
+
+    # And without `apply_warm_ratchet`, the old flat 1.5x default still lets
+    # the regressed sample through -- this is exactly the gap #1773 closes.
+    unratcheted = perf_guard.evaluate_attempts(
+        [rows(regressed_log)],
+        languages=("rust",),
+        require_coverage=False,
+    )
+    unratcheted_bare = [
+        status
+        for status in unratcheted.statuses
+        if status.scenario == "Workspace staticlib link, Warm" and status.baseline == "bare"
+    ][0]
+    assert unratcheted_bare.passed
+
+
+def test_c_static_library_link_warm_ratchet_catches_injected_1ms_hit_regression():
+    # Second row, corroborating the arithmetic isn't a fluke of one scenario.
+    # Passing sample from run 36493296576: bare 0.058s, zccache 0.0004s
+    # (141x); +5ms -> 0.0054s -> 10.7x, below the 117.5x floor.
+    passing_log = """
+## C Static-Library Link Benchmark: 50 .o inputs, 5 warm trials
+
+| Scenario | Bare ar | sccache | zccache | bare cache | sccache cache | zccache cache | vs sccache | vs Bare ar |
+|:---------|----------:|--------:|--------:|-----------:|--------------:|--------------:|-----------:|--------------:|
+| Static archive, Warm | 0.058s | 0.058s | **0.0004s** | 0 B | 0 B | 193.7 KiB | **145x faster** | **145x faster** |
+"""
+    regressed_log = passing_log.replace(
+        "| Static archive, Warm | 0.058s | 0.058s | **0.0004s** | 0 B | 0 B | 193.7 KiB | **145x faster** | **145x faster** |",
+        "| Static archive, Warm | 0.058s | 0.058s | **0.0054s** | 0 B | 0 B | 193.7 KiB | **10.7x faster** | **10.7x faster** |",
+    )
+
+    passing_report = perf_guard.evaluate_attempts(
+        [rows(passing_log)],
+        languages=("c",),
+        require_coverage=False,
+        apply_warm_ratchet=True,
+    )
+    regressed_report = perf_guard.evaluate_attempts(
+        [rows(regressed_log)],
+        languages=("c",),
+        require_coverage=False,
+        apply_warm_ratchet=True,
+    )
+
+    assert all(
+        status.passed
+        for status in passing_report.statuses
+        if status.scenario == "Static archive, Warm"
+    )
+    assert not any(
+        status.passed
+        for status in regressed_report.statuses
+        if status.scenario == "Static archive, Warm"
+    )
+
+
 def test_retry_passes_when_later_attempt_clears_threshold():
     report = perf_guard.evaluate_attempts(
         [rows(FAILING_RUST_LOG), rows(PASSING_LOG)],

@@ -369,7 +369,18 @@ def _comparison_threshold(
     baseline: str,
     bare_floor: float,
     sccache_floor: float,
+    *,
+    apply_warm_ratchet: bool = False,
 ) -> float:
+    if apply_warm_ratchet and row.get("mode") == "warm":
+        # #1773: release-profile ratchet. Takes priority over the generic
+        # 1.5x default for every row it has hosted samples for; rows without
+        # samples (e.g. emscripten) fall through to the checks below.
+        warm_floor = perf_floor.warm_ratio_floor(
+            str(row.get("benchmark")), str(row.get("scenario")), baseline
+        )
+        if warm_floor is not None:
+            return warm_floor
     if (
         row.get("language") == "rust"
         and row.get("benchmark") == "rust"
@@ -423,6 +434,7 @@ def evaluate_attempts(
     languages: tuple[str, ...] = REQUIRED_LANGUAGES,
     require_coverage: bool = True,
     require_all_attempts: bool = False,
+    apply_warm_ratchet: bool = False,
 ) -> GuardReport:
     if threshold is not None:
         bare_threshold = threshold
@@ -461,6 +473,7 @@ def evaluate_attempts(
                     baseline,
                     bare_floor,
                     sccache_floor,
+                    apply_warm_ratchet=apply_warm_ratchet,
                 )
                 key = ScenarioKey(str(row["benchmark"]), str(row["scenario"]), baseline)
                 status = statuses.get(key)
@@ -968,6 +981,7 @@ def _run_attempts(
     test_name: str | None = None,
     require_coverage: bool = True,
     collect_all_attempts: bool = False,
+    apply_warm_ratchet: bool = False,
 ) -> tuple[list[list[dict[str, Any]]], list[int]]:
     parsed_attempts: list[list[dict[str, Any]]] = []
     command_failures: list[int] = []
@@ -1002,6 +1016,7 @@ def _run_attempts(
             command_failures=command_failures,
             languages=languages,
             require_coverage=require_coverage,
+            apply_warm_ratchet=apply_warm_ratchet,
         )
         if not collect_all_attempts and returncode == 0 and interim.passed:
             break
@@ -1122,6 +1137,7 @@ def main() -> int:
             test_name=args.test,
             require_coverage=require_coverage,
             collect_all_attempts=args.collect_all_attempts,
+            apply_warm_ratchet=True,
         )
 
     report = evaluate_attempts(
@@ -1134,6 +1150,7 @@ def main() -> int:
         languages=languages,
         require_coverage=require_coverage,
         require_all_attempts=args.collect_all_attempts,
+        apply_warm_ratchet=True,
     )
     markdown = format_report(
         report,

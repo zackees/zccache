@@ -13,8 +13,17 @@ TRACKED_PATHS = (
     "PERF.md",
     "ci/perf_local.py",
     "ci/perf_thresholds.json",
+    # #1773: hosted Perf Guard's release-profile ratio floors get the same
+    # git-log provenance trail as the local Docker matrix's thresholds.
+    "ci/perf_guard.py",
+    "ci/perf_floor.py",
 )
-RELAXATION_KEYS = ("minimum_speedup", "maximum_warm_ms", "maximum_staged_overhead_ms")
+RELAXATION_KEYS = (
+    "minimum_speedup",
+    "maximum_warm_ms",
+    "maximum_staged_overhead_ms",
+    "WARM_RATIO_FLOORS",
+)
 
 
 def _git(repo: Path, *args: str) -> str:
