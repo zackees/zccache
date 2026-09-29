@@ -59,6 +59,7 @@ jobs:
     name: Formatting
     needs: cache-pre-prune
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
@@ -99,6 +100,7 @@ jobs:
     name: Dylint
     needs: cache-pre-prune
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       # Dylint removes RUSTUP_TOOLCHAIN before its nested driver build. The
       # cargo shim below pins both cargo and rustc without changing the shared
@@ -278,6 +280,7 @@ jobs:
     name: MSRV (1.95.0)
     needs: cache-pre-prune
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # setup-soldr#347: opt this job into post-step cache eviction.
     # actions: write is required for cache.deleteActionsCacheById.
     # contents: read is needed for actions/checkout. Scoping to this
@@ -326,6 +329,7 @@ jobs:
     name: Documentation
     needs: cache-pre-prune
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:

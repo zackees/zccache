@@ -41,6 +41,7 @@ jobs:
     needs: cache-pre-prune
     name: Code Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - name: Wait for current-main cache pre-prune

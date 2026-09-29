@@ -38,6 +38,7 @@ jobs:
   check:
     name: Verify wire stability snapshot
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6

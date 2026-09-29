@@ -51,6 +51,7 @@ jobs:
     needs: cache-pre-prune
     name: Feature matrix is rendered
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Wait for current-main cache pre-prune
