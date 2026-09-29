@@ -48,6 +48,38 @@ def prebuild_test_helper_bins() -> int:
     return result.returncode
 
 
+def _crates_with_test_support() -> set[str]:
+    """Package names whose manifest declares a `test-support` feature."""
+    import tomllib
+
+    names = set()
+    for manifest in (SCRIPT_DIR / "crates").glob("*/Cargo.toml"):
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        name = data.get("package", {}).get("name")
+        if name and "test-support" in data.get("features", {}):
+            names.add(name)
+    return names
+
+
+def test_support_features(cargo_args: list[str]) -> list[str]:
+    """`--features <crate>/test-support` for each `-p` crate that declares it (#1820).
+
+    A lone `-p` gets no feature unification from the rest of the workspace,
+    so a crate whose unit tests use its own `test-support` feature fails to
+    compile. Explicit feature flags from the caller win.
+    """
+    if any(a in ("--all-features", "-F") or a.startswith("--features") for a in cargo_args):
+        return []
+    packages = [
+        cargo_args[i + 1]
+        for i, a in enumerate(cargo_args[:-1])
+        if a in ("-p", "--package")
+    ] + [a.split("=", 1)[1] for a in cargo_args if a.startswith("--package=")]
+    eligible = _crates_with_test_support()
+    features = [f"{p}/test-support" for p in packages if p in eligible]
+    return ["--features", ",".join(features)] if features else []
+
+
 def main():
     try:
         validate_release_metadata()
@@ -82,6 +114,7 @@ def main():
         cmd += ["--workspace"]
 
     cmd += cargo_args
+    cmd += test_support_features(cargo_args)
     cmd += ["--"]
     if full:
         cmd += ["--include-ignored"]
