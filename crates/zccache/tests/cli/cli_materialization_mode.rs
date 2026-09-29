@@ -47,8 +47,8 @@ fn invalid_zccache_mode_fails_before_dispatch() {
 
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "an invalid mode is a usage error"
+        Some(125),
+        "an invalid mode is a wrapper configuration error (#1797)"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -56,7 +56,7 @@ fn invalid_zccache_mode_fails_before_dispatch() {
         "stderr must name the variable and value: {stderr}"
     );
     assert!(
-        stderr.contains("AUTO, LINK, COPY, REFLINK"),
+        stderr.contains("AUTO, REFLINK_OR_LINK_OR_COPY, LINK, COPY, REFLINK"),
         "stderr must list the valid modes: {stderr}"
     );
     assert!(

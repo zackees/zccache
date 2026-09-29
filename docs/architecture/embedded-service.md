@@ -376,7 +376,8 @@ re-exported as `zccache::embedded::MaterializationMode`). The service starts
 with the host process's own `ZCCACHE_MODE` (an invalid value is an
 `EmbeddedError::Start`); `set_materialization_mode(Some(_))`
 replaces that service-wide default at any time and `None` restores `AUTO`. A
-`CompileRequest` whose `env` carries a valid `ZCCACHE_MODE` overrides the
+`CompileRequest` whose `env` carries an invalid non-empty `ZCCACHE_MODE` fails
+with an error (#1797), never the default; a valid one overrides the
 default for that request, so a host may instead forward it per compile; a host
 whose own setting must win (soldr's `--zccache-mode`) overrides the variable in
 the environment it forwards. It is a

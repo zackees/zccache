@@ -134,6 +134,9 @@ pub(super) async fn handle_link_ephemeral(
     cwd: &Path,
     env: Option<Vec<(String, String)>>,
 ) -> Response {
+    if let Some(response) = state.check_request_mode(env.as_deref()) {
+        return response;
+    }
     let _active_request = state.begin_cache_request();
     // Resolved before `env` moves into the spawned tool (#1683).
     let link_mode = state.non_rustc_materialization_mode(env.as_deref());

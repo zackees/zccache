@@ -186,3 +186,25 @@ async fn a_hit_is_delivered_by_the_resolved_mode() {
             .expect("shutdown warm");
     }
 }
+
+/// #1797: a request env carrying an invalid `ZCCACHE_MODE` is an error
+/// response, never a silent fall back to the service default.
+#[tokio::test]
+async fn an_invalid_request_mode_is_an_error_response() {
+    let temp = TempDir::new().expect("tempdir");
+    let service = start_service(&temp).await;
+    service.set_materialization_mode(Some(MaterializationMode::Copy));
+    let compiler = crate::core::NormalizedPath::from(std::path::PathBuf::from("rustc"));
+    let error = service
+        .compile(rlib_request(compiler, &temp, &[("ZCCACHE_MODE", "blah")]))
+        .await
+        .expect_err("invalid mode must be an error");
+    let message = format!("{error:?}");
+    assert!(message.contains("ZCCACHE_MODE"), "{message}");
+    assert!(message.contains("blah"), "{message}");
+    assert!(message.contains("REFLINK_OR_LINK_OR_COPY"), "{message}");
+    service
+        .shutdown(ShutdownMode::Graceful)
+        .await
+        .expect("shutdown");
+}

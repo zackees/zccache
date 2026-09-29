@@ -228,25 +228,18 @@ fn decode(raw: u8) -> Option<MaterializationMode> {
 }
 
 /// Resolve one request's mode: a valid client `ZCCACHE_MODE` wins, then the
-/// service default, then `AUTO`. An invalid client value is reported and
-/// skipped — the CLI rejects it before dispatch, so reaching here means an
-/// embedding host forwarded it unvalidated.
+/// service default, then `AUTO`. A non-empty unrecognised client value is an
+/// error, never a fallback (#1797): the wrapper rejects it before dispatch,
+/// and request handlers reject it via [`SharedState::check_request_mode`].
 pub(in crate::daemon::server) fn resolve_request_mode(
     client_env: Option<&[(String, String)]>,
     service_default: Option<MaterializationMode>,
-) -> MaterializationMode {
-    match crate::core::config::materialization_mode_from_client_env(client_env) {
-        Ok(Some(mode)) => mode,
-        Ok(None) => service_default.unwrap_or_default(),
-        Err(error) => {
-            tracing::warn!(
-                event = "materialization_mode_invalid",
-                %error,
-                "ignoring invalid request ZCCACHE_MODE"
-            );
-            service_default.unwrap_or_default()
-        }
-    }
+) -> Result<MaterializationMode, crate::core::config::InvalidMaterializationMode> {
+    Ok(
+        crate::core::config::materialization_mode_from_client_env(client_env)?
+            .or(service_default)
+            .unwrap_or_default(),
+    )
 }
 
 impl SharedState {
@@ -260,11 +253,27 @@ impl SharedState {
     }
 
     /// The materialization mode for one request (see [`resolve_request_mode`]).
+    /// Handlers call [`Self::check_request_mode`] on entry, so an invalid
+    /// value never reaches here; the default is only a defensive floor.
     pub(in crate::daemon::server) fn materialization_mode(
         &self,
         client_env: Option<&[(String, String)]>,
     ) -> MaterializationMode {
         resolve_request_mode(client_env, self.materialization_mode_default.get())
+            .unwrap_or_default()
+    }
+
+    /// Reject a request whose forwarded env carries an invalid
+    /// `ZCCACHE_MODE` with an error response (#1797).
+    pub(in crate::daemon::server) fn check_request_mode(
+        &self,
+        client_env: Option<&[(String, String)]>,
+    ) -> Option<Response> {
+        resolve_request_mode(client_env, None)
+            .err()
+            .map(|error| Response::Error {
+                message: error.to_string(),
+            })
     }
 }
 

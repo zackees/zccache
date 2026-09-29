@@ -29,32 +29,47 @@ fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 #[test]
 fn request_env_beats_service_default() {
     let request = env(&[("ZCCACHE_MODE", "COPY")]);
-    assert_eq!(resolve_request_mode(Some(&request), Some(Link)), Copy);
+    assert_eq!(resolve_request_mode(Some(&request), Some(Link)), Ok(Copy));
 }
 
 #[test]
 fn service_default_applies_without_a_request_value() {
-    assert_eq!(resolve_request_mode(None, Some(Reflink)), Reflink);
+    assert_eq!(resolve_request_mode(None, Some(Reflink)), Ok(Reflink));
     let unrelated = env(&[("PATH", "/bin")]);
-    assert_eq!(resolve_request_mode(Some(&unrelated), Some(Link)), Link);
+    assert_eq!(resolve_request_mode(Some(&unrelated), Some(Link)), Ok(Link));
 }
 
 #[test]
 fn no_value_anywhere_is_auto() {
-    assert_eq!(resolve_request_mode(None, None), Auto);
+    assert_eq!(resolve_request_mode(None, None), Ok(Auto));
 }
 
 #[test]
 fn empty_request_value_falls_through() {
     let request = env(&[("ZCCACHE_MODE", "")]);
-    assert_eq!(resolve_request_mode(Some(&request), Some(Copy)), Copy);
+    assert_eq!(resolve_request_mode(Some(&request), Some(Copy)), Ok(Copy));
 }
 
 #[test]
-fn invalid_request_value_is_skipped_not_honored() {
+fn invalid_request_value_is_a_hard_error() {
+    // #1797: a non-empty unrecognised value never falls back to a default.
     let request = env(&[("ZCCACHE_MODE", "hardlink")]);
-    assert_eq!(resolve_request_mode(Some(&request), Some(Copy)), Copy);
-    assert_eq!(resolve_request_mode(Some(&request), None), Auto);
+    for default in [Some(Copy), None] {
+        let error = resolve_request_mode(Some(&request), default).expect_err("invalid mode");
+        let message = error.to_string();
+        assert!(message.contains("ZCCACHE_MODE"), "{message}");
+        assert!(message.contains("\"hardlink\""), "{message}");
+        assert!(
+            message.contains("AUTO, REFLINK_OR_LINK_OR_COPY, LINK, COPY, REFLINK"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn whitespace_request_value_stays_unset() {
+    let request = env(&[("ZCCACHE_MODE", "  ")]);
+    assert_eq!(resolve_request_mode(Some(&request), Some(Copy)), Ok(Copy));
 }
 
 #[test]
@@ -62,9 +77,12 @@ fn two_requests_with_different_modes_share_one_default() {
     let default = MaterializationModeDefault::new(Some(Link));
     let copy = env(&[("ZCCACHE_MODE", "copy")]);
     let reflink = env(&[("ZCCACHE_MODE", "reflink")]);
-    assert_eq!(resolve_request_mode(Some(&copy), default.get()), Copy);
-    assert_eq!(resolve_request_mode(Some(&reflink), default.get()), Reflink);
-    assert_eq!(resolve_request_mode(None, default.get()), Link);
+    assert_eq!(resolve_request_mode(Some(&copy), default.get()), Ok(Copy));
+    assert_eq!(
+        resolve_request_mode(Some(&reflink), default.get()),
+        Ok(Reflink)
+    );
+    assert_eq!(resolve_request_mode(None, default.get()), Ok(Link));
 }
 
 #[test]

@@ -211,6 +211,9 @@ pub(super) async fn handle_generic_tool_exec(
     non_deterministic: bool,
     key_args_filter: &[String],
 ) -> Response {
+    if let Some(response) = state.check_request_mode(Some(&env)) {
+        return response;
+    }
     let _active_request = state.begin_cache_request();
     // 1. Filtered args for the cache key (the tool always sees the raw args).
     let key_args = match apply_key_args_filter(args, key_args_filter) {

@@ -102,11 +102,12 @@ fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // The daemon reads `ZCCACHE_MODE` per request and would only log an
-    // invalid value, so reject it here, before dispatch (#1683 decision D4).
+    // An invalid `ZCCACHE_MODE` is a hard error on every path (#1683 D4,
+    // #1797): the wrapper could not run the command, so exit 125 like a
+    // daemon outage (#1170) rather than a compiler-style 1.
     if let Err(err) = crate::core::config::materialization_mode_from_env() {
         eprintln!("zccache: {err}");
-        return ExitCode::FAILURE;
+        return ExitCode::from(unavailable::DAEMON_UNAVAILABLE_EXIT_CODE);
     }
 
     let wrapped_tool = tool_resolution::resolve_compiler_path(&args[0]);

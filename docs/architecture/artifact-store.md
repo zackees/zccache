@@ -455,9 +455,15 @@ or `ZccacheService::set_materialization_mode`), as does an in-process
 `DaemonServer` whose host calls `set_materialization_mode_default` (the perf
 bench pins `REFLINK_OR_LINK_OR_COPY` this way). A standalone daemon has none:
 it is spawned lazily from whichever shell ran first, so its own environment
-must not decide later clients' delivery. The wrapper rejects an invalid value
-before dispatch (exit 1), an embedded service refuses to start on one, and
-the daemon only logs one that arrives in a request.
+must not decide later clients' delivery. An invalid non-empty value is a hard
+error on every path (#1797, updating #1683 D4), never a silent fallback: the
+wrapper names the variable, the bad value and the valid values
+(`AUTO, REFLINK_OR_LINK_OR_COPY, LINK, COPY, REFLINK`) and exits **125**
+before dispatch without running the tool (the #1170 "wrapper could not run
+the command" code, not a compiler-style 1); an embedded service refuses to
+start on one; and the daemon and the embedded per-request path answer a
+compile, link or exec request whose env carries one with an error response
+(`check_request_mode`). Empty or whitespace stays unset.
 The pure decision is `plan_tiers` in
 `crates/zccache-daemon-core/src/daemon/server/persist/delivery_mode.rs`.
 
