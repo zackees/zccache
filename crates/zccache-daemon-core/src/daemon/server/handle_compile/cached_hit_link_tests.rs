@@ -192,6 +192,7 @@ async fn link_hit_delivery_copies_no_bytes_within_budget() {
         crate::compiler::DeliveryPolicy::HardlinkEligible,
         MaterializationMode::Link,
         true,
+        SiblingFloorPass::PerFile,
     )
     .unwrap();
     let elapsed = start.elapsed();
