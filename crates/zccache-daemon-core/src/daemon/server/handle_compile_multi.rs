@@ -993,6 +993,7 @@ pub(super) async fn handle_compile_multi(
                     dep_dirs,
                     output_path,
                     persist: None,
+                    persist_ns: 0,
                 };
             };
             let get_hash = |p: &Path| {
@@ -1006,6 +1007,7 @@ pub(super) async fn handle_compile_multi(
                     .load()
                     .update(&context_key, scan_result, get_hash);
 
+            let mut persist_ns_total: u64 = 0;
             if let Some(artifact_key) = update_result {
                 let output_name = output_path
                     .file_name()
@@ -1025,12 +1027,20 @@ pub(super) async fn handle_compile_multi(
                 // entry whose cache file doesn't exist — same end-user
                 // observation as the prior "background persist failed
                 // silently" path, just visible immediately.
-                if let Err(e) = persist_artifact_paths(
+                // Issue #1772: this is the multi-source publish cost the
+                // profiler previously had no coverage for. Timed here (not
+                // just at the batch level) because units fan out over
+                // separate `spawn_blocking` tasks — a batch-level Instant
+                // would measure wall time, not the summed publish cost.
+                let t_persist = std::time::Instant::now();
+                let persist_result = persist_artifact_paths(
                     state_task.artifact_dir.as_path(),
                     &artifact_key_hex,
                     std::slice::from_ref(&output_path),
                     materialization_mode,
-                ) {
+                );
+                persist_ns_total = t_persist.elapsed().as_nanos() as u64;
+                if let Err(e) = persist_result {
                     tracing::warn!(
                         key = %artifact_key_hex,
                         output = %output_path.display(),
@@ -1040,6 +1050,7 @@ pub(super) async fn handle_compile_multi(
                         dep_dirs,
                         output_path,
                         persist: None,
+                        persist_ns: persist_ns_total,
                     };
                 }
                 // Build the cached artifact directly (avoid constructing the
@@ -1093,6 +1104,7 @@ pub(super) async fn handle_compile_multi(
                 dep_dirs,
                 output_path,
                 persist,
+                persist_ns: persist_ns_total,
             }
         });
     }
@@ -1100,6 +1112,8 @@ pub(super) async fn handle_compile_multi(
     let mut all_dep_dirs: HashSet<NormalizedPath> = HashSet::new();
     let mut all_miss_outputs: Vec<NormalizedPath> = Vec::new();
     let mut persist_jobs: Vec<PersistTaskParams> = Vec::new();
+    let mut miss_unit_count: usize = 0;
+    let mut persist_ns_sum: u64 = 0;
     while let Some(joined) = miss_set.join_next().await {
         let outcome = match joined {
             Ok(o) => o,
@@ -1108,6 +1122,8 @@ pub(super) async fn handle_compile_multi(
                 continue;
             }
         };
+        miss_unit_count += 1;
+        persist_ns_sum = persist_ns_sum.saturating_add(outcome.persist_ns);
         for d in outcome.dep_dirs {
             all_dep_dirs.insert(d);
         }
@@ -1115,6 +1131,28 @@ pub(super) async fn handle_compile_multi(
         if let Some(p) = outcome.persist {
             persist_jobs.push(p);
         }
+    }
+
+    // Issue #1772: attribute the multi-source publish cost to the profiler.
+    // Previously the multi-source miss path never called an
+    // `emit_cc_miss_profile`-style hook, so `ZCCACHE_PROFILE_CC_MISS`
+    // couldn't see the 7-9 fsyncs/source this batch just paid.
+    if miss_unit_count > 0 && std::env::var_os(CC_MISS_PROFILE_ENV).is_some() {
+        let family = match compilations[0].family {
+            crate::compiler::CompilerFamily::Gcc => "gcc",
+            crate::compiler::CompilerFamily::Clang => "clang",
+            crate::compiler::CompilerFamily::Msvc => "msvc",
+            crate::compiler::CompilerFamily::Rustc => "rustc",
+            crate::compiler::CompilerFamily::Rustfmt => "rustfmt",
+        };
+        super::handle_compile::emit_cc_multi_miss_profile(
+            super::handle_compile::CcMultiMissProfile {
+                family,
+                unit_count: miss_unit_count,
+                total_ns: compile_start.elapsed().as_nanos() as u64,
+                persist_ns: persist_ns_sum,
+            },
+        );
     }
 
     let dep_dirs_vec: Vec<NormalizedPath> = all_dep_dirs.into_iter().collect();

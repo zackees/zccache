@@ -101,6 +101,13 @@ pub(super) struct MissOutcome {
     pub(super) dep_dirs: Vec<NormalizedPath>,
     pub(super) output_path: NormalizedPath,
     pub(super) persist: Option<PersistTaskParams>,
+    /// Wall time this unit's synchronous `persist_artifact_paths` publish
+    /// call took, or 0 when publication was skipped (resource-gated,
+    /// hardlink failure). Issue #1772: summed across all units and
+    /// reported via `emit_cc_multi_miss_profile` so
+    /// `ZCCACHE_PROFILE_CC_MISS` can attribute the multi-source publish
+    /// cost, which previously had no profiler coverage at all.
+    pub(super) persist_ns: u64,
 }
 
 pub(super) struct PersistTaskParams {

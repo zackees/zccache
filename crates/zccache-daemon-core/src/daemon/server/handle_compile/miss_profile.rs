@@ -418,3 +418,82 @@ pub(super) fn emit_cc_miss_profile(profile: CcMissProfile<'_>) {
         unaccounted_ns,
     );
 }
+
+/// Cold-miss phase profile for the multi-source `handle_compile_multi` /
+/// `try_handle_staged_misses` paths (issue #1772). Neither path ever called
+/// `emit_cc_miss_profile` — a multi-source `cc -c a.c b.c ...` miss was
+/// invisible to `ZCCACHE_PROFILE_CC_MISS`, so the chronic Multi-file Cold
+/// rows (#1437, #1445) couldn't be attributed to a specific phase.
+///
+/// Deliberately minimal compared to `CcMissProfile`: the multi-source miss
+/// tasks fan out over `spawn_blocking`/a per-unit loop, so most sub-phase
+/// timings (hashing, depgraph update, index build) are per-unit and already
+/// summed into the batch's dominant cost — the artifact publication step
+/// this issue is about (`persist_artifact_paths` /
+/// `publish_artifact_paths_observed`). `persist_ns` is the sum of each
+/// unit's publication duration; because units can publish concurrently it
+/// may exceed `total_ns`, so the unaccounted calculation saturates instead
+/// of underflowing.
+pub(in crate::daemon::server) struct CcMultiMissProfile<'a> {
+    pub(in crate::daemon::server) family: &'a str,
+    pub(in crate::daemon::server) unit_count: usize,
+    pub(in crate::daemon::server) total_ns: u64,
+    pub(in crate::daemon::server) persist_ns: u64,
+}
+
+/// Pure accounting helper split out of `emit_cc_multi_miss_profile` so the
+/// saturating-subtraction edge case (summed per-unit `persist_ns` from
+/// concurrent tasks exceeding the batch's own `total_ns`) is unit-testable
+/// without capturing `eprintln!` output.
+pub(in crate::daemon::server) fn cc_multi_miss_unaccounted_ns(
+    total_ns: u64,
+    persist_ns: u64,
+) -> u64 {
+    total_ns.saturating_sub(persist_ns)
+}
+
+pub(in crate::daemon::server) fn emit_cc_multi_miss_profile(profile: CcMultiMissProfile<'_>) {
+    let CcMultiMissProfile {
+        family,
+        unit_count,
+        total_ns,
+        persist_ns,
+    } = profile;
+    let unaccounted_ns = cc_multi_miss_unaccounted_ns(total_ns, persist_ns);
+
+    eprintln!(
+        concat!(
+            "zccache_cc_multi_miss_profile ",
+            "family={} unit_count={} total_ns={} persist_ns={} unaccounted_ns={}",
+        ),
+        family, unit_count, total_ns, persist_ns, unaccounted_ns,
+    );
+}
+
+#[cfg(test)]
+mod cc_multi_miss_profile_tests {
+    use super::cc_multi_miss_unaccounted_ns;
+
+    /// RED: before this helper existed there was no way to assert the
+    /// ordinary case (persist work is a proper subset of the batch wall
+    /// time) computes a normal, non-saturated residual.
+    #[test]
+    fn unaccounted_ns_is_the_ordinary_residual_when_persist_fits_inside_total() {
+        assert_eq!(cc_multi_miss_unaccounted_ns(1_000, 400), 600);
+    }
+
+    /// Multi-source publication fans out over concurrent `spawn_blocking`
+    /// tasks (legacy path) or a sequential-but-cheap loop (staged path);
+    /// summed per-unit `persist_ns` across N concurrent units can exceed
+    /// the batch's own wall-clock `total_ns`. This must saturate to 0,
+    /// never underflow a `u64`.
+    #[test]
+    fn unaccounted_ns_saturates_when_summed_persist_exceeds_wall_time() {
+        assert_eq!(cc_multi_miss_unaccounted_ns(1_000, 5_000), 0);
+    }
+
+    #[test]
+    fn unaccounted_ns_is_zero_for_empty_batch() {
+        assert_eq!(cc_multi_miss_unaccounted_ns(0, 0), 0);
+    }
+}

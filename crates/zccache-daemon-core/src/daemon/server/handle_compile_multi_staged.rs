@@ -577,6 +577,14 @@ pub(super) async fn try_handle_staged_misses(
         dependency_directories.extend(miss.dep_dirs.iter().cloned());
     }
 
+    // Issue #1772: attribute the staged multi-source publish cost to the
+    // profiler. `publish_artifact_paths_observed` below pays the full
+    // staged fsync chain (output(s), `.cowhash` sidecar, manifest,
+    // generation dir, key root, pointer, staged root) synchronously per
+    // unit, and this path had no `ZCCACHE_PROFILE_CC_MISS` coverage at all.
+    let t_publish_batch = std::time::Instant::now();
+    let mut published_unit_count: usize = 0;
+    let mut publish_ns_sum: u64 = 0;
     for mut miss in published {
         let publication_guard = begin_artifact_publication(state).await;
         if publication_guard.is_none() {
@@ -595,9 +603,13 @@ pub(super) async fn try_handle_staged_misses(
                 .iter()
                 .map(|output| output.staged.clone())
                 .collect();
-            if let Err(reason) =
-                publish_artifact_paths_observed(state, &key, metadata, &staged_paths)
-            {
+            published_unit_count += 1;
+            let t_publish_unit = std::time::Instant::now();
+            let publish_result =
+                publish_artifact_paths_observed(state, &key, metadata, &staged_paths);
+            publish_ns_sum =
+                publish_ns_sum.saturating_add(t_publish_unit.elapsed().as_nanos() as u64);
+            if let Err(reason) = publish_result {
                 record_prepublication_salvage_success(state, miss.plan.outputs.len(), reason.id());
                 miss.cache_entry = None;
                 miss.graph_update = None;
@@ -645,6 +657,23 @@ pub(super) async fn try_handle_staged_misses(
         record_session_stat(&state.sessions, sid, move |stats| {
             stats.record_miss(source, artifact_bytes);
         });
+    }
+    if published_unit_count > 0 && std::env::var_os(CC_MISS_PROFILE_ENV).is_some() {
+        let family = match compilations[0].family {
+            crate::compiler::CompilerFamily::Gcc => "gcc",
+            crate::compiler::CompilerFamily::Clang => "clang",
+            crate::compiler::CompilerFamily::Msvc => "msvc",
+            crate::compiler::CompilerFamily::Rustc => "rustc",
+            crate::compiler::CompilerFamily::Rustfmt => "rustfmt",
+        };
+        super::handle_compile::emit_cc_multi_miss_profile(
+            super::handle_compile::CcMultiMissProfile {
+                family,
+                unit_count: published_unit_count,
+                total_ns: t_publish_batch.elapsed().as_nanos() as u64,
+                persist_ns: publish_ns_sum,
+            },
+        );
     }
     watch_directories(
         state,
