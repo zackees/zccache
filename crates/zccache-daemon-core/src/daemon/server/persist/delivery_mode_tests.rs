@@ -327,3 +327,17 @@ fn plan_auto_never_hardlinks() {
         }
     }
 }
+
+/// #1792: only rustc outputs get AUTO's never-share rule; every other
+/// compiler's or tool's outputs keep the full chain under AUTO.
+#[test]
+fn non_rustc_outputs_keep_the_full_chain_under_auto() {
+    assert_eq!(for_non_rustc_outputs(Auto), ReflinkOrLinkOrCopy);
+    for mode in [ReflinkOrLinkOrCopy, Link, Copy, Reflink] {
+        assert_eq!(
+            for_non_rustc_outputs(mode),
+            mode,
+            "{mode} must pass through"
+        );
+    }
+}

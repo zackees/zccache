@@ -14,11 +14,30 @@ fn seed_persisted_blob(path: &Path, bytes: &[u8]) {
 
 fn require_hardlink(out: &Path, cache: &Path, test_name: &str) -> bool {
     if crate::platform::fs::identity::same_file(out, cache).unwrap() {
-        true
-    } else {
-        eprintln!("SKIP {test_name}: temporary filesystem does not support same-volume hardlinks");
-        false
+        return true;
     }
+    // Skip only where the volume cannot hardlink. A hardlink-capable volume
+    // that still delivered an independent file means the test stopped
+    // exercising the shared-inode path it guards (#1792 audit).
+    assert!(
+        !fs_caps_raw(cache, out).hardlink,
+        "{test_name}: the volume supports hardlinks but the output was not linked"
+    );
+    eprintln!("SKIP {test_name}: temporary filesystem does not support same-volume hardlinks");
+    false
+}
+
+/// Deliver a hardlink-eligible output under LINK, the mode whose shared
+/// inode the #197/#1039 guards below protect (AUTO never shares, #1792).
+fn deliver_linked(out: &Path, cache: &Path) {
+    materialize_cached_file_with_mode(
+        out,
+        cache,
+        crate::compiler::DeliveryPolicy::HardlinkEligible,
+        MaterializationMode::Link,
+        false,
+    )
+    .unwrap();
 }
 
 /// zccache#1597: ordinary cache-file hits can restore a Cargo build-script
@@ -220,7 +239,7 @@ fn write_cached_output_skips_when_already_hardlinked() {
     seed_persisted_blob(&cache, content);
 
     // First write: creates hardlink
-    write_cached_output(&out, &cache, content).unwrap();
+    deliver_linked(&out, &cache);
     assert_eq!(std::fs::read(&out).unwrap(), content.as_slice());
 
     // A plain same-volume tempdir supports hardlinks on every CI platform
@@ -239,7 +258,7 @@ fn write_cached_output_skips_when_already_hardlinked() {
     // Second write: should detect hardlink and skip.
     // (If it didn't skip, it would still produce correct content,
     //  but the test verifies the optimization path exists.)
-    write_cached_output(&out, &cache, content).unwrap();
+    deliver_linked(&out, &cache);
     assert_eq!(std::fs::read(&out).unwrap(), content.as_slice());
     assert!(
         crate::platform::fs::identity::same_file(&out, &cache).unwrap(),
@@ -254,7 +273,7 @@ fn persist_artifact_output_does_not_mutate_existing_hardlink() {
     let out = dir.path().join("output.rlib");
 
     persist_artifact_output(&cache, b"first").unwrap();
-    write_cached_output(&out, &cache, b"first").unwrap();
+    deliver_linked(&out, &cache);
     // See the comment in write_cached_output_skips_when_already_hardlinked:
     // this must hold in every CI environment this suite runs in, so assert
     // it loudly rather than silently skip the invariant this test exists to
@@ -431,7 +450,7 @@ fn staged_generation_hardlinks_only_when_semantically_authorized() {
         &[payload],
         &Vec::<NormalizedPath>::new(),
         &[crate::compiler::DeliveryPolicy::HardlinkEligible],
-        MaterializationMode::Auto,
+        MaterializationMode::Link,
     )
     .unwrap();
     assert_eq!(
@@ -638,7 +657,7 @@ fn break_output_hardlink_before_compile_prevents_cache_poisoning() {
     let rebuilt_content = b"rebuilt artifact in worktree b";
     seed_persisted_blob(&cache, cached_content);
 
-    write_cached_output(&out, &cache, cached_content).unwrap();
+    deliver_linked(&out, &cache);
     // See the comment in write_cached_output_skips_when_already_hardlinked:
     // this must hold in every CI environment this suite runs in. This is
     // the issue #197 regression test — asserting it loudly instead of
@@ -678,7 +697,7 @@ fn unmediated_mutation_cannot_silently_poison_cache() {
     let original = b"trusted cache bytes";
     seed_persisted_blob(&cache, original);
 
-    write_cached_output(&out, &cache, original).unwrap();
+    deliver_linked(&out, &cache);
     if crate::platform::fs::identity::same_file(&out, &cache).unwrap() {
         let mutation = std::fs::OpenOptions::new()
             .write(true)
@@ -710,7 +729,7 @@ fn persisted_blob_is_readonly_and_detach_is_writable() {
 
     persist_artifact_output(&cache, b"immutable").unwrap();
     assert!(std::fs::metadata(&cache).unwrap().permissions().readonly());
-    write_cached_output(&out, &cache, b"immutable").unwrap();
+    deliver_linked(&out, &cache);
     break_output_hardlink_before_compile(&out).unwrap();
     assert!(!std::fs::metadata(&out).unwrap().permissions().readonly());
     std::fs::write(&out, b"rebuilt").unwrap();
@@ -1272,7 +1291,7 @@ fn write_cached_output_preserves_mtime_on_existing_hardlink() {
     seed_persisted_blob(&cache, content);
 
     // First delivery: creates hardlink
-    write_cached_output(&out, &cache, content).unwrap();
+    deliver_linked(&out, &cache);
 
     let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0);
     set_materialized_mtime(&out, old_time).unwrap();
@@ -1292,7 +1311,7 @@ fn write_cached_output_preserves_mtime_on_existing_hardlink() {
     }
 
     // Second delivery: same_file keeps the linked mtime.
-    write_cached_output(&out, &cache, content).unwrap();
+    deliver_linked(&out, &cache);
 
     let out_mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(
         &std::fs::metadata(&out).unwrap(),

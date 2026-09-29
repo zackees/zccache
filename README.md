@@ -550,13 +550,13 @@ delivered:
 
 | Mode | Delivery |
 |---|---|
-| `AUTO` (default) | Reflink, else copy. Never shares the cache file's inode. |
+| `AUTO` (default) | Rust outputs: reflink, else copy; never shares the cache file's inode. C/C++ and other outputs: the full `REFLINK_OR_LINK_OR_COPY` chain. |
 | `REFLINK_OR_LINK_OR_COPY` | Reflink, else hardlink, else copy: the fastest chain, and the one the published benchmarks use. |
 | `LINK` | Hardlink, else copy. |
 | `COPY` | Always an independent, writable byte copy. |
 | `REFLINK` | Reflink, else copy, with a warning. |
 
-`AUTO` never hardlinks because a hardlinked hit is a read-only file shared
+`AUTO` never hardlinks Rust outputs because a hardlinked hit is a read-only file shared
 with the cache, and rustc refuses to rebuild over a read-only `.rmeta`/`.rlib`
 (`output file ... is not writeable`) when it runs outside zccache: a plain
 `cargo`, rust-analyzer, or `ZCCACHE_DISABLE=1` (#1791, #1792). Choose

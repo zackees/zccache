@@ -527,7 +527,8 @@ pub(super) async fn handle_compile_multi(
         (Arc::new(base), dep_flags)
     };
 
-    let materialization_mode = state.materialization_mode(client_env.as_deref());
+    // C/C++ only: AUTO keeps the full chain for non-rustc outputs (#1792).
+    let materialization_mode = state.non_rustc_materialization_mode(client_env.as_deref());
     // ── Phase 1: Check cache for each unit (parallel, as-completed) ──
     let mut join_set = tokio::task::JoinSet::new();
     let scan_cache = Arc::clone(&state.include_scan_cache);

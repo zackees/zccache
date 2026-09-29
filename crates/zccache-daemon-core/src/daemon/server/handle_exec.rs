@@ -301,7 +301,7 @@ pub(super) async fn handle_generic_tool_exec(
     };
     let full_hex = full_key.to_hex();
 
-    let materialization_mode = state.materialization_mode(Some(&env));
+    let materialization_mode = state.non_rustc_materialization_mode(Some(&env));
     let bypass = non_deterministic || matches!(cache_policy, ExecCachePolicy::Bypass);
     let lookup_allowed = !bypass
         && matches!(

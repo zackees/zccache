@@ -24,9 +24,11 @@ pub const MATERIALIZATION_MODE_ENV: &str = "ZCCACHE_MODE";
 /// How a cached artifact is delivered to its requested output path.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum MaterializationMode {
-    /// Reflink, else copy. Never shares the cache file's inode, so a tool
-    /// outside zccache (a plain `cargo`, rust-analyzer, `ZCCACHE_DISABLE=1`)
-    /// can always replace the output (#1791, #1792). Hosts that own the
+    /// For rustc outputs: reflink, else copy. Never shares the cache file's
+    /// inode, so a rustc outside zccache (a plain `cargo`, rust-analyzer,
+    /// `ZCCACHE_DISABLE=1`) can always replace the output (#1791, #1792).
+    /// Outputs of every other compiler or tool keep the full
+    /// `REFLINK_OR_LINK_OR_COPY` chain under AUTO (the daemon maps it). Hosts that own the
     /// whole build environment opt into hardlinks with `REFLINK_OR_LINK_OR_COPY`
     /// or `LINK`.
     #[default]

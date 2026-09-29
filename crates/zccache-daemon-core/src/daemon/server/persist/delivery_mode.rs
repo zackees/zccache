@@ -62,6 +62,19 @@ pub(in crate::daemon::server) fn plan_tiers(
     TierPlan { reflink, hardlink }
 }
 
+/// #1792: AUTO's never-share rule protects rustc outputs, because rustc
+/// refuses to rebuild over a read-only shared output (#1791). Outputs of
+/// every other compiler or tool keep the full reflink -> link -> copy chain
+/// under AUTO; their delivery policies still decide whether a hit may link.
+pub(in crate::daemon::server) const fn for_non_rustc_outputs(
+    mode: MaterializationMode,
+) -> MaterializationMode {
+    match mode {
+        MaterializationMode::Auto => MaterializationMode::ReflinkOrLinkOrCopy,
+        other => other,
+    }
+}
+
 /// Tiers the *store* direction (compiler output -> cache blob) may try. The
 /// store has no delivery policy of its own: REFLINK_OR_LINK_OR_COPY and LINK
 /// may hardlink, but a hardlinked store leaves the build output sharing the
@@ -207,6 +220,15 @@ pub(in crate::daemon::server) fn resolve_request_mode(
 }
 
 impl SharedState {
+    /// The mode for a request whose outputs come from a compiler or tool
+    /// other than rustc (see [`for_non_rustc_outputs`]).
+    pub(in crate::daemon::server) fn non_rustc_materialization_mode(
+        &self,
+        client_env: Option<&[(String, String)]>,
+    ) -> MaterializationMode {
+        for_non_rustc_outputs(self.materialization_mode(client_env))
+    }
+
     /// The materialization mode for one request (see [`resolve_request_mode`]).
     pub(in crate::daemon::server) fn materialization_mode(
         &self,

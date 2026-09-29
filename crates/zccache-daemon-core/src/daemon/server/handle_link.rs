@@ -136,7 +136,7 @@ pub(super) async fn handle_link_ephemeral(
 ) -> Response {
     let _active_request = state.begin_cache_request();
     // Resolved before `env` moves into the spawned tool (#1683).
-    let link_mode = state.materialization_mode(env.as_deref());
+    let link_mode = state.non_rustc_materialization_mode(env.as_deref());
     // Emit hosted cold link/archive phase profiles when requested (#535).
     let profile_enabled = std::env::var_os(CC_MISS_PROFILE_ENV).is_some();
     let link_start = std::time::Instant::now();

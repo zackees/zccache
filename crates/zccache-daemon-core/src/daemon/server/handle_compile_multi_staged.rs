@@ -562,7 +562,7 @@ pub(super) async fn try_handle_staged_misses(
             state,
             &miss.plan,
             None,
-            state.materialization_mode(client_env.as_deref()),
+            state.non_rustc_materialization_mode(client_env.as_deref()),
         ) {
             return Some(Response::Error {
                 message: format!("failed to materialize multi-source output: {error}"),

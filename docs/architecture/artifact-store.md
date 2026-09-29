@@ -405,7 +405,7 @@ disables read-only enforcement. Neither setting adds an IPC roundtrip.
 
 | Mode | Delivery |
 |---|---|
-| `AUTO` (default) | Reflink, else copy. Never shares the cache file's inode (#1792): a hardlinked hit is read-only, and rustc refuses to rebuild over a read-only `.rmeta`/`.rlib` when it runs outside zccache (#1791). |
+| `AUTO` (default) | Rust (rustc) outputs: reflink, else copy; never shares the cache file's inode (#1792). Outputs of every other compiler or tool: the full `REFLINK_OR_LINK_OR_COPY` chain (`for_non_rustc_outputs`). Why Rust: a hardlinked hit is read-only, and rustc refuses to rebuild over a read-only `.rmeta`/`.rlib` when it runs outside zccache (#1791). |
 | `REFLINK_OR_LINK_OR_COPY` | Reflink, else hardlink (only outputs whose delivery policy allows sharing an inode), else copy: the full tier order above (the pre-#1792 `AUTO`). For hosts where every writer of the target dir goes through zccache; the published benchmarks and Perf Guard run under it. |
 | `LINK` | Hardlink eligible outputs, never clone them. Outputs the policy keeps independent take reflink-else-copy. |
 | `COPY` | Always an independent, writable byte copy that owns its blocks. Never probes the volume, and writes the bytes itself: `std::fs::copy` uses `copy_file_range`, which btrfs/XFS may satisfy with a clone. |

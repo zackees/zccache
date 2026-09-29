@@ -132,7 +132,7 @@ pub(super) fn publish_artifact_paths_observed(
             &state.artifact_dir,
             key,
             sources,
-            state.materialization_mode(None),
+            state.non_rustc_materialization_mode(None),
         )
         .map_err(|error| {
             staged_publish_failure(&error).unwrap_or(StagedPublishFailure::StoreSetup)

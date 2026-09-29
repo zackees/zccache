@@ -1,7 +1,9 @@
 //! Layer E of the #1683 test design: the *store* direction (compiler output
 //! -> cache blob) under `ZCCACHE_MODE`. COPY and REFLINK promise that no
 //! build-tree output shares the cache blob's inode, so they never hardlink
-//! the compiler output in; AUTO and LINK keep the hardlink tier.
+//! the compiler output in; LINK and REFLINK_OR_LINK_OR_COPY keep the hardlink
+//! tier. Raw AUTO (rustc outputs) never hardlinks; the daemon maps AUTO to the
+//! full chain for every other compiler (#1792).
 
 use super::super::*;
 use MaterializationMode::{Auto, Copy, Link, Reflink};
@@ -66,7 +68,7 @@ fn link_mode_hardlinks_the_store_where_supported() {
     assert!(same_file(&source, &cache));
 }
 
-/// AUTO is today's reflink -> hardlink -> copy order: exactly one tier.
+/// AUTO (rustc outputs) is reflink -> copy (#1792): exactly one tier.
 #[test]
 fn auto_mode_store_reports_exactly_one_tier() {
     let (_dir, source, cache) = fixture();
@@ -90,4 +92,20 @@ fn store_plan_matches_the_shareable_core_tiers() {
             "{mode}"
         );
     }
+}
+
+/// #1792: a C/C++ (non-rustc) miss under AUTO still stores by hardlink where
+/// the volume cannot clone, exactly as before; only rustc outputs lost it.
+#[test]
+fn auto_store_for_non_rustc_outputs_may_hardlink_like_the_full_chain() {
+    let (_dir, source, cache) = fixture();
+    let mode = for_non_rustc_outputs(Auto);
+    let stats = persist_artifact_file(&cache, &source, mode).unwrap();
+    if stats.reflink_count == 0 && fs_caps_raw(&source, &cache).hardlink {
+        assert_eq!(
+            stats.hardlink_count, 1,
+            "non-rustc AUTO store must keep the hardlink tier"
+        );
+    }
+    assert_eq!(std::fs::read(&cache).unwrap(), BYTES);
 }
