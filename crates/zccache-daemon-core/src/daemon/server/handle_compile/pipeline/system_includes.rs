@@ -399,6 +399,68 @@ mod tests {
         }
     }
 
+    /// #1776: the first warm trial must not re-probe. Discovery runs once per
+    /// compiler identity (path + mtime + size) and is reused by every later
+    /// request; rewriting the binary is the only thing that invalidates it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sequential_discovery_probes_once_per_compiler_identity() {
+        if crate::platform::host::is_windows() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let include_dir = tmp.path().join("include");
+        std::fs::create_dir_all(&include_dir).unwrap();
+        let log = tmp.path().join("probes.log");
+        let compiler = tmp.path().join("fake-avr-g++");
+        let write_compiler = |pad: &str| {
+            std::fs::write(
+                &compiler,
+                format!(
+                    "#!/bin/sh\n# {pad}\necho \"$*\" >> '{log}'\n\
+                     printf '#include <...> search starts here:\\n {inc}\\nEnd of search list.\\n' >&2\n",
+                    log = log.display(),
+                    inc = include_dir.display(),
+                ),
+            )
+            .unwrap();
+            crate::platform::fs::permissions::make_executable(&compiler).unwrap();
+        };
+        write_compiler("v1");
+
+        let cache_dir = NormalizedPath::new(tmp.path().join("cache"));
+        let server =
+            DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir)
+                .unwrap();
+        let state = server.test_state_arc();
+        let compiler_path = NormalizedPath::new(&compiler);
+        let lineage = crate::daemon::lineage::Lineage::current(None, None);
+        let probes = || std::fs::read_to_string(&log).unwrap().lines().count();
+        let discover = || {
+            discover_system_includes(
+                &state,
+                &compiler_path,
+                &lineage,
+                CompilePriority::Normal,
+                false,
+                None,
+            )
+        };
+
+        for _ in 0..50 {
+            assert_eq!(discover().await.includes.len(), 1);
+        }
+        assert_eq!(probes(), 1, "50 sequential requests must share one probe");
+
+        // A different binary (size changes) must be re-probed, not served stale.
+        write_compiler("version-two-is-longer");
+        assert_eq!(discover().await.includes.len(), 1);
+        assert_eq!(probes(), 2, "a rewritten compiler must invalidate the memo");
+        for _ in 0..10 {
+            discover().await;
+        }
+        assert_eq!(probes(), 2);
+    }
+
     /// FastLED/fbuild#1466: a cold burst of compiles for one compiler must
     /// spawn the system-include probe once, not once per compile.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
