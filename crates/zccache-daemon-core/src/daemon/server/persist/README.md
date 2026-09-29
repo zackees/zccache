@@ -32,10 +32,13 @@ re-exports `*` from each submodule.
   `plan_tiers` decision, per-request mode resolution, the service-wide default,
   and the embedded setter; tests in `delivery_mode_tests.rs`.
 - **[`link_registry.rs`](link_registry.rs)** — Hardlink ledger and suspect verification.
-- **[`mtime.rs`](mtime.rs)** — Mtime preservation + sibling-floor refinement
-  (`touch_mtime`, `floor_materialized_outputs_to_input_max`,
-  `floor_artifact_mtime_to_sibling_max`). See the iter7 invariant in
-  `CLAUDE.md` and issues #466 / #467.
+- **[`mtime.rs`](mtime.rs)** — The single owner of every materialized-output
+  mtime decision (#1771): `resolve_hit_mtime` (object mtime + sibling floor),
+  `apply_batch_policy` (`NativeFreshHit` / `RustcInputFloor`), `stamp_mtime`.
+  One contract across LINK/REFLINK/COPY; see
+  `docs/architecture/artifact-store.md`. Guarded by `mtime_owner_tests.rs`
+  (no other file sets a file time) and `mtime_contract_tests.rs` (mode
+  invariance).
 - **[`staged_paths.rs`](staged_paths.rs)** — Collision-resistant logical
   staging marker normalization and requested-path rehydration.
 - **[`staged_link_args.rs`](staged_link_args.rs)** — Linker argument planning

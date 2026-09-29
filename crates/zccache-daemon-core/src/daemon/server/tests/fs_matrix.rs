@@ -129,7 +129,7 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     // FAT/exFAT store mtime with 2-second granularity, so the value that
     // actually lands on disk can differ from what was requested. Compare
     // the materialized mtime against the blob's *actual* stored mtime
-    // (which `restore_cache_mtime` reads and propagates) rather than the
+    // (which `resolve_hit_mtime` reads and propagates) rather than the
     // pre-rounding `old_time` we asked for.
     let blob_time = kernal_api::platform::fs::FileTime::from_last_modification_time(
         &std::fs::metadata(&blob).unwrap(),

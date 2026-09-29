@@ -477,3 +477,30 @@ output—remain on the legacy path before compiler spawn. Explicit Rust `--emit=
 destinations are included in the complete cache-hit reverse map. Output
 families without complete-set plans select the legacy path before spawn; they
 are never partially staged.
+
+### Materialized-output mtime contract (#1771)
+
+A materialized output carries the mtime of the cache object it references,
+**identical for `LINK`, `REFLINK` and `COPY`**. The delivery mode chooses the
+syscall and never the resulting mtime. Every mtime decision lives in
+`crates/zccache-daemon-core/src/daemon/server/persist/mtime.rs`; a guard test
+(`mtime_owner_tests.rs`) fails when any other daemon-core production file sets
+a file time, and `mtime_contract_tests.rs` asserts equal mtimes across the
+three modes for a single-file C hit, a multi-source C hit and a rustc hit.
+
+| Policy | Where | Resulting mtime |
+|---|---|---|
+| `ObjectMtime` (default) | every per-file delivery (`resolve_hit_mtime`) | the cache object's mtime; never `now()` (iter7) |
+| `SiblingFloor` (#466/#467) | same call | raised to the newest sibling `rlib`/`rmeta`/`so`/`dylib`/`dll`/`exe`/`a`/`lib` in the output's directory |
+| `NativeFreshHit` | batch materializer, C/C++/Emscripten/link/exec | `now()` seed only; recorded inputs are not statted (#1770) |
+| `RustcInputFloor` | batch materializer, rustc | `now()` seed plus the newest recorded input (#599); the seed is contested, see #1158 |
+
+Where a floor raises the mtime it does so in every mode, and the raised
+output is always an independent file: a hit whose floor is above the cache
+object's mtime skips the hardlink tier (the same rule that already detached a
+same-inode output), so `LINK` never rewrites a blob's mtime for the per-file
+floor. The batch policies still stamp a hardlinked output in place, which
+changes the shared blob's mtime under `LINK` (#1819); that behaviour is
+unchanged and left to the #1158 decision. Out of scope here: recording the
+object mtime in the manifest, and the same rule for `zccache warm`, rust-plan
+restore and `zccache replay` outside daemon-core.

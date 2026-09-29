@@ -55,7 +55,7 @@ fn copy_output_with(
     // setting mtime on a read-only file fails with ERROR_ACCESS_DENIED.
     crate::platform::fs::permissions::make_writable(destination)?;
     let mtime = kernal_api::platform::fs::FileTime::from_last_modification_time(&source_metadata);
-    kernal_api::platform::fs::set_file_mtime(destination, mtime)?;
+    crate::daemon::server::persist::stamp_mtime(destination, mtime)?;
     result
 }
 

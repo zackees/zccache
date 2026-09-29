@@ -174,7 +174,7 @@ fn batch_floor_freshens_materialized_outputs_without_floor_paths() {
     // Do not relax this test to satisfy that rule without the A/B in #1158 —
     // #599's regression was 14× on "warm (target intact)", the dominant
     // dev-inner-loop scenario, and iter7's was sub-second. See the comment at
-    // the `batch_floor` call site in `write_cached.rs`.
+    // the `apply_batch_policy` call site in `write_cached.rs`.
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache/libcrate-cache.rlib");
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();

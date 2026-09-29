@@ -1,66 +1,145 @@
-//! Mtime preservation + sibling-floor refinement.
+//! The single owner of every materialized-output mtime decision (#1771).
 //!
-//! See the iter7 invariant in `CLAUDE.md`: preservation is the fast path
-//! (zero extra syscalls, no cargo-fingerprint regression). The only
-//! exception is the sibling-floor refinement in [`touch_mtime`] / the
-//! batch-floor entry point — required so cargo's "dep_mtime ≤ my_mtime"
-//! check doesn't misfire on out-of-order materialization (issues #466 / #467).
+//! # Contract
+//!
+//! A materialized output carries the mtime of the cache object it references,
+//! **identical for LINK, REFLINK and COPY**. The delivery mode chooses the
+//! syscall (hardlink, clone, copy) and never the resulting mtime. Where a
+//! policy below *raises* that mtime, the raise is applied identically in every
+//! mode; a hit whose mtime must be raised cannot share the cache inode (that
+//! would rewrite the blob for every other link), so it is delivered as an
+//! independent file carrying the raised value.
+//!
+//! No file outside this module (and tests) may set a file time: see
+//! `mtime_owner_tests.rs`, which greps for it.
+//!
+//! # Policies
+//!
+//! - [`resolve_hit_mtime`] — the per-file default [`ObjectMtime`](self#objectmtime)
+//!   plus the `SiblingFloor` refinement.
+//! - [`BatchPolicy::NativeFreshHit`] / [`BatchPolicy::RustcInputFloor`] — the
+//!   batch materializer's end-of-hit floor.
+//! - [`stamp_recorded_mtime`] — directory bundles replay recorded timestamps.
+//!
+//! ## `ObjectMtime` (the default)
+//!
+//! Preserve the cache object's stored mtime; never stamp `now()` per file.
+//! Preservation is the fast path (iter7: 5.9 ms -> 2.8 ms per hit, and no
+//! cargo-fingerprint regression). A hardlink already inherits it.
+//!
+//! ## `SiblingFloor` (#466 / #467)
+//!
+//! Cargo's `Fingerprint::check_filesystem` reports `StaleDependency` when a
+//! dependency's artifact mtime is strictly greater than the dependent's.
+//! Out-of-order materialization breaks dep-before-dependent ordering, so the
+//! output is floored UP to the newest sibling artifact (`rlib`, `rmeta`, `so`,
+//! `dylib`, `dll`, `exe`, `a`, `lib`) in its directory. The floor only ever
+//! picks a stable sibling-derived value, never `now()`. `O(deps)` per hit; see
+//! #1771 for the measured cost.
+//!
+//! ## Batch policies
+//!
+//! The batch materializer (`write_payloads_par_*`) stamps every output of one
+//! hit with one floor, seeded with `now()`:
+//!
+//! - `NativeFreshHit` (C/C++/Emscripten, link, exec): the `now()` seed alone.
+//!   It already puts an object at least as new as every source and header, as
+//!   a bare compiler would, so recorded inputs are not statted (#1770).
+//! - `RustcInputFloor` (rustc): the `now()` seed plus the newest recorded
+//!   input (#599). **The `now()` seed is contested for rustc: see #1158 before
+//!   touching it.** This policy exists so that decision can be made per
+//!   consumer without changing native builds.
+//!
+//! Both raise a hardlinked output in place, which rewrites the shared blob's
+//! mtime (#1819). That is today's behaviour, kept unchanged here.
 
 use super::*;
+use kernal_api::platform::fs::FileTime;
 
-/// **Preserve** the cache file's stored mtime on the materialized artifact
-/// by default, only bumping UP to the max of existing sibling compilation
-/// artifacts (`*.rlib` / `*.rmeta` / `*.so` / `*.dylib` / `*.dll` /
-/// `*.exe` / `*.a` / `*.lib`) in the same directory when that is needed
-/// to satisfy cargo's "dep_mtime ≤ my_mtime" fingerprint invariant.
-/// Preservation is the fast path. The floor is a corrective.
-///
-/// **Why preservation is the default** (iter7): stamping `now()` made
-/// cargo treat hardlinked cache hits as "externally modified", invalidating
-/// the downstream graph and paying re-link / re-fingerprint cost that
-/// fully cancelled the cache savings. Measured 5.9 ms → 2.8 ms per-hit,
-/// and recovery of the `bin`-cell recompile cascade (cold-tar-untar-warm,
-/// warm 11.6 s → 9.8 s). Preservation is also the cheapest policy.
-///
-/// **Why the floor exception exists** (issues #466 / #467): cargo's
-/// `Fingerprint::check_filesystem` emits `FsStatusOutdated::StaleDependency`
-/// when any dep's artifact mtime is strictly greater than the dependent's
-/// (`dep_mtime > my_mtime → stale`). Cache files for transitively-
-/// dependent crates are not guaranteed to have correctly-ordered mtimes:
-/// archive truncation, parallel cache stores, and out-of-order
-/// re-materialization all break the dep-before-dependent invariant. The
-/// GH bench measured this as 31 crates recompiling on every "warm with
-/// target intact" build, taking ~3 s vs sccache's 215 ms baseline. The
-/// floor closes that gap without re-introducing the iter7 regression
-/// because it only ever increases mtime to a *stable sibling-derived
-/// value* (not `now()`), and the value is idempotent across rebuilds:
-/// 1. The next hit on the same artifact takes the hardlink / same-file
-///    fast path and returns without re-flooring.
-/// 2. If we do re-floor, sibling mtimes only ever grow (cache hits
-///    materialise with their cache mtime; the floor floors UP from
-///    there), so the value converges.
-///
-/// **Cost**: in isolation (no siblings, or all siblings older than the
-/// cache mtime), the floor is a pure no-op after one `read_dir` + N
-/// stats — ~50 µs on a `target/debug/deps/` with 300 entries. When the
-/// floor actually bumps, the amortised cost is hidden behind the cargo
-/// recompilation it prevents (~3 s saved for 50 µs of stat work).
-///
-/// Disable via `ZCCACHE_DISABLE_MTIME_FLOOR=1` if the floor causes
-/// problems with a specific build system (this also disables the
-/// preservation guarantee's enforcement, so the cache file's mtime is
-/// what survives — still not `now()`).
-pub(in crate::daemon::server) fn touch_mtime(path: &Path) {
-    if mtime_floor_disabled() {
-        return;
-    }
-    let _ = floor_artifact_mtime_to_sibling_max(path);
+/// The mtime a hit's output must carry, and whether a floor raised it.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::daemon::server) struct HitMtime {
+    /// The value the output carries: the cache object's mtime, or the sibling
+    /// floor when that is newer.
+    pub(in crate::daemon::server) mtime: FileTime,
+    /// A floor raised `mtime` above the cache object's own. The output must
+    /// then be an independent file: sharing the cache inode would rewrite the
+    /// blob's mtime for every other link.
+    pub(in crate::daemon::server) raised: bool,
 }
 
-pub(in crate::daemon::server) fn floor_materialized_outputs_to_input_max<'a>(
+/// `ObjectMtime` then `SiblingFloor`: the mtime a hit of `cache_file` at
+/// `out_path` must carry, identical whatever tier delivers it.
+///
+/// One stat of the cache object, plus one `read_dir` of the output's directory
+/// when the floor is enabled (`ZCCACHE_DISABLE_MTIME_FLOOR` skips the scan and
+/// leaves pure preservation).
+pub(in crate::daemon::server) fn resolve_hit_mtime(
+    out_path: &Path,
+    cache_file: &Path,
+) -> std::io::Result<HitMtime> {
+    let object = FileTime::from_last_modification_time(&std::fs::metadata(cache_file)?);
+    // A directory that cannot be listed degrades to plain preservation.
+    Ok(
+        match sibling_floor_above(out_path, object).unwrap_or(None) {
+            Some(floor) => HitMtime {
+                mtime: floor,
+                raised: true,
+            },
+            None => HitMtime {
+                mtime: object,
+                raised: false,
+            },
+        },
+    )
+}
+
+/// Stamp `mtime` on a writable materialized output. The caller has made the
+/// output writable (a read-only file cannot take a timestamp on Windows).
+pub(in crate::daemon::server) fn stamp_mtime(path: &Path, mtime: FileTime) -> std::io::Result<()> {
+    kernal_api::platform::fs::set_file_mtime(path, mtime)
+}
+
+/// Replay a timestamp recorded in a directory bundle onto its restored entry.
+pub(in crate::daemon::server) fn stamp_recorded_mtime(
+    path: &Path,
+    seconds: u64,
+    nanos: u32,
+) -> std::io::Result<()> {
+    let modified = std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::new(seconds, nanos))
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid mtime"))?;
+    stamp_mtime(path, FileTime::from_system_time(modified))
+}
+
+/// Which floor the batch materializer applies to one hit's outputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::daemon::server) enum BatchPolicy {
+    /// The `now()` seed only (#1770).
+    NativeFreshHit,
+    /// The `now()` seed plus the newest recorded input (#599). The seed is the
+    /// contested part: see #1158.
+    RustcInputFloor,
+}
+
+impl BatchPolicy {
+    /// Rustc requests are the only ones that carry recorded inputs.
+    pub(in crate::daemon::server) fn for_inputs(has_inputs: bool) -> Self {
+        if has_inputs {
+            Self::RustcInputFloor
+        } else {
+            Self::NativeFreshHit
+        }
+    }
+}
+
+/// Apply `policy` to every output of one hit. `seed` is `now()` in production;
+/// it is a parameter so mode-invariance is testable with a fixed value.
+pub(in crate::daemon::server) fn apply_batch_policy<'a>(
+    policy: BatchPolicy,
     output_paths: impl IntoIterator<Item = &'a Path>,
     input_paths: impl IntoIterator<Item = &'a Path>,
-    minimum_mtime: std::time::SystemTime,
+    seed: std::time::SystemTime,
 ) {
     if mtime_floor_disabled() {
         return;
@@ -70,9 +149,13 @@ pub(in crate::daemon::server) fn floor_materialized_outputs_to_input_max<'a>(
     if outputs.is_empty() {
         return;
     }
+    let inputs: Vec<&Path> = match policy {
+        BatchPolicy::NativeFreshHit => Vec::new(),
+        BatchPolicy::RustcInputFloor => input_paths.into_iter().collect(),
+    };
 
-    let mut max_mtime = minimum_mtime;
-    for path in outputs.iter().copied().chain(input_paths) {
+    let mut max_mtime = seed;
+    for path in outputs.iter().copied().chain(inputs.iter().copied()) {
         let Ok(mtime) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
             continue;
         };
@@ -81,7 +164,7 @@ pub(in crate::daemon::server) fn floor_materialized_outputs_to_input_max<'a>(
         }
     }
 
-    let ft = kernal_api::platform::fs::FileTime::from_system_time(max_mtime);
+    let ft = FileTime::from_system_time(max_mtime);
     for path in outputs {
         let Ok(current) = std::fs::metadata(path).and_then(|metadata| metadata.modified()) else {
             continue;
@@ -102,25 +185,24 @@ fn mtime_floor_disabled() -> bool {
     })
 }
 
+/// Floor `path` up to its newest sibling artifact, in place. Test helper for
+/// the floor's own contract; production flooring goes through
+/// [`resolve_hit_mtime`].
+#[cfg(test)]
 pub(in crate::daemon::server) fn floor_artifact_mtime_to_sibling_max(
     path: &Path,
 ) -> std::io::Result<()> {
-    if let Some(ft) = compute_sibling_floor(path)? {
+    let own = FileTime::from_last_modification_time(&std::fs::metadata(path)?);
+    if let Some(ft) = sibling_floor_above(path, own)? {
         let _ = set_materialized_mtime(path, ft);
     }
     Ok(())
 }
 
-/// Compute the sibling-floor mtime for `path` without applying it. Returns
-/// `None` when the floor is disabled or would be a no-op (no sibling is
-/// newer than `path`'s current mtime). Split out from
-/// [`floor_artifact_mtime_to_sibling_max`] so same-inode call sites can
-/// check whether flooring is actually needed before deciding how to apply
-/// it (e.g. detaching a hardlinked output instead of mutating the shared
-/// blob in place).
-pub(in crate::daemon::server) fn compute_sibling_floor(
-    path: &Path,
-) -> std::io::Result<Option<kernal_api::platform::fs::FileTime>> {
+/// The newest sibling-artifact mtime in `path`'s directory when it exceeds
+/// `base`, else `None` (also `None` when the floor is disabled). `path` itself
+/// is skipped, so it need not exist yet.
+fn sibling_floor_above(path: &Path, base: FileTime) -> std::io::Result<Option<FileTime>> {
     if mtime_floor_disabled() {
         return Ok(None);
     }
@@ -128,8 +210,7 @@ pub(in crate::daemon::server) fn compute_sibling_floor(
         Some(p) => p,
         None => return Ok(None),
     };
-    let my_mtime = std::fs::metadata(path)?.modified()?;
-    let mut max_mtime = my_mtime;
+    let mut max_mtime = base;
     for entry in std::fs::read_dir(parent)?.flatten() {
         let p = entry.path();
         // Skip self — comparing against our own mtime is a no-op but
@@ -152,29 +233,29 @@ pub(in crate::daemon::server) fn compute_sibling_floor(
             continue;
         }
         if let Ok(m) = entry.metadata().and_then(|md| md.modified()) {
+            let m = FileTime::from_system_time(m);
             if m > max_mtime {
                 max_mtime = m;
             }
         }
     }
-    if max_mtime > my_mtime {
-        Ok(Some(kernal_api::platform::fs::FileTime::from_system_time(
-            max_mtime,
-        )))
+    if max_mtime > base {
+        Ok(Some(max_mtime))
     } else {
         Ok(None)
     }
 }
 
+/// Raise a (possibly sealed) materialized file's mtime, restoring its seal.
 pub(in crate::daemon::server) fn set_materialized_mtime(
     path: &Path,
-    mtime: kernal_api::platform::fs::FileTime,
+    mtime: FileTime,
 ) -> std::io::Result<()> {
     let readonly = crate::platform::fs::permissions::is_sealed(&std::fs::metadata(path)?);
     if readonly {
         crate::platform::fs::permissions::make_writable(path)?;
     }
-    let result = kernal_api::platform::fs::set_file_mtime(path, mtime);
+    let result = stamp_mtime(path, mtime);
     if readonly {
         let restore = crate::platform::fs::permissions::seal_cache_blob(path);
         if result.is_ok() {

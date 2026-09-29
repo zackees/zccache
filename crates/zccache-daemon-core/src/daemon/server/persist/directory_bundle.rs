@@ -383,13 +383,7 @@ fn set_mtime(path: &Path, entry: &DirectoryEntry) -> std::io::Result<()> {
 }
 
 fn set_timestamp(path: &Path, seconds: u64, nanos: u32) -> std::io::Result<()> {
-    let modified = UNIX_EPOCH
-        .checked_add(Duration::new(seconds, nanos))
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid mtime"))?;
-    kernal_api::platform::fs::set_file_mtime(
-        path,
-        kernal_api::platform::fs::FileTime::from_system_time(modified),
-    )
+    stamp_recorded_mtime(path, seconds, nanos)
 }
 
 fn invalid_bundle(error: impl std::fmt::Display) -> std::io::Error {
