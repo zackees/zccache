@@ -69,5 +69,5 @@ def test_integration_compile_only_prebuild_uses_all_runner_cores() -> None:
     step = _step_block(workflow, "Build integration test binaries", "Stop setup-soldr builder cache before tests")
     environment = step.split("        run:", 1)[0]
     assert "--no-run" in step
-    assert 'CARGO_BUILD_JOBS: "4"' in environment
-    assert 'SOLDR_JOBS: "4"' in environment
+    assert "CARGO_BUILD_JOBS" not in environment
+    assert "SOLDR_JOBS" not in environment

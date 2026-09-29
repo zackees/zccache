@@ -105,9 +105,7 @@ jobs:
           SOLDR_TARGET_BLOCK_FREE_GB: "2"
           # Compile-only (`--no-run`): no test executes here, so the #1532
           # serialization that protects timing-sensitive tests does not apply.
-          # Use every runner core; this step is the Integration critical path.
-          CARGO_BUILD_JOBS: "4"
-          SOLDR_JOBS: "4"
+          # CARGO_BUILD_JOBS/SOLDR_JOBS stay unset so the build uses every core.
         run: |
           # The build cache can contain zccache COW materializations, whose
           # artifacts are intentionally read-only while shared with the cache.
