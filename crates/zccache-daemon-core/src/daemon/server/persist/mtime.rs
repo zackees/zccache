@@ -170,13 +170,13 @@ pub(in crate::daemon::server) fn set_materialized_mtime(
     path: &Path,
     mtime: kernal_api::platform::fs::FileTime,
 ) -> std::io::Result<()> {
-    let readonly = std::fs::metadata(path)?.permissions().readonly();
+    let readonly = crate::platform::fs::permissions::is_sealed(&std::fs::metadata(path)?);
     if readonly {
         crate::platform::fs::permissions::make_writable(path)?;
     }
     let result = kernal_api::platform::fs::set_file_mtime(path, mtime);
     if readonly {
-        let restore = crate::platform::fs::permissions::set_readonly(path, true);
+        let restore = crate::platform::fs::permissions::seal_cache_blob(path);
         if result.is_ok() {
             restore?;
         }

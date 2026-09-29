@@ -370,7 +370,7 @@ fn copy_independent(
     // A failed reflink probe may leave a partial destination, including
     // platform-specific attributes. Remove it before attempting the copy tier.
     if fs::metadata(destination).is_ok() {
-        let _ = crate::platform::fs::permissions::set_readonly(destination, false);
+        let _ = crate::platform::fs::permissions::make_writable(destination);
     }
     let _ = fs::remove_file(destination);
     #[cfg(test)]
@@ -601,20 +601,18 @@ pub(in crate::daemon::server) fn persist_staged_artifact_paths_with_mode(
                     ),
                 )
             })?;
-            crate::platform::fs::permissions::set_readonly(&destination, true).map_err(
-                |error| {
-                    publish_error(
-                        StagedPublishFailure::OutputCopy,
-                        io::Error::new(
-                            error.kind(),
-                            format!(
-                                "staged output read-only finalization failed: {}: {error}",
-                                destination.display()
-                            ),
+            crate::platform::fs::permissions::seal_cache_blob(&destination).map_err(|error| {
+                publish_error(
+                    StagedPublishFailure::OutputCopy,
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "staged output read-only finalization failed: {}: {error}",
+                            destination.display()
                         ),
-                    )
-                },
-            )?;
+                    ),
+                )
+            })?;
             let hash_started = std::time::Instant::now();
             #[cfg(test)]
             fault::inject(artifact_dir, StagedFaultPoint::OutputHash(index))

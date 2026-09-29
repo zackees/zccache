@@ -118,7 +118,7 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
                 }
                 if let Err(e) = remove_output_file(path) {
                     if let Some((_, blob_path)) = &registration {
-                        let _ = crate::platform::fs::permissions::set_readonly(
+                        let _ = crate::platform::fs::permissions::set_cache_blob_sealed(
                             blob_path,
                             readonly_enabled(),
                         );
@@ -128,7 +128,7 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
                 }
                 if let Err(e) = rename_detached_output(&tmp_path, path) {
                     if let Some((id, blob_path)) = &registration {
-                        let _ = crate::platform::fs::permissions::set_readonly(
+                        let _ = crate::platform::fs::permissions::set_cache_blob_sealed(
                             blob_path,
                             readonly_enabled(),
                         );
@@ -142,7 +142,7 @@ pub(in crate::daemon::server) fn break_output_hardlink_before_compile(
                 }
                 crate::platform::fs::permissions::make_writable(path)?;
                 if let Some((_, blob_path)) = registration {
-                    let _ = crate::platform::fs::permissions::set_readonly(
+                    let _ = crate::platform::fs::permissions::set_cache_blob_sealed(
                         &blob_path,
                         readonly_enabled(),
                     );

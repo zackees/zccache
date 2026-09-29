@@ -73,7 +73,7 @@ pub(in crate::daemon::server) fn persist_artifact_output(
         .map_err(|e| enrich_persist_err(e, None, cache_path))?;
     let result = (|| {
         std::fs::write(&tmp_path, payload)?;
-        crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
+        crate::platform::fs::permissions::set_cache_blob_sealed(&tmp_path, readonly_enabled())?;
         // Write the digest sidecar for cache_path's *final* name while the
         // bytes are still private at tmp_path, so the rename that publishes
         // the blob is the last fallible step. Writing the digest *after*
@@ -281,7 +281,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
         if store_plan.reflink
             && kernal_api::platform::fs::reflink_file(source_path, &tmp_path).is_ok()
         {
-            crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
+            crate::platform::fs::permissions::set_cache_blob_sealed(&tmp_path, readonly_enabled())?;
             digest.write_for(&tmp_path, cache_path)?;
             replace_artifact_cache_file(&tmp_path, cache_path)?;
             return Ok(PersistArtifactFileStats {
@@ -312,7 +312,7 @@ pub(in crate::daemon::server) fn persist_artifact_file(
         // leftover temporary (e.g. from a crashed store) first.
         let _ = std::fs::remove_file(&tmp_path);
         let copy_bytes = mode.copy_file(source_path, &tmp_path)?;
-        crate::platform::fs::permissions::set_readonly(&tmp_path, readonly_enabled())?;
+        crate::platform::fs::permissions::set_cache_blob_sealed(&tmp_path, readonly_enabled())?;
         digest.write_for(&tmp_path, cache_path)?;
         replace_artifact_cache_file(&tmp_path, cache_path)?;
         Ok(PersistArtifactFileStats {

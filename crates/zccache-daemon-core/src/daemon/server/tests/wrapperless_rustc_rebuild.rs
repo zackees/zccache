@@ -4,11 +4,12 @@
 //! over an output, rustc refuses a read-only one (`check_file_is_writeable`),
 //! so a read-only hardlink to the cache blob fails that build.
 //!
-//! Every mode must leave the cache blob untouched. Modes that deliver an
-//! independent file (AUTO, COPY, REFLINK, and the linking modes wherever they
-//! clone) must let the rebuild succeed. Where LINK or REFLINK_OR_LINK_OR_COPY
-//! actually hardlinks, the rebuild still fails today; that is #1791, pinned
-//! here so its fix flips this expectation.
+//! Every mode must leave the cache blob untouched and let the rebuild
+//! succeed. Where LINK or REFLINK_OR_LINK_OR_COPY actually hardlinks, the
+//! shared file is sealed `r--rw-r--` on Unix (#1791): rustc sees a writable
+//! output and renames over it, while the owner's in-place writes are still
+//! refused. Windows keeps the READONLY attribute, so a hardlinked delivery
+//! there still hits rustc's refusal until the ACL follow-up in #1791.
 
 use super::super::*;
 use std::process::{Command, Output};
@@ -27,6 +28,21 @@ fn cargo_build(cargo: &std::ffi::OsStr, project: &Path) -> Output {
         .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("toolchain cargo must start")
+}
+
+/// Whether this process ignores file permissions (root), which would make
+/// the in-place-write refusal unobservable.
+fn privileged(root: &Path) -> bool {
+    let probe = root.join("privilege-probe");
+    std::fs::write(&probe, b"x").unwrap();
+    crate::platform::fs::permissions::set_readonly(&probe, true).unwrap();
+    let writable = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&probe)
+        .is_ok();
+    let _ = crate::platform::fs::permissions::make_writable(&probe);
+    let _ = std::fs::remove_file(probe);
+    writable
 }
 
 fn interface_outputs(project: &Path) -> Vec<std::path::PathBuf> {
@@ -112,6 +128,15 @@ fn hit_then_wrapperless_rebuild(
         )
         .unwrap();
         let shared = crate::platform::fs::identity::same_file(output, &blob).unwrap();
+        if shared && !kernal_api::platform::host::target_is_windows() && !privileged(root) {
+            assert!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(output)
+                    .is_err(),
+                "{mode}: a sealed shared output must refuse the owner's in-place write"
+            );
+        }
         if !shared {
             assert!(
                 !std::fs::metadata(output).unwrap().permissions().readonly(),
@@ -168,19 +193,18 @@ fn wrapperless_rustc_rebuild_after_a_hit_in_every_mode() {
             !shared || linking,
             "{mode} shared the cache inode; only LINK and REFLINK_OR_LINK_OR_COPY may"
         );
-        if shared {
-            // #1791: rustc refuses a read-only hardlinked interface. Flip this
-            // to a success assertion when #1791 lands.
+        if shared && kernal_api::platform::host::target_is_windows() {
+            // #1791's remaining Windows part: READONLY blocks the replace.
             assert!(
                 !rebuild.status.success() && stderr.contains("not writeable"),
-                "{mode}: expected the #1791 rustc refusal over a read-only hardlink, got \
+                "{mode}: expected the #1791 Windows refusal over a read-only hardlink, got \
                  success={} stderr:\n{stderr}",
                 rebuild.status.success()
             );
         } else {
             assert!(
                 rebuild.status.success(),
-                "{mode}: wrapper-less rebuild after an independent hit failed:\n{stderr}"
+                "{mode}: wrapper-less rebuild after a hit failed (shared: {shared}):\n{stderr}"
             );
         }
     }

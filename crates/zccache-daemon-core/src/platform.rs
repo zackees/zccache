@@ -48,9 +48,69 @@ pub(crate) mod fs {
             apply_metadata_mode as apply_mode, metadata_mode as mode, set_readonly,
         };
 
+        const OWNER_WRITE: u32 = 0o200;
+        const GROUP_WRITE: u32 = 0o020;
+        const ANY_WRITE: u32 = 0o222;
+
+        /// Seal a cache file against in-place writes by its owner (#1039),
+        /// without tripping rustc's read-only-output refusal (#1791).
+        ///
+        /// rustc refuses to replace an output whose `Permissions::readonly()`
+        /// is true (`check_file_is_writeable`), and on Unix that is true only
+        /// when *no* write bit is set. The kernel applies only the owner bits
+        /// to the owner, so `r--rw-r--` (from `0o644`: `0o464`) still refuses
+        /// the owner's in-place writes while rustc sees a writable file and
+        /// renames over it. The cost is that the file's group may write it;
+        /// digest verification still refuses a modified blob before serving.
+        /// Windows keeps the `READONLY` attribute; an ACL-based equivalent is
+        /// the remaining part of #1791.
+        pub(crate) fn seal_cache_blob(path: &std::path::Path) -> std::io::Result<()> {
+            if kernal_api::platform::host::target_is_windows() {
+                return set_readonly(path, true);
+            }
+            let current = mode(&std::fs::metadata(path)?);
+            apply_mode(path, (current & !ANY_WRITE) | GROUP_WRITE)
+        }
+
+        /// Seal (`true`) or make writable (`false`); the `ZCCACHE_COW_READONLY`
+        /// switch picks which at every blob-sealing call site.
+        pub(crate) fn set_cache_blob_sealed(
+            path: &std::path::Path,
+            sealed: bool,
+        ) -> std::io::Result<()> {
+            if sealed {
+                seal_cache_blob(path)
+            } else {
+                make_writable(path)
+            }
+        }
+
+        /// Whether the file's owner cannot write it in place: sealed by
+        /// [`seal_cache_blob`], or read-only in the ordinary sense.
+        pub(crate) fn is_sealed(metadata: &std::fs::Metadata) -> bool {
+            if kernal_api::platform::host::target_is_windows() {
+                return metadata.permissions().readonly();
+            }
+            mode(metadata) & OWNER_WRITE == 0
+        }
+
         /// zccache materialization policy: a dangling link is removable, and
-        /// a missing Windows destination is historically a no-op.
+        /// a missing Windows destination is historically a no-op. A file
+        /// carrying [`seal_cache_blob`]'s pattern (owner write clear, group
+        /// write set) gets its original `rw-r--r--`-style mode back instead
+        /// of keeping the group write the seal added.
         pub(crate) fn make_writable(path: &std::path::Path) -> std::io::Result<()> {
+            if !kernal_api::platform::host::target_is_windows() {
+                if let Ok(metadata) = std::fs::symlink_metadata(path) {
+                    let current = mode(&metadata);
+                    if !metadata.file_type().is_symlink()
+                        && current & OWNER_WRITE == 0
+                        && current & GROUP_WRITE != 0
+                    {
+                        return apply_mode(path, (current | OWNER_WRITE) & !GROUP_WRITE);
+                    }
+                }
+            }
             match set_readonly(path, false) {
                 Ok(()) => Ok(()),
                 Err(error)

@@ -235,7 +235,7 @@ fn materialize_verified_cached_file_tiers(
             touch_mtime(out_path);
             return Ok(observed(0, 0, 1, bytes));
         }
-        crate::platform::fs::permissions::set_readonly(cache_file, readonly_enabled())?;
+        crate::platform::fs::permissions::set_cache_blob_sealed(cache_file, readonly_enabled())?;
         match compute_sibling_floor(out_path)? {
             Some(floor) => {
                 let bytes = std::fs::metadata(cache_file)?.len();
@@ -313,7 +313,7 @@ fn materialize_verified_cached_file_tiers(
         if let Ok(registration) = registration {
             match std::fs::hard_link(cache_file, out_path) {
                 Ok(()) => {
-                    if let Err(error) = crate::platform::fs::permissions::set_readonly(
+                    if let Err(error) = crate::platform::fs::permissions::set_cache_blob_sealed(
                         cache_file,
                         readonly_enabled(),
                     ) {
@@ -408,7 +408,7 @@ fn cleanup_failed_hardlink(
         commit_registered_detach(registration, out_path);
     }
     let restored = if removed.is_ok() {
-        crate::platform::fs::permissions::set_readonly(cache_file, readonly_enabled())
+        crate::platform::fs::permissions::set_cache_blob_sealed(cache_file, readonly_enabled())
     } else {
         Ok(())
     };
@@ -436,7 +436,7 @@ fn detach_with_floored_mtime(
     mode.copy_file(cache_file, out_path)?;
     crate::platform::fs::permissions::make_writable(out_path)?;
     let result = set_materialized_mtime(out_path, floor);
-    crate::platform::fs::permissions::set_readonly(cache_file, readonly_enabled())?;
+    crate::platform::fs::permissions::set_cache_blob_sealed(cache_file, readonly_enabled())?;
     if let Some((id, _)) = registration {
         commit_registered_detach(id, out_path);
     }
@@ -460,7 +460,10 @@ fn remove_materialized_output(path: &Path) -> std::io::Result<()> {
     crate::platform::fs::permissions::make_writable(path)?;
     if let Err(error) = remove_output_file(path) {
         if let Some((_, blob_path)) = &registration {
-            let _ = crate::platform::fs::permissions::set_readonly(blob_path, readonly_enabled());
+            let _ = crate::platform::fs::permissions::set_cache_blob_sealed(
+                blob_path,
+                readonly_enabled(),
+            );
         }
         return Err(error);
     }
@@ -468,7 +471,8 @@ fn remove_materialized_output(path: &Path) -> std::io::Result<()> {
         commit_registered_detach(*id, path);
     }
     if let Some((_, blob_path)) = registration {
-        let _ = crate::platform::fs::permissions::set_readonly(&blob_path, readonly_enabled());
+        let _ =
+            crate::platform::fs::permissions::set_cache_blob_sealed(&blob_path, readonly_enabled());
     }
     Ok(())
 }

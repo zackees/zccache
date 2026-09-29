@@ -111,14 +111,14 @@ pub(in crate::daemon::server) fn materialize_independent_with_mode(
         #[cfg(test)]
         super::hook::pause(destination, super::StagedHookPoint::MaterializePublish);
         if fs::metadata(destination).is_ok() {
-            let _ = crate::platform::fs::permissions::set_readonly(destination, false);
+            let _ = crate::platform::fs::permissions::make_writable(destination);
         }
         super::replace_staged_path(&temporary, destination)?;
         crate::daemon::server::persist::record_delivery(u64::from(reflink), 0, u64::from(!reflink));
         if !reflink && mode == crate::core::config::MaterializationMode::Reflink {
             crate::daemon::server::persist::note_reflink_fallback(source, destination);
         }
-        let _ = crate::platform::fs::permissions::set_readonly(destination, false);
+        let _ = crate::platform::fs::permissions::make_writable(destination);
         Ok(StagedMaterializationStats {
             reflink_count: u64::from(reflink),
             hardlink_count: 0,

@@ -387,7 +387,15 @@ The ordered tiers are:
 1. **Reflink:** a new file with shared extents and kernel-enforced COW. The
    daemon restores the blob's stored mtime because clone metadata is separate.
 2. **Hardlink COW-lite:** the link is recorded by native file identity, the blob
-   and output are read-only, and mediated compiler/tool writes copy-detach.
+   and output are sealed against in-place writes, and mediated compiler/tool
+   writes copy-detach. On Unix the seal is `r--rw-r--` (from `0o644`: `0o464`):
+   the owner cannot write in place, but `Permissions::readonly()` is false, so a
+   rustc run outside zccache (plain `cargo`, rust-analyzer, `ZCCACHE_DISABLE=1`)
+   passes its `check_file_is_writeable` and renames over the output instead of
+   failing (#1791). The file's group can write it; digest verification still
+   refuses a modified blob. Windows keeps the `READONLY` attribute, so a
+   wrapper-less rustc over a hardlinked output still fails there until the
+   ACL-based equivalent lands (#1791).
    Each stored blob carries a durable digest so a restarted daemon can rebuild
    the in-memory ledger safely even when prior aliases were deleted. Watcher
    changes mark entries suspect; the next hit hashes the blob and refuses a
