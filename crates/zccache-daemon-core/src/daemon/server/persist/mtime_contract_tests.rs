@@ -37,8 +37,9 @@ fn blob(dir: &Path, name: &str) -> PathBuf {
     let cache = dir.join("cache").join(name);
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
     std::fs::write(&cache, b"cached object bytes").unwrap();
-    write_authoritative_blob_digest(&cache).unwrap();
+    // The recorded object mtime is the one at store time: age it first.
     kernal_api::platform::fs::set_file_mtime(&cache, at(OBJECT_SECS)).unwrap();
+    write_authoritative_blob_digest(&cache).unwrap();
     cache
 }
 

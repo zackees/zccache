@@ -510,8 +510,52 @@ the batch materializer, which stamps every output afterwards, so they use
 could not change the final mtime), the hit keeps its hardlink and saves the
 `read_dir`. The batch policies still stamp a hardlinked output in place, which
 changes the shared blob's mtime under `LINK` (#1819); that behaviour is
-unchanged and left to the #1158 decision. Out of scope here: recording the
-object mtime in the manifest.
+unchanged and left to the #1158 decision.
+
+#### Recorded object mtime (#1771)
+
+The object's mtime is recorded at store time so that COPY/REFLINK reproduce
+what a hardlink shows even after the blob's own filesystem mtime is reset (a
+cook/tar restore, a copy between cache roots).
+
+- **Where.** Neither `ArtifactIndex` (`stored_at_secs` is a wall-clock
+  retention stamp, not the object's mtime) nor the staged manifest
+  (`index`/`size`/`digest_hex`) stored it. It rides in the blob's `.cowhash`
+  digest sidecar, the one per-blob record every storage shape (flat, staged,
+  pack) already writes and reads on a blob's first verified hit. That avoids
+  positional-bincode migrations of `index.bin` and the staged manifest, threads
+  nothing through the payload types, and needs no IPC change (no
+  `PROTOCOL_VERSION` bump).
+- **Format.** The sidecar is the 32-byte blake3 digest, optionally followed by
+  the mtime as little-endian `u64` unix nanoseconds. The length is the version:
+  32 bytes is the legacy layout (no record: today's behaviour, the blob's
+  filesystem mtime stays authoritative), 40 bytes carries the record. `0` is
+  never written. A daemon older than this change reads a 40-byte sidecar as
+  digest-less and evicts the blob (a one-time miss, the same cost as any
+  unverifiable blob), so do not share one cache root between old and new
+  daemons.
+- **What is recorded.** The blob's own mtime at publication (the private
+  temporary or final blob just before it is renamed into place), which is
+  exactly what a hardlink of it shows then. For a staged generation that is the
+  producing compile's output mtime, because the staged copy preserves the
+  source mtime; for a flat blob written from bytes it is the publication time.
+- **LINK restore.** The first verified hit of a blob in a process
+  (`verify_registered_blob`, the registry-miss path that already stats and
+  hashes the blob) replays the record onto the blob when its mtime differs,
+  through `set_materialized_mtime` (sealed blobs stay sealed). It reuses that
+  stat, so a matching blob costs no extra syscall and the registry-hit fast
+  path is untouched. The write happens once per blob per process, after the
+  digest verified; a hardlink, a reflink and a copy of the blob then all carry
+  the recorded value. A `perf_counters` test pins that a blob is restamped once,
+  not per hit, and never when it already matches.
+- **Precedence.** The sibling floor and the batch policies apply on top of the
+  recorded value, unchanged. Batch hits still stamp `now()` (#1158), so the
+  record decides the mtime of per-file deliveries and of hits with floors
+  disabled.
+- **Known trade-off.** The blob's mtime doubles as its LRU recency for the flat
+  layout and `zccache warm` stamps `now()` on the object. Replaying the record
+  on a blob's first verified hit in a process therefore resets a warm stamp (or
+  the mtime a restore just gave the blob) to the store-time value.
 
 Writers outside the batch materializer, all routed through `zccache_core::mtime`
 or allowlisted in the guard:

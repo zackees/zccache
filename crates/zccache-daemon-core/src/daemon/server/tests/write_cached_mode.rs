@@ -21,9 +21,10 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cached.rlib");
         std::fs::write(&cache, BYTES).unwrap();
-        write_authoritative_blob_digest(&cache).unwrap();
         let old = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0);
         kernal_api::platform::fs::set_file_mtime(&cache, old).unwrap();
+        // The record is the mtime at store time: store it after aging the blob.
+        write_authoritative_blob_digest(&cache).unwrap();
         Self { dir, cache }
     }
 

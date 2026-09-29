@@ -85,4 +85,6 @@ pub(crate) fn evict_v2_artifact_keys_if_unchanged(
 #[cfg(test)]
 mod mtime_contract_tests;
 #[cfg(test)]
+mod recorded_mtime_tests;
+#[cfg(test)]
 mod tests;

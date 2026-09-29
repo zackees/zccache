@@ -37,7 +37,8 @@ re-exports `*` from each submodule.
   here; this file keeps `set_materialized_mtime` (sealed-blob raise). One
   contract across LINK/REFLINK/COPY; see `docs/architecture/artifact-store.md`.
   The workspace guard is `crates/zccache-core/tests/mtime_owner_workspace.rs`;
-  `mtime_contract_tests.rs` covers mode invariance.
+  `mtime_contract_tests.rs` covers mode invariance and
+  `recorded_mtime_tests.rs` the store-time object mtime record (sidecar).
 - **[`staged_paths.rs`](staged_paths.rs)** — Collision-resistant logical
   staging marker normalization and requested-path rehydration.
 - **[`staged_link_args.rs`](staged_link_args.rs)** — Linker argument planning

@@ -123,9 +123,10 @@ fn exercise_row(fixture: &FsFixture, cross_volume: bool) -> String {
     let output = fixture.root().join("output.rlib");
     let original = b"matrix-original-bytes";
     std::fs::write(&blob, original).unwrap();
-    write_authoritative_blob_digest(&blob).unwrap();
     let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 123);
     kernal_api::platform::fs::set_file_mtime(&blob, old_time).unwrap();
+    // The record is the mtime at store time: store it after aging the blob.
+    write_authoritative_blob_digest(&blob).unwrap();
     // FAT/exFAT store mtime with 2-second granularity, so the value that
     // actually lands on disk can differ from what was requested. Compare
     // the materialized mtime against the blob's *actual* stored mtime

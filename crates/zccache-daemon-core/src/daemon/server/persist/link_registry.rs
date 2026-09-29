@@ -1,6 +1,7 @@
 //! In-memory ledger for hardlink-tier materializations (#1039).
 
 use super::*;
+use crate::core::mtime::FileTime;
 use crate::core::NormalizedPath;
 use crate::platform::fs::FileIdentity;
 use std::collections::BTreeSet;
@@ -66,7 +67,87 @@ fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
     Ok(*hasher.finalize().as_bytes())
 }
 
-fn digest_path(blob_path: &Path) -> NormalizedPath {
+/// What a blob's `.cowhash` sidecar records (#1771).
+///
+/// On disk: the 32-byte blake3 digest, optionally followed by the blob's
+/// object mtime as little-endian `u64` unix nanoseconds captured at store
+/// time. The length is the version: 32 bytes is the pre-record layout (no
+/// recorded mtime, the blob's filesystem mtime stays authoritative), 40 bytes
+/// carries the record. A record of `0` is never written (a stat failure or a
+/// pre-epoch mtime stores the 32-byte layout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BlobRecord {
+    pub(super) digest: [u8; 32],
+    /// `0` when the sidecar predates the record.
+    pub(super) object_unix_nanos: u64,
+}
+
+const SIDECAR_DIGEST_LEN: usize = 32;
+const SIDECAR_RECORDED_LEN: usize = SIDECAR_DIGEST_LEN + 8;
+
+impl BlobRecord {
+    fn encode(&self) -> Vec<u8> {
+        let mut bytes = self.digest.to_vec();
+        if self.object_unix_nanos != 0 {
+            bytes.extend_from_slice(&self.object_unix_nanos.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != SIDECAR_DIGEST_LEN && bytes.len() != SIDECAR_RECORDED_LEN {
+            return None;
+        }
+        let mut digest = [0_u8; SIDECAR_DIGEST_LEN];
+        digest.copy_from_slice(&bytes[..SIDECAR_DIGEST_LEN]);
+        let object_unix_nanos = bytes
+            .get(SIDECAR_DIGEST_LEN..)
+            .and_then(|tail| <[u8; 8]>::try_from(tail).ok())
+            .map_or(0, u64::from_le_bytes);
+        Some(Self {
+            digest,
+            object_unix_nanos,
+        })
+    }
+}
+
+/// The object mtime to record for the blob currently at `path`: what a
+/// hardlink of it shows right now. `0` when it cannot be read.
+fn object_unix_nanos_of(path: &Path) -> u64 {
+    std::fs::metadata(path).map_or(0, |metadata| {
+        crate::core::mtime::unix_nanos_of(FileTime::from_last_modification_time(&metadata))
+    })
+}
+
+/// Replay the recorded object mtime onto a verified blob whose filesystem
+/// mtime no longer matches it (an archive restore or a cache-root copy resets
+/// it). Runs on a blob's first verified hit only, off the registry-hit fast
+/// path, and reuses that hit's stat: it adds no syscall to a matching blob.
+/// `signature` is the blob's stat taken before the hash; it is kept current.
+fn restore_recorded_object_mtime(
+    blob_path: &Path,
+    object_unix_nanos: u64,
+    signature: &mut Option<StatSignature>,
+) {
+    let (Some(recorded), Some((current_ns, size))) = (
+        crate::core::mtime::recorded_object_mtime(object_unix_nanos),
+        *signature,
+    ) else {
+        return;
+    };
+    let recorded_ns =
+        i128::from(recorded.unix_seconds()) * 1_000_000_000 + i128::from(recorded.nanoseconds());
+    if current_ns == recorded_ns {
+        return;
+    }
+    if set_materialized_mtime(blob_path, recorded).is_ok() {
+        #[cfg(test)]
+        super::staged_store::perf_counters::record_blob_mtime_restore();
+        *signature = Some((recorded_ns, size));
+    }
+}
+
+pub(super) fn digest_path(blob_path: &Path) -> NormalizedPath {
     let name = blob_path.file_name().unwrap_or_default().to_string_lossy();
     let sidecar_name = format!(
         ".cowhash-{}",
@@ -104,7 +185,8 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_precomputed
     digest: [u8; 32],
     named_as: &Path,
 ) -> std::io::Result<AuthoritativeBlobDigest> {
-    write_digest_sidecar(digest, named_as)
+    // The blob is already at its final name: that is the object a hit shows.
+    write_digest_sidecar(digest, named_as, named_as)
 }
 
 #[cfg(test)]
@@ -149,7 +231,7 @@ pub(in crate::daemon::server) fn register_trusted_blob_for_test(
 /// without deleting a sidecar that existed before the attempt started.
 pub(in crate::daemon::server) struct AuthoritativeBlobDigest {
     path: Option<NormalizedPath>,
-    digest: [u8; 32],
+    contents: Vec<u8>,
 }
 
 impl AuthoritativeBlobDigest {
@@ -163,7 +245,7 @@ impl Drop for AuthoritativeBlobDigest {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
             let matches = std::fs::read(&path)
-                .map(|bytes| bytes.as_slice() == self.digest.as_slice())
+                .map(|bytes| bytes == self.contents)
                 .unwrap_or(false);
             if matches {
                 let _ = std::fs::remove_file(path);
@@ -181,7 +263,9 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_with_cleanu
     named_as: &Path,
 ) -> std::io::Result<AuthoritativeBlobDigest> {
     let digest = hash_file(hash_source)?;
-    write_digest_sidecar(digest, named_as)
+    // The bytes are still private at `hash_source`; the rename that publishes
+    // them keeps the mtime, so that is the object mtime to record.
+    write_digest_sidecar(digest, named_as, hash_source)
 }
 
 /// Shared sidecar-write body for both the hash-here and hash-already-known
@@ -195,8 +279,15 @@ pub(in crate::daemon::server) fn write_authoritative_blob_digest_for_with_cleanu
 fn write_digest_sidecar(
     digest: [u8; 32],
     named_as: &Path,
+    mtime_source: &Path,
 ) -> std::io::Result<AuthoritativeBlobDigest> {
     use std::io::Write;
+
+    let contents = BlobRecord {
+        digest,
+        object_unix_nanos: object_unix_nanos_of(mtime_source),
+    }
+    .encode();
 
     let final_path = digest_path(named_as);
 
@@ -221,7 +312,7 @@ fn write_digest_sidecar(
             Err(error) => return Err(error),
         };
         let result = (|| {
-            temp.write_all(&digest)?;
+            temp.write_all(&contents)?;
             drop(temp);
             replace_digest_sidecar(&temp_path, &final_path)
         })();
@@ -234,7 +325,7 @@ fn write_digest_sidecar(
 
     Ok(AuthoritativeBlobDigest {
         path: Some(final_path),
-        digest,
+        contents,
     })
 }
 
@@ -250,14 +341,9 @@ pub(in crate::daemon::server) fn remove_authoritative_blob_digest(blob_path: &Pa
     let _ = std::fs::remove_file(digest_path(blob_path));
 }
 
-fn read_authoritative_blob_digest(blob_path: &Path) -> std::io::Result<Option<[u8; 32]>> {
+fn read_authoritative_blob_digest(blob_path: &Path) -> std::io::Result<Option<BlobRecord>> {
     match std::fs::read(digest_path(blob_path)) {
-        Ok(bytes) if bytes.len() == 32 => {
-            let mut digest = [0_u8; 32];
-            digest.copy_from_slice(&bytes);
-            Ok(Some(digest))
-        }
-        Ok(_) => Ok(None),
+        Ok(bytes) => Ok(BlobRecord::decode(&bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -479,14 +565,22 @@ pub(in crate::daemon::server) fn verify_registered_blob(blob_path: &Path) -> std
         // Registry state is process-local, so restart verification must use a
         // digest persisted when the immutable blob was stored. Link count is
         // not evidence: a poisoned alias may have been deleted before restart.
-        if let Some(expected_hash) = read_authoritative_blob_digest(blob_path)? {
-            let stat_signature = stat_signature(blob_path);
-            if hash_file(blob_path)? == expected_hash {
+        if let Some(recorded) = read_authoritative_blob_digest(blob_path)? {
+            let mut stat_signature = stat_signature(blob_path);
+            if hash_file(blob_path)? == recorded.digest {
+                // First verified hit of this blob: replay the store-time
+                // object mtime (#1771) so a LINK output and a COPY/REFLINK
+                // of it agree even after a restore reset the blob's mtime.
+                restore_recorded_object_mtime(
+                    blob_path,
+                    recorded.object_unix_nanos,
+                    &mut stat_signature,
+                );
                 registry().insert(
                     id,
                     LinkRecord {
                         blob_path: blob_path.into(),
-                        expected_hash,
+                        expected_hash: recorded.digest,
                         stat_signature,
                         outputs: BTreeSet::new(),
                         suspect: false,

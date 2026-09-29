@@ -80,3 +80,17 @@ pub(in crate::daemon::server) fn snapshot() -> (u64, u64, u64) {
         DIR_SYNCS.load(Ordering::Relaxed),
     )
 }
+
+static BLOB_MTIME_RESTORES: AtomicU64 = AtomicU64::new(0);
+
+/// A cache blob's filesystem mtime was rewritten from its recorded object
+/// mtime (#1771): must stay rare, never per hit.
+pub(in crate::daemon::server) fn record_blob_mtime_restore() {
+    if on_active_thread() {
+        BLOB_MTIME_RESTORES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(in crate::daemon::server) fn blob_mtime_restores() -> u64 {
+    BLOB_MTIME_RESTORES.load(Ordering::Relaxed)
+}

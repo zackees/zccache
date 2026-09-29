@@ -1278,6 +1278,8 @@ fn write_cached_output_preserves_cache_mtime_on_hardlink() {
 
     let old_time = kernal_api::platform::fs::FileTime::from_unix_time(1_000_000_000, 0); // 2001-09-09
     kernal_api::platform::fs::set_file_mtime(&cache, old_time).unwrap();
+    // The record is the mtime at store time: store it after aging the blob.
+    write_authoritative_blob_digest(&cache).unwrap();
 
     write_cached_output(&out, &cache, content).unwrap();
 

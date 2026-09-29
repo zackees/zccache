@@ -25,6 +25,10 @@
 //!   batch materializer's end-of-hit floor ([`apply_batch_policy_with`]).
 //! - [`stamp_recorded_mtime`] / [`recorded_mtime_or_now`]: a recorded mtime
 //!   (directory bundles, rust-plan manifests) replayed onto a restored output.
+//! - [`unix_nanos_of`] / [`recorded_object_mtime`]: the store-time record of a
+//!   cache object's own mtime (in the blob's digest sidecar), replayed on its
+//!   first verified hit so it survives an archive restore (see
+//!   `docs/architecture/artifact-store.md`).
 //! - [`touch_cache_object`]: LRU recency for a cache object (`zccache warm`).
 //!
 //! ## `ObjectMtime` (the default)
@@ -156,6 +160,28 @@ pub fn recorded_mtime_or_now(unix_nanos: u64) -> FileTime {
         return FileTime::from_system_time(SystemTime::now());
     }
     FileTime::from_system_time(UNIX_EPOCH + Duration::from_nanos(unix_nanos))
+}
+
+/// The inverse of [`recorded_mtime_or_now`]: `mtime` as unix nanoseconds for a
+/// store-time record, `0` (the "not recorded" value) for a pre-epoch or
+/// unrepresentable time.
+#[must_use]
+pub fn unix_nanos_of(mtime: FileTime) -> u64 {
+    let Ok(seconds) = u64::try_from(mtime.unix_seconds()) else {
+        return 0;
+    };
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|nanos| nanos.checked_add(u64::from(mtime.nanoseconds())))
+        .unwrap_or(0)
+}
+
+/// The recorded object mtime for a store-time `unix_nanos`, or `None` when the
+/// record is absent (`0`: an entry written before the field existed).
+#[must_use]
+pub fn recorded_object_mtime(unix_nanos: u64) -> Option<FileTime> {
+    (unix_nanos != 0)
+        .then(|| FileTime::from_system_time(UNIX_EPOCH + Duration::from_nanos(unix_nanos)))
 }
 
 /// Mark a cache object as recently used (LRU recency). This is bookkeeping on
