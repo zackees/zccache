@@ -81,7 +81,11 @@ jobs:
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
-          build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' }}
+          # Windows Test is the PR critical path and ~70% of it is compiling
+          # test binaries, so it keeps its build cache (~0.35 GB per arch).
+          # #1741 dropped it for budget; the retired never-restored
+          # per-SHA action self-test caches (#1829) free more than it costs.
+          build-cache: ${{ inputs.os != 'macos-15' }}
           # Bound compile and test concurrency for the 8-GB ARM runner. This
           # is the prescribed ci-tests resource contract; the Test step below
           # remains the only lib/bin test-profile compilation.

@@ -18,8 +18,6 @@ const RETIRED_MAIN_PATTERNS = [
   /^cook-base-v2-(?:macos|windows)-/i,
   /^cook-base-v2-windows-x64-msvc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
   /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23-xdylint$/i,
-  /^setup-soldr-buildcache-v2-windows-x64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
-  /^setup-soldr-buildcache-v2-windows-arm64-9cc0e23f450b04b3-[0-9a-f]{16}$/i,
 ];
 
 const LOCK_TRANSITION_TARGET_BYTES = 9_200_000_000;

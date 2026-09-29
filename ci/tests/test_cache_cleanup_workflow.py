@@ -174,7 +174,8 @@ def test_retired_cache_families_are_main_only_and_exactly_scoped() -> None:
     plan = json.loads(result.stdout)
     assert {30, 31} <= set(plan["stale"])
     assert 32 not in plan["stale"]
-    assert 33 in plan["stale"]
+    # Windows Test build-cache is live again (#1829 freed the budget).
+    assert 33 not in plan["stale"]
     assert 34 not in plan["stale"]
 
 
@@ -280,7 +281,7 @@ def test_measured_retired_cache_shapes_are_exact_and_main_only() -> None:
     plan = json.loads(result.stdout)
     # Linux x64 f9e7 remains the native-Python release cook profile; only the
     # measured disabled cook/build-cache identities retire automatically.
-    assert set(plan["stale"]) == {61, 62, 64, 65, 69, 71}
+    assert set(plan["stale"]) == {61, 62}
     assert 60 not in plan["stale"]
     assert {63, 70}.isdisjoint(plan["stale"])
     assert {66, 67, 68}.isdisjoint(plan["stale"])
@@ -377,7 +378,7 @@ def test_cleanup_keeps_one_current_cache_per_target_shape() -> None:
     # caches are not assumed to be mutually restorable. Foundation caches are
     # not candidates.
     assert set(plan["keep"]) == {10, 11, 14, 15, 16, 17, 18, 19, 20}
-    assert set(plan["stale"]) == {12, 13, 25, 26, 29, 30, 31, 33}
+    assert set(plan["stale"]) == {12, 13, 25, 26, 29, 30, 31}
     # setup-soldr registry keys encode both Cargo.lock identity and registry
     # archive digest; these are separate content identities, not generations.
     assert plan["registryEligible"] == [False, False, False, False]

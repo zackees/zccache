@@ -59,9 +59,9 @@ def test_measured_cache_cuts_cannot_be_reintroduced(tmp_path: Path) -> None:
         ),
         (
             "ci-check.yml",
-            "build-cache: ${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' && inputs.os != 'windows-11-arm' }}",
-            "build-cache: true",
-            "disable Windows x64/ARM64 build-cache",
+            "free more than it costs.\n          build-cache: ${{ inputs.os != 'macos-15' }}",
+            "free more than it costs.\n          build-cache: true",
+            "disable only macOS",
         ),
     )
     for index, (filename, old, new, diagnostic) in enumerate(cases):

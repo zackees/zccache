@@ -218,10 +218,7 @@ REGISTRY_RESTORE_CALLS = {
     "wrapper-e2e.yml:wrapper-e2e#3": True,
 }
 LINUX_WRAPPER_BUILD_CACHE = "false"
-WINDOWS_TEST_BUILD_CACHE = (
-    "${{ inputs.os != 'macos-15' && inputs.os != 'windows-latest' "
-    "&& inputs.os != 'windows-11-arm' }}"
-)
+WINDOWS_TEST_BUILD_CACHE = "${{ inputs.os != 'macos-15' }}"
 # The only accepted cook expression on a step that can run off Linux.
 LINUX_ONLY_COOK = "${{ startsWith(%s, 'ubuntu') && 'soldr-cook' || 'none' }}"
 # Reusable workflows whose `inputs.os` callers are all Linux, with why.
@@ -555,8 +552,8 @@ def check(root: Path = ROOT) -> list[str]:
         windows_test.inputs.get("build-cache", "true")
     ) != _normal_expression(WINDOWS_TEST_BUILD_CACHE):
         errors.append(
-            "ci-check.yml:test#1 must disable Windows x64/ARM64 build-cache "
-            "while retaining Linux Test"
+            "ci-check.yml:test#1 must keep Linux and Windows Test build-cache "
+            "and disable only macOS"
         )
 
     for target, (os_context, label) in MACOS_BUILD_CACHE_JOBS.items():
