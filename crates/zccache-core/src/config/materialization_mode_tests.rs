@@ -194,8 +194,10 @@ fn raw_link_and_clone_calls_stay_in_mode_aware_modules() {
         "zccache-daemon-core/src/daemon/server/persist/fs_caps.rs",
         // Store direction (`plan_store_tiers`).
         "zccache-daemon-core/src/daemon/server/persist/artifact_io.rs",
-        // Independent staged delivery (`copy_output_with`).
-        "zccache-daemon-core/src/daemon/server/persist/staged_store.rs",
+        // Independent staged delivery (`copy_output_with`, #1774 moved it
+        // into `staged_store/materialize.rs` alongside the rest of the
+        // independent-delivery copy logic it already depended on).
+        "zccache-daemon-core/src/daemon/server/persist/staged_store/materialize.rs",
         // `zccache warm` and rust-plan bundles (`tiers_for_shareable`).
         "zccache-cli-core/src/cli/commands/warm_delivery.rs",
         "zccache-artifact/src/rust_plan/local.rs",
