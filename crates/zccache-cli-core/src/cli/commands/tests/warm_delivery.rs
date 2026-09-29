@@ -95,16 +95,19 @@ fn link_mode_shares_the_cache_inode() {
     assert!(same_file(&src, &dst));
 }
 
-/// AUTO keeps warm's historical order: it links wherever hardlinks work and
-/// never attempts a clone first.
+/// REFLINK_OR_LINK_OR_COPY (the pre-#1792 AUTO) keeps warm's historical
+/// order: it links wherever hardlinks work and never attempts a clone first.
 #[test]
-fn auto_mode_links_first_like_before() {
+fn reflink_or_link_or_copy_links_first_like_before() {
     let (dir, src, dst) = fixture();
     let now = std::time::SystemTime::now();
-    deliver_warm_file(&src, &dst, MaterializationMode::Auto, now).unwrap();
+    deliver_warm_file(&src, &dst, MaterializationMode::ReflinkOrLinkOrCopy, now).unwrap();
     assert_eq!(std::fs::read(&dst).unwrap(), BYTES);
     if hardlinks_supported(dir.path()) {
-        assert!(same_file(&src, &dst), "AUTO must hardlink where it can");
+        assert!(
+            same_file(&src, &dst),
+            "REFLINK_OR_LINK_OR_COPY must hardlink where it can"
+        );
         assert!(recent(&src, now), "the shared inode carries the LRU stamp");
     }
 }
