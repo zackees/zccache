@@ -161,6 +161,12 @@ pub(super) struct CompilerHashCache {
     pub(super) entries: DashMap<NormalizedPath, CompilerHashEntry>,
     /// Single-flight gates for the async identity probe (FastLED/fbuild#1466).
     probes: KeyedLocks,
+    /// Set by every successful hash insert; cleared by [`Self::take_dirty`].
+    /// Lets a shutdown save skip re-serializing and re-fsyncing the snapshot
+    /// when nothing new was hashed since the last save (zccache#1775).
+    /// `merge_from` (background disk load) deliberately does not set this —
+    /// the merged content already matches what's on disk.
+    dirty: AtomicBool,
 }
 
 impl CompilerHashCache {
@@ -171,6 +177,25 @@ impl CompilerHashCache {
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether the cache has gained entries since the last [`Self::take_dirty`].
+    ///
+    /// Test-only: production code only ever needs the atomic check-and-clear
+    /// in [`Self::take_dirty`].
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Relaxed)
+    }
+
+    /// Clear the dirty flag, returning whether it was set.
+    pub(super) fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::Relaxed)
+    }
+
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// Drain entries from a freshly loaded `CompilerHashCache` into `self`
@@ -227,6 +252,7 @@ impl CompilerHashCache {
                 flavor: CompilerIdentityFlavor::Generic,
             },
         );
+        self.mark_dirty();
         Some(hash)
     }
 
@@ -284,6 +310,7 @@ impl CompilerHashCache {
                 flavor: CompilerIdentityFlavor::Generic,
             },
         );
+        self.mark_dirty();
         Some(hash)
     }
 
@@ -346,6 +373,7 @@ impl CompilerHashCache {
                 },
             },
         );
+        self.mark_dirty();
         Some(hash)
     }
 
@@ -401,6 +429,7 @@ impl CompilerHashCache {
                 },
             },
         );
+        self.mark_dirty();
         Some(hash)
     }
 
@@ -511,6 +540,7 @@ impl CompilerHashCache {
         Ok(Self {
             entries,
             probes: KeyedLocks::default(),
+            dirty: AtomicBool::new(false),
         })
     }
 }
@@ -843,6 +873,54 @@ mod probe_timeout_tests {
             start.elapsed() < Duration::from_secs(1),
             "an escaped descendant retained a reader thread for {:?}",
             start.elapsed()
+        );
+    }
+}
+
+#[cfg(test)]
+mod dirty_flag_tests {
+    //! zccache#1775: the shutdown save path skips a clean cache entirely.
+    use super::CompilerHashCache;
+    use crate::hash::ContentHash;
+
+    #[test]
+    fn starts_clean_and_take_dirty_resets_it() {
+        let cache = CompilerHashCache::new();
+        assert!(!cache.is_dirty());
+        assert!(!cache.take_dirty(), "nothing to clear on a fresh cache");
+    }
+
+    #[test]
+    fn caching_a_hash_marks_dirty_until_taken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let compiler = tmp.path().join("cc");
+        std::fs::write(&compiler, b"fake compiler").unwrap();
+        let cache = CompilerHashCache::new();
+
+        cache.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([1; 32])));
+        assert!(cache.is_dirty());
+        assert!(cache.take_dirty());
+        assert!(
+            !cache.is_dirty(),
+            "take_dirty must clear the flag for the next caller"
+        );
+        assert!(!cache.take_dirty(), "already clear, second take is a no-op");
+    }
+
+    #[test]
+    fn merge_from_does_not_mark_dirty() {
+        let loaded = CompilerHashCache::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let compiler = tmp.path().join("cc");
+        std::fs::write(&compiler, b"fake compiler").unwrap();
+        loaded.get_or_hash_with(&compiler, |_| Some(ContentHash::from_bytes([2; 32])));
+
+        let live = CompilerHashCache::new();
+        live.merge_from(loaded);
+
+        assert!(
+            !live.is_dirty(),
+            "a background disk load must not require an immediate re-save"
         );
     }
 }

@@ -171,6 +171,15 @@ pub struct ArtifactStore {
     /// on this crate, never the reverse, so the store only *reports* that it
     /// started corrupt and the daemon owns the recovery policy.
     started_corrupt: std::sync::atomic::AtomicBool,
+    /// Set by every mutation (`insert`, `insert_many`, `remove`,
+    /// `remove_batch`, `clear`); cleared by [`Self::take_dirty`]. Lets a
+    /// shutdown drain skip a redundant final `flush()` when the WAL flush
+    /// already covered every mutation (zccache#1775) — previously the index
+    /// was unconditionally rewritten and fsynced a second time even when
+    /// nothing changed between the WAL's flush and the final store flush.
+    /// `load_from_disk` deliberately does not set this — its inserts mirror
+    /// content already on disk.
+    dirty: std::sync::atomic::AtomicBool,
 }
 
 impl ArtifactStore {
@@ -208,6 +217,7 @@ impl ArtifactStore {
             entries: DashMap::new(),
             flush_lock: std::sync::Mutex::new(()),
             started_corrupt: std::sync::atomic::AtomicBool::new(false),
+            dirty: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -314,6 +324,7 @@ impl ArtifactStore {
     /// Insert or update an artifact entry. In-memory only.
     pub fn insert(&self, key: &str, meta: &ArtifactIndex) {
         self.entries.insert(key.to_string(), meta.clone());
+        self.mark_dirty();
     }
 
     /// Insert or update many entries. In-memory only.
@@ -327,7 +338,27 @@ impl ArtifactStore {
             self.entries.insert(k.as_ref().to_string(), v);
             count += 1;
         }
+        if count > 0 {
+            self.mark_dirty();
+        }
         count
+    }
+
+    /// Whether the store has been mutated since the last [`Self::take_dirty`].
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Clear the dirty flag, returning whether it was set. Callers check
+    /// this immediately before a final/redundant flush to decide whether
+    /// the serialize + fsync + rename is necessary at all.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn mark_dirty(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Look up a single artifact entry.
@@ -337,7 +368,11 @@ impl ArtifactStore {
 
     /// Remove a single entry. Returns `true` if it existed.
     pub fn remove(&self, key: &str) -> bool {
-        self.entries.remove(key).is_some()
+        let removed = self.entries.remove(key).is_some();
+        if removed {
+            self.mark_dirty();
+        }
+        removed
     }
 
     /// Remove a batch of entries. Returns the number actually removed.
@@ -347,6 +382,9 @@ impl ArtifactStore {
             if self.entries.remove(*key).is_some() {
                 removed += 1;
             }
+        }
+        if removed > 0 {
+            self.mark_dirty();
         }
         removed
     }
@@ -380,6 +418,9 @@ impl ArtifactStore {
     pub fn clear(&self) -> usize {
         let n = self.entries.len();
         self.entries.clear();
+        if n > 0 {
+            self.mark_dirty();
+        }
         n
     }
 
@@ -396,6 +437,23 @@ impl ArtifactStore {
             .flush_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Clear dirty BEFORE taking the snapshot, not after: a mutation that
+        // lands concurrently (even mid-snapshot, per the fuzzy-snapshot note
+        // below) calls `mark_dirty()` again and correctly leaves the flag set
+        // for the next flush, rather than being silently treated as already
+        // durable. Restored on failure, since nothing was actually persisted.
+        self.dirty
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let result = self.flush_locked();
+        if result.is_err() {
+            self.mark_dirty();
+        }
+        result
+    }
+
+    /// The actual write, called with [`Self::flush_lock`] held and the dirty
+    /// flag already cleared by [`Self::flush`].
+    fn flush_locked(&self) -> std::io::Result<()> {
         let snapshot: Vec<(String, ArtifactIndex)> = self
             .entries
             .iter()
@@ -768,5 +826,70 @@ mod tests {
         store.flush().unwrap();
         let second = std::fs::metadata(&path).unwrap().len();
         assert!(second > first);
+    }
+
+    // zccache#1775: dirty-flag tracking lets a shutdown drain skip a
+    // redundant final flush when the WAL flush already covered every
+    // mutation.
+    mod dirty_flag {
+        use super::*;
+
+        #[test]
+        fn starts_clean() {
+            let (_dir, store) = temp_store();
+            assert!(!store.is_dirty());
+            assert!(!store.take_dirty());
+        }
+
+        #[test]
+        fn insert_marks_dirty_until_taken() {
+            let (_dir, store) = temp_store();
+            store.insert("k", &sample_meta());
+            assert!(store.is_dirty());
+            assert!(store.take_dirty());
+            assert!(!store.is_dirty(), "take_dirty must clear the flag");
+        }
+
+        #[test]
+        fn insert_many_of_zero_entries_does_not_mark_dirty() {
+            let (_dir, store) = temp_store();
+            let inserted = store.insert_many(Vec::<(String, ArtifactIndex)>::new());
+            assert_eq!(inserted, 0);
+            assert!(!store.is_dirty());
+        }
+
+        #[test]
+        fn remove_of_missing_key_does_not_mark_dirty() {
+            let (_dir, store) = temp_store();
+            assert!(!store.remove("missing"));
+            assert!(!store.is_dirty());
+        }
+
+        #[test]
+        fn successful_flush_clears_dirty() {
+            let (_dir, store) = temp_store();
+            store.insert("k", &sample_meta());
+            store.flush().unwrap();
+            assert!(
+                !store.is_dirty(),
+                "a successful flush must leave the store clean"
+            );
+        }
+
+        #[test]
+        fn load_from_disk_does_not_mark_dirty() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("index.bin");
+            let seed = ArtifactStore::open(&path).unwrap();
+            seed.insert("k", &sample_meta());
+            seed.flush().unwrap();
+
+            let reopened = ArtifactStore::open_empty(&path);
+            reopened.load_from_disk().unwrap();
+            assert!(
+                !reopened.is_dirty(),
+                "loading content that already matches disk must not require a re-save"
+            );
+        }
     }
 }

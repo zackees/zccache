@@ -138,9 +138,14 @@ fn codec() -> impl Options {
         .allow_trailing_bytes()
 }
 
-fn encoded_len(snapshot: &DepGraphSnapshot) -> Result<u64, SnapshotError> {
+/// Serialize `snapshot` once. Callers that only need the byte count should
+/// use this and take `.len()` rather than calling `serialized_size`
+/// separately — bincode's `serialized_size` walks the whole value just like
+/// a real serialize, so computing it and then serializing for real (the
+/// zccache#1775 double-serialize) costs the same as doing the work twice.
+fn encode_snapshot(snapshot: &DepGraphSnapshot) -> Result<Vec<u8>, SnapshotError> {
     codec()
-        .serialized_size(snapshot)
+        .serialize(snapshot)
         .map_err(|e| SnapshotError::Corrupt(format!("serialize: {e}")))
 }
 
@@ -169,7 +174,7 @@ pub fn save_to_file_with(
     // GC: trim stale entries before saving.
     graph.trim(opts.ttl);
 
-    let (snapshot, payload_len) = fit_to_budget(graph, opts)?;
+    let payload = fit_to_budget(graph, opts)?;
 
     // Atomic write: write to .tmp, then rename.
     let tmp_path = path.with_extension("bin.tmp");
@@ -177,7 +182,7 @@ pub fn save_to_file_with(
         std::fs::create_dir_all(parent)?;
     }
 
-    let written = write_tmp(&tmp_path, &snapshot, payload_len, opts.fail_injection);
+    let written = write_tmp(&tmp_path, &payload, opts.fail_injection);
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e);
@@ -194,17 +199,18 @@ pub fn save_to_file_with(
 }
 
 /// Build the snapshot, evicting least-recently-used contexts from `graph`
-/// until header + payload fits in `opts.budget_bytes`.
-fn fit_to_budget(
-    graph: &DepGraph,
-    opts: &SaveOptions,
-) -> Result<(DepGraphSnapshot, u64), SnapshotError> {
+/// until header + payload fits in `opts.budget_bytes`. Returns the final
+/// serialized payload bytes — serialized exactly once per round (via
+/// [`encode_snapshot`]), never re-serialized afterward by the caller
+/// (zccache#1775: this used to be measured separately via `serialized_size`
+/// here and then serialized again in `write_tmp`).
+fn fit_to_budget(graph: &DepGraph, opts: &SaveOptions) -> Result<Vec<u8>, SnapshotError> {
     let header = HEADER_SIZE as u64;
     let mut snapshot = graph.to_snapshot_at(opts.now_unix_ms);
-    let mut payload_len = encoded_len(&snapshot)?;
+    let mut payload = encode_snapshot(&snapshot)?;
 
     for _ in 0..MAX_EVICTION_ROUNDS {
-        let total = header.saturating_add(payload_len);
+        let total = header.saturating_add(payload.len() as u64);
         if total <= opts.budget_bytes || snapshot.contexts.is_empty() {
             break;
         }
@@ -217,6 +223,9 @@ fn fit_to_budget(
         let mut victims: Vec<ContextKey> = Vec::new();
         for i in order {
             let ctx = &snapshot.contexts[i];
+            // Per-context size probe for victim selection: much cheaper than
+            // re-serializing the whole graph, and only the whole-graph
+            // payload above needs to avoid the double-serialize.
             let size = codec()
                 .serialized_size(ctx)
                 .map_err(|e| SnapshotError::Corrupt(format!("serialize: {e}")))?;
@@ -229,25 +238,20 @@ fn fit_to_budget(
         graph.evict_contexts(&victims);
 
         snapshot = graph.to_snapshot_at(opts.now_unix_ms);
-        payload_len = encoded_len(&snapshot)?;
+        payload = encode_snapshot(&snapshot)?;
     }
 
-    Ok((snapshot, payload_len))
+    Ok(payload)
 }
 
-fn write_tmp(
-    tmp_path: &Path,
-    snapshot: &DepGraphSnapshot,
-    payload_len: u64,
-    fail_injection: bool,
-) -> Result<(), SnapshotError> {
+fn write_tmp(tmp_path: &Path, payload: &[u8], fail_injection: bool) -> Result<(), SnapshotError> {
     let file = std::fs::File::create(tmp_path)?;
     let mut writer = BufWriter::new(file);
 
     // Header: magic + version (LE u32) + payload len (LE u64).
     writer.write_all(&DEPGRAPH_MAGIC)?;
     writer.write_all(&DEPGRAPH_VERSION.to_le_bytes())?;
-    writer.write_all(&payload_len.to_le_bytes())?;
+    writer.write_all(&(payload.len() as u64).to_le_bytes())?;
 
     if fail_injection || take_injected_failure(tmp_path) {
         return Err(SnapshotError::Io(std::io::Error::other(
@@ -255,9 +259,9 @@ fn write_tmp(
         )));
     }
 
-    codec()
-        .serialize_into(&mut writer, snapshot)
-        .map_err(|e| SnapshotError::Corrupt(format!("serialize: {e}")))?;
+    // Already-serialized bytes (see `fit_to_budget` / `encode_snapshot`) —
+    // no second serialize pass here.
+    writer.write_all(payload)?;
 
     let file = writer
         .into_inner()

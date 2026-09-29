@@ -276,43 +276,54 @@ impl DaemonServer {
                         drain_durable_state_for_shutdown(&self.state, index_writer_handle.take())
                             .await;
 
-                    // Save depgraph to disk before exiting. The serializer and
-                    // atomic write path are synchronous, so run them off the
-                    // Tokio runtime thread.
-                    let start = std::time::Instant::now();
-                    let path = depgraph_file_path_for_cache_dir(&self.state.cache_dir);
-                    let save_state = Arc::clone(&self.state);
-                    let depgraph_save = run_depgraph_save_with(save_state, None, move |dg| {
-                        if let Some(parent) = path.parent() {
-                            std::fs::create_dir_all(parent).ok();
+                    // Save depgraph to disk before exiting, unless nothing
+                    // has mutated it since the last save (zccache#1775) — an
+                    // idle daemon with no compiles has nothing new to
+                    // serialize, fsync, and rename over the existing
+                    // snapshot (or, if there never was one, nothing worth
+                    // writing at all). The serializer and atomic write path
+                    // are synchronous, so run them off the Tokio runtime
+                    // thread.
+                    if self.state.dep_graph.load().take_dirty() {
+                        let start = std::time::Instant::now();
+                        let path = depgraph_file_path_for_cache_dir(&self.state.cache_dir);
+                        let save_state = Arc::clone(&self.state);
+                        let depgraph_save = run_depgraph_save_with(save_state, None, move |dg| {
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent).ok();
+                            }
+                            let (cold_ctxs, warm_ctxs, stale_ctxs) = dg.state_breakdown();
+                            let ctxs_with_key = dg.contexts_with_artifact_key();
+                            let result = crate::depgraph::save_to_file(dg, &path);
+                            (result, cold_ctxs, warm_ctxs, stale_ctxs, ctxs_with_key)
+                        })
+                        .await;
+                        match depgraph_save {
+                            Ok((Ok(()), cold_ctxs, warm_ctxs, stale_ctxs, ctxs_with_key)) => {
+                                self.state
+                                    .dep_graph_persisted
+                                    .store(true, Ordering::Release);
+                                // State breakdown lets a future warm-side daemon
+                                // explain its cold_skip miss rate: if cold_ctxs
+                                // is high relative to warm_ctxs, the warm side
+                                // will take the cold_skip branch for those keys
+                                // and never consult the artifact_store.
+                                tracing::info!(
+                                    elapsed_ms = start.elapsed().as_millis() as u64,
+                                    cold = cold_ctxs,
+                                    warm = warm_ctxs,
+                                    stale = stale_ctxs,
+                                    with_artifact_key = ctxs_with_key,
+                                    "depgraph saved"
+                                );
+                            }
+                            Ok((Err(e), _, _, _, _)) => tracing::warn!("depgraph save failed: {e}"),
+                            Err(e) => tracing::warn!("depgraph save task join error: {e}"),
                         }
-                        let (cold_ctxs, warm_ctxs, stale_ctxs) = dg.state_breakdown();
-                        let ctxs_with_key = dg.contexts_with_artifact_key();
-                        let result = crate::depgraph::save_to_file(dg, &path);
-                        (result, cold_ctxs, warm_ctxs, stale_ctxs, ctxs_with_key)
-                    })
-                    .await;
-                    match depgraph_save {
-                        Ok((Ok(()), cold_ctxs, warm_ctxs, stale_ctxs, ctxs_with_key)) => {
-                            self.state
-                                .dep_graph_persisted
-                                .store(true, Ordering::Release);
-                            // State breakdown lets a future warm-side daemon
-                            // explain its cold_skip miss rate: if cold_ctxs
-                            // is high relative to warm_ctxs, the warm side
-                            // will take the cold_skip branch for those keys
-                            // and never consult the artifact_store.
-                            tracing::info!(
-                                elapsed_ms = start.elapsed().as_millis() as u64,
-                                cold = cold_ctxs,
-                                warm = warm_ctxs,
-                                stale = stale_ctxs,
-                                with_artifact_key = ctxs_with_key,
-                                "depgraph saved"
-                            );
-                        }
-                        Ok((Err(e), _, _, _, _)) => tracing::warn!("depgraph save failed: {e}"),
-                        Err(e) => tracing::warn!("depgraph save task join error: {e}"),
+                    } else {
+                        tracing::debug!(
+                            "depgraph save skipped at shutdown: no changes since last save"
+                        );
                     }
 
                     // Persist the in-memory MetadataCache so the next
@@ -332,7 +343,18 @@ impl DaemonServer {
                     // snapshot — the entries that DID land in-memory
                     // came from in-process compiles whose verified state
                     // is still on disk in the prior snapshot.
-                    if self.state.metadata_cache_loaded.load(Ordering::Acquire) {
+                    if !self.state.metadata_cache_loaded.load(Ordering::Acquire) {
+                        tracing::debug!(
+                            "metadata cache load still pending at shutdown — skipping save"
+                        );
+                    } else if !self.state.cache_system.metadata().take_dirty() {
+                        // zccache#1775: nothing changed since the last save
+                        // (periodic, or the load itself) — skip the
+                        // serialize + fsync entirely.
+                        tracing::debug!(
+                            "metadata cache save skipped at shutdown: no changes since last save"
+                        );
+                    } else {
                         let meta_start = std::time::Instant::now();
                         let metadata_entries = self.state.cache_system.metadata().len();
                         let state = Arc::clone(&self.state);
@@ -363,10 +385,6 @@ impl DaemonServer {
                                 "metadata cache save task join error: {e}"
                             ),
                         }
-                    } else {
-                        tracing::debug!(
-                            "metadata cache load still pending at shutdown — skipping save"
-                        );
                     }
 
                     // Issue #517: persist the compiler-binary hash cache
@@ -383,11 +401,19 @@ impl DaemonServer {
                     // snapshot — the in-memory DashMap is still warm
                     // enough for the in-process compiles that already
                     // happened.
-                    if self
+                    if !self
                         .state
                         .compiler_hash_cache_loaded
                         .load(Ordering::Acquire)
                     {
+                        tracing::debug!(
+                            "compiler hash cache load still pending at shutdown — skipping save"
+                        );
+                    } else if !self.state.compiler_hash_cache.take_dirty() {
+                        tracing::debug!(
+                            "compiler hash cache save skipped at shutdown: no changes since last save"
+                        );
+                    } else {
                         let state = Arc::clone(&self.state);
                         let compiler_hash_cache_path = self.state.compiler_hash_cache_path.clone();
                         let res = kernal_api::async_engine::launch_blocking(move || {
@@ -411,10 +437,6 @@ impl DaemonServer {
                                 );
                             }
                         }
-                    } else {
-                        tracing::debug!(
-                            "compiler hash cache load still pending at shutdown — skipping save"
-                        );
                     }
 
                     // Issue #541: persist the C/C++ system include paths
@@ -431,36 +453,42 @@ impl DaemonServer {
                     // existing snapshot — entries that DID land
                     // in-memory came from in-process compiles whose
                     // re-probe is cheap.
-                    if self.state.system_includes_loaded.load(Ordering::Acquire) {
-                        let includes = {
-                            let includes = self.state.system_includes.lock().await;
-                            includes.clone()
-                        };
-                        let system_includes_cache_path =
-                            self.state.system_includes_cache_path.clone();
-                        let res = kernal_api::async_engine::launch_blocking(move || {
-                            includes.save_to_disk(system_includes_cache_path.as_path())
-                        })
-                        .await;
-                        match res {
-                            Ok(Ok(())) => {}
-                            Ok(Err(e)) => {
-                                tracing::warn!(
-                                    path = %self.state.system_includes_cache_path.display(),
-                                    "system include cache save failed: {e}"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    path = %self.state.system_includes_cache_path.display(),
-                                    "system include cache save task join error: {e}"
-                                );
-                            }
-                        }
-                    } else {
+                    if !self.state.system_includes_loaded.load(Ordering::Acquire) {
                         tracing::debug!(
                             "system include cache load still pending at shutdown — skipping save"
                         );
+                    } else {
+                        let dirty_includes = {
+                            let mut includes = self.state.system_includes.lock().await;
+                            includes.take_dirty().then(|| includes.clone())
+                        };
+                        if let Some(includes) = dirty_includes {
+                            let system_includes_cache_path =
+                                self.state.system_includes_cache_path.clone();
+                            let res = kernal_api::async_engine::launch_blocking(move || {
+                                includes.save_to_disk(system_includes_cache_path.as_path())
+                            })
+                            .await;
+                            match res {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    tracing::warn!(
+                                        path = %self.state.system_includes_cache_path.display(),
+                                        "system include cache save failed: {e}"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        path = %self.state.system_includes_cache_path.display(),
+                                        "system include cache save task join error: {e}"
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::debug!(
+                                "system include cache save skipped at shutdown: no changes since last save"
+                            );
+                        }
                     }
 
                     // Clean up our own depfile temp directory.

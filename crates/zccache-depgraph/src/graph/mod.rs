@@ -16,7 +16,7 @@ mod register;
 mod update;
 
 use std::path::Path;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -198,6 +198,16 @@ pub struct DepGraph {
     pub(super) checks: AtomicU64,
     pub(super) hits: AtomicU64,
     pub(super) misses: AtomicU64,
+    /// Set by every mutation that touches persisted state (`files`,
+    /// `contexts`, `rustc_externs`, `rustc_check_metadata_compat`); cleared
+    /// by [`Self::take_dirty`]. Lets a shutdown or periodic save skip
+    /// re-serializing and re-fsyncing a graph that hasn't changed since the
+    /// last snapshot (zccache#1775) instead of unconditionally re-writing
+    /// it. A freshly loaded/constructed graph starts clean: `from_snapshot`
+    /// and `new()` populate the maps directly rather than through the
+    /// mutating methods below, so the on-disk content and the in-memory
+    /// content agree until the first real mutation.
+    pub(super) dirty: AtomicBool,
 }
 
 /// Cache key for `path_key_cache`. `(header_path, key_root_or_none)`.
@@ -390,7 +400,27 @@ impl DepGraph {
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            dirty: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the graph has been mutated since the last [`Self::take_dirty`].
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Clear the dirty flag, returning whether it was set.
+    ///
+    /// Callers check this immediately before a snapshot save: `false` means
+    /// nothing has changed since the last save (or since load), so the save
+    /// can be skipped entirely — no serialize, no fsync, no rename.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(super) fn mark_dirty(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Cached version of [`crate::context::normalize_key_path`].
@@ -473,6 +503,7 @@ impl DepGraph {
             checks: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            dirty: AtomicBool::new(false),
         }
     }
 }
@@ -483,6 +514,9 @@ impl Default for DepGraph {
     }
 }
 
+#[cfg(test)]
+#[path = "tests/dirty_flag.rs"]
+mod dirty_flag_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

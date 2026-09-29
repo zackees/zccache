@@ -78,10 +78,21 @@ async fn test_server_shutdown_request() {
 /// only after `run()` returns. The background maintenance and depgraph-save
 /// loops polled the shutdown flag once a second, so every stop of an idle
 /// daemon paid about a second (measured 997-1056 ms end to end).
+///
+/// zccache#1775: with the shutdown-time persistence writes (index, depgraph,
+/// metadata, compiler-hash, system-includes) now skipped entirely for an
+/// idle daemon with no changes (see
+/// `dirty_state_skips_shutdown_persistence_when_idle` below), the remaining
+/// cost is the fixed 50 ms `disk_maintenance::SHUTDOWN_POLL_INTERVAL` poll,
+/// paid twice (maintenance loop join, then depgraph-save loop join) in the
+/// worst case. Measured locally (8 runs, release-equivalent dev build):
+/// 100.9-106.3 ms, consistently around 101 ms. 250 ms budget keeps ample
+/// margin for a loaded/slower CI host while being 2x tighter than the old
+/// 500 ms bound that was sized for the pre-#1762 ~1 s baseline.
 #[tokio::test]
 #[ignore] // integration-level: starts real daemon with IPC + file watcher
 async fn perf_shutdown_request_exits_idle_daemon_promptly() {
-    const BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+    const BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
     crate::test_support::test_timeout(async {
         let (endpoint, server_task, _shutdown, _cache_root) = start_daemon().await;
 

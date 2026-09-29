@@ -307,6 +307,14 @@ struct PersistedSystemIncludes {
 #[derive(Debug, Default, Clone)]
 pub struct SystemIncludeCache {
     cache: HashMap<NormalizedPath, SystemIncludeEntry>,
+    /// Set by every mutating method; cleared by [`Self::take_dirty`]. Lets a
+    /// shutdown save skip re-serializing and re-fsyncing the snapshot when
+    /// nothing changed since the last save (zccache#1775). `merge_from`
+    /// (background disk load) deliberately does not set this — the merged
+    /// content already matches what's on disk. Plain `bool` (not atomic):
+    /// the cache is only ever accessed through the daemon's
+    /// `Mutex<SystemIncludeCache>`, never shared unsynchronized.
+    dirty: bool,
 }
 
 impl SystemIncludeCache {
@@ -314,6 +322,17 @@ impl SystemIncludeCache {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether the cache has been mutated since the last [`Self::take_dirty`].
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Clear the dirty flag, returning whether it was set.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
     }
 
     /// Look up cached system include paths for a compiler, verifying stat.
@@ -359,6 +378,7 @@ impl SystemIncludeCache {
         let size = metadata.len();
         self.cache
             .insert(compiler, SystemIncludeEntry { mtime, size, paths });
+        self.dirty = true;
     }
 
     /// Get cached paths or discover them using the provided closure.
@@ -392,6 +412,7 @@ impl SystemIncludeCache {
     /// Remove all cached entries.
     pub fn clear(&mut self) {
         self.cache.clear();
+        self.dirty = true;
     }
 
     /// Drain entries from a freshly loaded `SystemIncludeCache` into
@@ -535,7 +556,10 @@ impl SystemIncludeCache {
             entries = entry_count,
             "system include cache restored from disk"
         );
-        Ok(Self { cache })
+        Ok(Self {
+            cache,
+            dirty: false,
+        })
     }
 }
 
@@ -960,5 +984,68 @@ InstalledDir: /usr/bin
         let output = "\"/usr/bin/clang\" \"-cc1\" \"-internal-isystem\"\n";
         let paths = parse_cc1_system_include_output(output);
         assert!(paths.is_empty());
+    }
+
+    // zccache#1775: dirty-flag tracking lets a shutdown save skip the
+    // system-includes cache snapshot when nothing has changed.
+    mod dirty_flag {
+        use super::*;
+
+        #[test]
+        fn starts_clean() {
+            let mut cache = SystemIncludeCache::new();
+            assert!(!cache.is_dirty());
+            assert!(!cache.take_dirty());
+        }
+
+        #[test]
+        fn insert_marks_dirty_until_taken() {
+            let tmp = tempfile::tempdir().unwrap();
+            let compiler = tmp.path().join("cc");
+            std::fs::write(&compiler, b"fake compiler").unwrap();
+            let mut cache = SystemIncludeCache::new();
+
+            cache.insert(
+                NormalizedPath::new(&compiler),
+                vec![NormalizedPath::new(tmp.path())],
+            );
+            assert!(cache.is_dirty());
+            assert!(cache.take_dirty());
+            assert!(!cache.is_dirty());
+        }
+
+        #[test]
+        fn insert_with_empty_paths_does_not_mark_dirty() {
+            let tmp = tempfile::tempdir().unwrap();
+            let compiler = tmp.path().join("cc");
+            std::fs::write(&compiler, b"fake compiler").unwrap();
+            let mut cache = SystemIncludeCache::new();
+
+            cache.insert(NormalizedPath::new(&compiler), Vec::new());
+            assert!(
+                !cache.is_dirty(),
+                "an empty result is deliberately not cached"
+            );
+        }
+
+        #[test]
+        fn merge_from_does_not_mark_dirty() {
+            let tmp = tempfile::tempdir().unwrap();
+            let compiler = tmp.path().join("cc");
+            std::fs::write(&compiler, b"fake compiler").unwrap();
+            let mut loaded = SystemIncludeCache::new();
+            loaded.insert(
+                NormalizedPath::new(&compiler),
+                vec![NormalizedPath::new(tmp.path())],
+            );
+
+            let mut live = SystemIncludeCache::new();
+            live.merge_from(loaded);
+
+            assert!(
+                !live.is_dirty(),
+                "a background disk load must not require an immediate re-save"
+            );
+        }
     }
 }

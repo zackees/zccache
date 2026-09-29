@@ -695,12 +695,16 @@ fn remove_planned_artifacts(
 
 #[cfg(test)]
 fn maintain_disk_artifacts(pass: MaintenancePass<'_>) -> io::Result<DiskMaintenanceReport> {
-    maintain_disk_artifacts_with_barrier(pass, None)
+    maintain_disk_artifacts_with_barrier(pass, None, None)
 }
 
+// `shutdown_requested` is checked between eviction rounds so a shutdown
+// mid-scan doesn't have to wait out however many rounds a large cache still
+// has queued (zccache#1775). `None` in tests that don't exercise shutdown.
 fn maintain_disk_artifacts_with_barrier(
     pass: MaintenancePass<'_>,
     publication_barrier: Option<&Arc<kernal_api::async_engine::RwLock<()>>>,
+    shutdown_requested: Option<&AtomicBool>,
 ) -> io::Result<DiskMaintenanceReport> {
     let MaintenancePass {
         artifact_dir,
@@ -739,6 +743,13 @@ fn maintain_disk_artifacts_with_barrier(
     let mut artifact_bytes_reclaimed = 0_u64;
 
     loop {
+        // zccache#1775: bail between rounds rather than only checking once
+        // before this blocking scan started — a large cache can take
+        // multiple scan/plan/commit/rescan rounds, and shutdown must not
+        // wait out however many are still queued.
+        if shutdown_requested.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            break;
+        }
         let space = environment.filesystem_space(artifact_dir)?;
         let plan = plan_maintenance_at_least(
             policy,
@@ -934,6 +945,7 @@ pub(super) async fn maintain_state_disk(
                 retired_top_level: versioned_top_level(maintenance_state.cache_dir.as_path()),
             },
             Some(&maintenance_state.artifact_publication),
+            Some(&maintenance_state.shutdown_requested),
         )
     })
     .await

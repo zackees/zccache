@@ -260,6 +260,7 @@ impl DepGraph {
         };
 
         entry.last_accessed_unix_ms = now_unix_ms();
+        self.mark_dirty();
 
         if entry.state == ContextState::Cold {
             tracing::debug!(
@@ -468,6 +469,7 @@ impl DepGraph {
         };
 
         entry.last_accessed_unix_ms = now_unix_ms();
+        self.mark_dirty();
 
         if entry.state == ContextState::Cold {
             self.misses.fetch_add(1, Ordering::Relaxed);

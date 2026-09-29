@@ -100,14 +100,28 @@ pub(super) async fn drain_durable_state_for_shutdown(
     index_writer_handle: Option<kernal_api::async_engine::Task<()>>,
 ) -> kernal_api::async_engine::RwLockWriteGuard<'_, ()> {
     // 1. Deferred persist tasks (#799).
+    //
+    // zccache#1775: this drain is invisible unless it times out, so a long
+    // wait behind a large miss backlog (observed: `stop` hit its 10 s cap
+    // after a ~1 GB build) has no timing signal short of the timeout warning
+    // below. Log the elapsed time unconditionally so a slow-but-successful
+    // drain is diagnosable from the daemon log alone.
+    let pending_drain_start = std::time::Instant::now();
     let pending_drained = pending_writes::await_all(
         &state.pending_cache_writes,
         PENDING_WRITES_SHUTDOWN_DRAIN_TIMEOUT,
     )
     .await;
-    if !pending_drained {
+    let pending_drain_elapsed_ns = pending_drain_start.elapsed().as_nanos() as u64;
+    if pending_drained {
+        tracing::info!(
+            elapsed_ns = pending_drain_elapsed_ns,
+            "pending artifact writes drained before WAL drain"
+        );
+    } else {
         tracing::warn!(
             pending = state.pending_cache_writes.len(),
+            elapsed_ns = pending_drain_elapsed_ns,
             "timed out waiting for pending artifact writes before WAL drain"
         );
     }
@@ -185,16 +199,30 @@ pub(super) async fn drain_durable_state_for_shutdown(
     // CAS payloads but no index.bin, leaving the warm-side daemon (and
     // every other `soldr load` consumer) with an empty index even though
     // all artifacts were on disk.
+    //
+    // zccache#1775: the WAL flush in step 3 already covers every mutation
+    // that went through `index_writer_tx`, including the direct-insert case
+    // above once it lands (`store.insert` marks the store dirty; the next
+    // WAL flush or this final flush picks it up). If step 3 left the store
+    // clean, re-serializing and re-fsyncing the same snapshot here is pure
+    // waste — skip it entirely.
     let store = Arc::clone(&state.artifact_store);
     let entries = store.len();
-    let flush_start = std::time::Instant::now();
-    match store.flush_async().await {
-        Ok(()) => tracing::info!(
+    if store.take_dirty() {
+        let flush_start = std::time::Instant::now();
+        match store.flush_async().await {
+            Ok(()) => tracing::info!(
+                entries,
+                elapsed_ms = flush_start.elapsed().as_millis() as u64,
+                "artifact store final flush complete"
+            ),
+            Err(e) => tracing::warn!(entries, "artifact store final flush failed: {e}"),
+        }
+    } else {
+        tracing::debug!(
             entries,
-            elapsed_ms = flush_start.elapsed().as_millis() as u64,
-            "artifact store final flush complete"
-        ),
-        Err(e) => tracing::warn!(entries, "artifact store final flush failed: {e}"),
+            "artifact store final flush skipped: no changes since last flush"
+        );
     }
 
     publication_guard

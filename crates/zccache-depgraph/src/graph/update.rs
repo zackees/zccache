@@ -147,6 +147,7 @@ impl DepGraph {
         entry.artifact_key = Some(artifact_key);
         entry.last_file_hashes = file_hashes;
         entry.rustc_env_deps = env_hashes;
+        self.mark_dirty();
         let finalize_ns = t_finalize
             .map(|t| t.elapsed().as_nanos() as u64)
             .unwrap_or(0);

@@ -163,6 +163,7 @@ impl DepGraph {
 
         let instance = super::ContextInstanceKey::new(key, &ctx.source_file, key_root.as_ref());
         let instance_key = instance.map_key();
+        self.mark_dirty();
         if let Some(mut existing) = self.contexts.get_mut(&instance_key) {
             existing.last_accessed_unix_ms = now_unix_ms();
             let state = existing.state;

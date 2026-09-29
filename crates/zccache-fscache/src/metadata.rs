@@ -3,6 +3,7 @@
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 use zccache_core::NormalizedPath;
@@ -145,6 +146,12 @@ pub struct MetadataCache {
     high_decay: Duration,
     /// Duration after which a Medium-confidence entry decays to Low.
     medium_decay: Duration,
+    /// Set by every mutating method; cleared by [`Self::take_dirty`]. Lets a
+    /// shutdown/periodic snapshot skip re-serializing and re-fsyncing
+    /// `metadata.bin` when nothing has changed since the last save
+    /// (zccache#1775). `merge_from` (background disk load) deliberately does
+    /// not set this — the merged content already matches disk.
+    dirty: AtomicBool,
 }
 
 impl MetadataCache {
@@ -155,7 +162,25 @@ impl MetadataCache {
             entries: DashMap::new(),
             high_decay: Duration::from_secs(60),
             medium_decay: Duration::from_secs(30),
+            dirty: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the cache has been mutated since the last [`Self::take_dirty`].
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Relaxed)
+    }
+
+    /// Clear the dirty flag, returning whether it was set. Callers check this
+    /// immediately before a snapshot save to decide whether the save (and its
+    /// serialize + fsync) is necessary at all.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::Relaxed)
+    }
+
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// Look up metadata for a path, applying confidence decay.
@@ -173,19 +198,26 @@ impl MetadataCache {
     /// Insert or update metadata for a path.
     pub fn insert(&self, path: NormalizedPath, metadata: FileMetadata) {
         self.entries.insert(path, metadata);
+        self.mark_dirty();
     }
 
     /// Mark a path's entry as Low confidence (e.g., after watcher overflow).
     pub fn downgrade(&self, path: &NormalizedPath) {
         if let Some(mut entry) = self.entries.get_mut(path) {
             entry.confidence = Confidence::Low;
+            self.mark_dirty();
         }
     }
 
     /// Downgrade all entries to Low confidence.
     pub fn downgrade_all(&self) {
+        let mut any = false;
         for mut entry in self.entries.iter_mut() {
             entry.confidence = Confidence::Low;
+            any = true;
+        }
+        if any {
+            self.mark_dirty();
         }
     }
 
@@ -234,12 +266,17 @@ impl MetadataCache {
                 }
             }
         }
+        if promoted > 0 {
+            self.mark_dirty();
+        }
         promoted
     }
 
     /// Remove a path from the cache.
     pub fn remove(&self, path: &NormalizedPath) {
-        self.entries.remove(path);
+        if self.entries.remove(path).is_some() {
+            self.mark_dirty();
+        }
     }
 
     /// Returns the number of entries in the cache.
@@ -257,6 +294,7 @@ impl MetadataCache {
     /// Remove all entries from the cache.
     pub fn clear(&self) {
         self.entries.clear();
+        self.mark_dirty();
     }
 
     /// Drain entries from a freshly loaded `MetadataCache` into `self`
@@ -344,6 +382,9 @@ impl MetadataCache {
                 true
             }
         });
+        if removed > 0 {
+            self.mark_dirty();
+        }
         removed
     }
 
@@ -403,6 +444,9 @@ impl MetadataCache {
                 }
             }
         }
+        if result.removed > 0 {
+            self.mark_dirty();
+        }
         result
     }
 
@@ -435,6 +479,9 @@ impl MetadataCache {
                     result.refreshed.push(candidate.clone());
                 }
             }
+        }
+        if result.removed > 0 {
+            self.mark_dirty();
         }
         result
     }
@@ -1074,6 +1121,59 @@ mod tests {
         // After downgrade, all entries should be Low confidence
         for entry in cache.entries.iter() {
             assert_eq!(entry.confidence, Confidence::Low);
+        }
+    }
+
+    // zccache#1775: dirty-flag tracking lets a shutdown/periodic snapshot
+    // skip metadata.bin when nothing has changed since the last save.
+    mod dirty_flag {
+        use super::*;
+
+        fn meta() -> FileMetadata {
+            FileMetadata {
+                mtime: SystemTime::now(),
+                size: 1,
+                confidence: Confidence::High,
+                last_verified: Instant::now(),
+                content_hash: Some([0x42; 32]),
+            }
+        }
+
+        #[test]
+        fn starts_clean() {
+            let cache = MetadataCache::new();
+            assert!(!cache.is_dirty());
+            assert!(!cache.take_dirty());
+        }
+
+        #[test]
+        fn insert_marks_dirty_until_taken() {
+            let cache = MetadataCache::new();
+            cache.insert(NormalizedPath::new("/a"), meta());
+            assert!(cache.is_dirty());
+            assert!(cache.take_dirty());
+            assert!(!cache.is_dirty());
+        }
+
+        #[test]
+        fn remove_of_missing_path_does_not_mark_dirty() {
+            let cache = MetadataCache::new();
+            cache.remove(&NormalizedPath::new("/missing"));
+            assert!(!cache.is_dirty());
+        }
+
+        #[test]
+        fn merge_from_does_not_mark_dirty() {
+            let loaded = MetadataCache::new();
+            loaded.insert(NormalizedPath::new("/a"), meta());
+
+            let live = MetadataCache::new();
+            live.merge_from(loaded);
+
+            assert!(
+                !live.is_dirty(),
+                "a background disk load must not require an immediate re-save"
+            );
         }
     }
 }

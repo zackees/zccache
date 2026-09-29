@@ -226,6 +226,7 @@ fn read_only_maintenance_scan_does_not_exclude_cache_hit_leases() {
                     retired_top_level: None,
                 },
                 Some(&publication_barrier),
+                None,
             )
         });
 

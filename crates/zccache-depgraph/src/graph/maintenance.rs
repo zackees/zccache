@@ -81,6 +81,9 @@ impl DepGraph {
                 }
             }
         }
+        if cleared > 0 {
+            self.mark_dirty();
+        }
         cleared
     }
 
@@ -128,6 +131,9 @@ impl DepGraph {
             if self.contexts.remove(key).is_some() {
                 removed += 1;
             }
+        }
+        if removed > 0 {
+            self.mark_dirty();
         }
 
         self.indexes.equivalent_contexts.retain(|_, instances| {
@@ -209,6 +215,7 @@ impl DepGraph {
         self.checks.store(0, Ordering::Relaxed);
         self.hits.store(0, Ordering::Relaxed);
         self.misses.store(0, Ordering::Relaxed);
+        self.mark_dirty();
     }
 
     /// Get statistics about the graph.
@@ -321,6 +328,7 @@ impl DepGraph {
         };
         if let Some(mut entry) = self.contexts.get_mut(&key) {
             entry.rustc_env_deps = deps;
+            self.mark_dirty();
         }
     }
 
@@ -333,6 +341,7 @@ impl DepGraph {
                 scanned_at: Instant::now(),
             },
         );
+        self.mark_dirty();
     }
 
     /// Get scanned includes for a file.
@@ -359,6 +368,7 @@ impl DepGraph {
         };
         if let Some(mut entry) = self.contexts.get_mut(&key) {
             entry.state = ContextState::Stale;
+            self.mark_dirty();
             true
         } else {
             false

@@ -43,6 +43,7 @@ mod rustc_depinfo;
 mod server_ipc;
 mod session_errors;
 mod session_staged_attribution;
+mod shutdown_dirty_state;
 mod staged_compiler_sets;
 pub(crate) mod staged_env;
 mod store_mode;
