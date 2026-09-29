@@ -437,17 +437,12 @@ fn restore_one_artifact(
             std::fs::create_dir_all(parent)?;
         }
         restore_bundle_file(&src, &dst)?;
-        if let Ok(file) = std::fs::File::open(&dst) {
-            let modified = if artifact.mtime_unix_nanos == 0 {
-                SystemTime::now()
-            } else {
-                unix_nanos_to_system_time(artifact.mtime_unix_nanos)
-            };
-            let file_times = std::fs::FileTimes::new()
-                .set_accessed(modified)
-                .set_modified(modified);
-            let _ = file.set_times(file_times);
-        }
+        // The manifest records the packed object's mtime (#1771 contract); a
+        // failed stamp leaves the restored copy with its own time, as before.
+        let _ = zccache_core::mtime::stamp_mtime(
+            &dst,
+            zccache_core::mtime::recorded_mtime_or_now(artifact.mtime_unix_nanos),
+        );
         Ok(())
     })();
     match result {
@@ -711,6 +706,7 @@ pub(super) fn system_time_to_unix_nanos(time: SystemTime) -> u64 {
         .saturating_add(u64::from(duration.subsec_nanos()))
 }
 
+#[cfg(test)]
 pub(super) fn unix_nanos_to_system_time(nanos: u64) -> SystemTime {
     UNIX_EPOCH + std::time::Duration::from_nanos(nanos)
 }

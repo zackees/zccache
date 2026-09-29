@@ -13,7 +13,7 @@ use std::path::Path;
 /// `now` is zccache's LRU recency stamp for the cache file, not a cargo
 /// freshness signal. A hardlinked output carries it to the shared inode; an
 /// independent output gets the cache file stamped directly, through
-/// `set_file_mtime`, which (unlike a read-only handle on Windows) also works
+/// `mtime::touch_cache_object`, which (unlike a read-only handle on Windows) also works
 /// on a read-only cache file.
 ///
 /// [`MaterializationMode::tiers_for_shareable`]: crate::core::config::MaterializationMode::tiers_for_shareable
@@ -41,12 +41,14 @@ pub(crate) fn deliver_warm_file(
         let _ = std::fs::remove_file(dst);
         mode.copy_file(src, dst)?;
     }
-    let stamp = kernal_api::platform::fs::FileTime::from_system_time(now);
+    let stamp = crate::core::mtime::FileTime::from_system_time(now);
     if !linked {
         kernal_api::platform::fs::set_readonly(dst, false)?;
-        let _ = kernal_api::platform::fs::set_file_mtime(src, stamp);
+        let _ = crate::core::mtime::touch_cache_object(src, stamp);
     }
-    let _ = kernal_api::platform::fs::set_file_mtime(dst, stamp);
+    // The output carries the cache object's mtime (#1771 contract). The object
+    // was just stamped `now` (a hardlink is the object), so every mode agrees.
+    let _ = crate::core::mtime::stamp_mtime(dst, stamp);
     Ok(())
 }
 

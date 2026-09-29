@@ -16,8 +16,8 @@
 //! - [`hardlink`] — Cross-platform hardlink helpers
 //!   (`break_output_hardlink_before_compile`, `hard_link_count`,
 //!   `same_file`, Windows `get_file_id`).
-//! - [`mtime`] — The single owner of every materialized-output mtime
-//!   decision (`resolve_hit_mtime`, `apply_batch_policy`), #1771.
+//! - [`mtime`] — Daemon seam over the #1771 mtime contract (policy lives in
+//!   `zccache-core::mtime`; sealed-blob raise stays here).
 //!
 //! All `pub(super)` items are re-exported here so the parent `use
 //! persist::*;` glob still sees the original surface.
@@ -84,7 +84,5 @@ pub(crate) fn evict_v2_artifact_keys_if_unchanged(
 
 #[cfg(test)]
 mod mtime_contract_tests;
-#[cfg(test)]
-mod mtime_owner_tests;
 #[cfg(test)]
 mod tests;

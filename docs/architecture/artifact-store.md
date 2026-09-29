@@ -483,9 +483,12 @@ are never partially staged.
 A materialized output carries the mtime of the cache object it references,
 **identical for `LINK`, `REFLINK` and `COPY`**. The delivery mode chooses the
 syscall and never the resulting mtime. Every mtime decision lives in
-`crates/zccache-daemon-core/src/daemon/server/persist/mtime.rs`; a guard test
-(`mtime_owner_tests.rs`) fails when any other daemon-core production file sets
-a file time, and `mtime_contract_tests.rs` asserts equal mtimes across the
+`crates/zccache-core/src/mtime.rs` (pure policy plus the one `set_file_mtime`
+seam; daemon-core re-exports it from `persist/mtime.rs` and keeps only the
+sealed-blob raise). A workspace-wide guard test
+(`crates/zccache-core/tests/mtime_owner_workspace.rs`) fails when any other
+production file in any crate sets a file time, unless it is on the guard's
+allowlist. `mtime_contract_tests.rs` asserts equal mtimes across the
 three modes for a single-file C hit, a multi-source C hit and a rustc hit.
 
 | Policy | Where | Resulting mtime |
@@ -508,5 +511,21 @@ could not change the final mtime), the hit keeps its hardlink and saves the
 `read_dir`. The batch policies still stamp a hardlinked output in place, which
 changes the shared blob's mtime under `LINK` (#1819); that behaviour is
 unchanged and left to the #1158 decision. Out of scope here: recording the
-object mtime in the manifest, and the same rule for `zccache warm`, rust-plan
-restore and `zccache replay` outside daemon-core.
+object mtime in the manifest.
+
+Writers outside the batch materializer, all routed through `zccache_core::mtime`
+or allowlisted in the guard:
+
+| Writer | Decision | Mtime |
+|---|---|---|
+| `warm_delivery` (`zccache warm`) | routed: `touch_cache_object` + `stamp_mtime` | the cache object's LRU stamp (`now`), the same in every mode |
+| rust-plan restore (`rust_plan/local.rs`) | routed: `recorded_mtime_or_now` + `stamp_mtime` | the manifest's recorded object mtime, `now()` when the manifest has `0` |
+| directory-bundle restore | routed: `stamp_recorded_mtime` | the recorded entry timestamp |
+| `mtime_replay` (#1595) | allowlisted | restores workspace *source* files, not outputs |
+| `snapshot_fp` | allowlisted | bumps existing cargo fingerprint stamp files in place |
+| `retired_store` | allowlisted | `.last-active` liveness marker |
+
+Benches, tests and `zccache-test-support` are not production writers and are not
+scanned. `tar` extraction in `symbols.rs` sets entry mtimes implicitly (not
+visible to the guard); it unpacks a downloaded symbol archive, not a cache
+output.

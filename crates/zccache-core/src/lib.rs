@@ -10,6 +10,7 @@ pub mod error;
 /// zccache-owned host policy shared by product crates.
 pub mod host;
 pub mod lifecycle;
+pub mod mtime;
 pub mod path;
 pub mod version;
 
