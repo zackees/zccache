@@ -290,3 +290,24 @@ cfg-gated behavior the local host cannot execute — and cross-check the
 non-host arms with `soldr cargo check --target <other-OS>` before
 committing. Also restored DirBuilder mode-at-creation for
 create_dir_all_private (no inherited-mode window).
+
+
+## 2026-09-28 act harness: reached for dtolnay/rust-toolchain instead of soldr
+
+While optimizing the bosn `act` stack, the plan kept `dtolnay/rust-toolchain`
+in `test-action.yml` and only looked at caching around it. The user
+corrected: soldr materializes the `rust-toolchain.toml` toolchain, so
+dtolnay should not be there at all. Lesson: in this repo, Rust in a
+workflow always comes from `zackees/setup-soldr` (rule now in CLAUDE.md).
+When a job tests something that owns `RUSTC_WRAPPER`, keep setup-soldr
+toolchain-only and reset the `ZCCACHE_*` env it exports before the tool
+under test runs.
+
+Follow-up the same day (#1760): the setup-soldr steps omitted
+`solo-toolchain-cache: false`, re-enabling a cache family #1677/#1732
+retired. The block was copied from a branch that predated #1732, and the
+local act run "proved" the change by showing a toolchain-cache speedup;
+act's cache server has no budget. Lesson: copy workflow precedent only from
+current `main`, and run `ci/check_cache_footprint.py` after every workflow
+edit. Never treat a local act cache hit as evidence that a GitHub cache
+family is wanted.

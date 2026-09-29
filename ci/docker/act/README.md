@@ -22,6 +22,39 @@ bosn gc --dry-run --json
   on `catthehacker/ubuntu:act-24.04`. Set `ACT_RUNNER_IMAGE` in the stack env
   to try another runner image. Extra arguments are passed through to `act`.
 
+## Repeatable reruns
+
+No local cache layer is checked in (#1777 owner decision; see #1760): the job
+runs as a `pull_request`, and every setup-soldr cache input is off, so nothing is
+saved between runs. What the runner does keep stable:
+
+- **Content-addressed sha.** The tree, including uncommitted edits, is
+  snapshotted into a throwaway git repo with a pinned author and date. That
+  gives `github.sha` a value even from a worktree.
+- **Fixed workspace path.** act copies the workspace into the job container
+  at the same absolute path, so the snapshot always lives at
+  `/tmp/act-test-action/src`, just as a GitHub runner's workspace path never
+  changes. A per-run path made absolute compile paths differ between runs
+  (45 of 262 compiles missed after a restore). A lock serializes concurrent
+  runs.
+- **No refetching.** `--pull=false` and `--action-offline-mode` reuse the
+  local runner image and cached action checkouts; each is fetched only when
+  missing. Pull the image by hand to pick up a new `act-24.04` tag.
+- **soldr toolchain.** Rust comes from setup-soldr (see the root `CLAUDE.md`
+  rule). Its standalone toolchain archive stays off (#1677), so each run
+  installs the pinned toolchain with rustup. Do not re-enable that archive
+  to make local runs faster: act's cache server has no 10 GB budget, so a
+  local speedup here can hide a GitHub cache regression (#1760).
+- **Local-only snapshot adaptations**, applied after the sha is taken so
+  they never change cache keys or the real checkout:
+  - the cache pre-prune barrier (`wait-cache-pre-prune`) becomes a no-op. It
+    coordinates the GitHub Actions cache through the GitHub API, which act
+    replaces with its local cache server;
+  - without `GITHUB_TOKEN`, setup-soldr's `version` is pinned to the latest
+    soldr tag, resolved through the web `releases/latest` redirect. Once that
+    version's soldr is in setup-soldr's cache, warm runs make no GitHub API
+    calls.
+
 ## Mounts and volumes
 
 | Name          | Kind                 | Destination            | Why |
@@ -43,14 +76,13 @@ touches containers from other act runs on the same host. act's shared
 
 - act runs Linux containers only. The macOS, Windows and `ubuntu-24.04-arm`
   legs of `test-action` can only be verified on GitHub-hosted runners.
-- `GITHUB_TOKEN` is optional. `bosn run` does not forward the caller's
-  environment into `docker exec`, and a token must never be written into
-  `bosn.toml` or another file, so runs are anonymous by default. The
-  `test-action` job needs no API access: actions are cloned anonymously and
-  the zccache install resolves `latest` through the `releases/latest` redirect.
-  The script forwards `-s GITHUB_TOKEN` only when the variable is already set
-  inside the container.
-- The checkout at `/work` may be a git worktree whose `.git` file points
-  outside the mount. act then logs that it cannot read git metadata and
-  continues. The job does not depend on it: act short-circuits
-  `actions/checkout` to the copied working tree.
+- `bosn run` does not forward the caller's environment into `docker exec`,
+  and a token must never be written into `bosn.toml` or another file, so runs
+  are anonymous by default. setup-soldr still needs the GitHub API once per
+  soldr version, to fetch the release it then caches. Anonymous API requests
+  share a 60/hour per-IP quota, so a cold seed run can fail with HTTP 403 on
+  a busy host; rerun after the quota resets. The script forwards
+  `-s GITHUB_TOKEN` only when the variable is already set inside the container.
+- act short-circuits `actions/checkout` to the copied snapshot, so the job
+  never fetches from GitHub. The snapshot excludes large ignored directories
+  (`target/`, `.cargo/` except `config.toml`, `.perf-*`, `.venv`, ...).

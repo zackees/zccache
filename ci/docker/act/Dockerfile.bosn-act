@@ -4,7 +4,7 @@
 # workflows locally with nektos/act. act drives the *host* Docker engine
 # through the bind-mounted /var/run/docker.sock, so job containers are
 # siblings of this container, not children. See README.md.
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 ARG TARGETARCH
 ARG ACT_VERSION=0.2.88
