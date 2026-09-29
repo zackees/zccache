@@ -20,9 +20,11 @@ fn file(dir: &Path, name: &str, secs: i64) -> PathBuf {
 
 #[test]
 fn recorded_nanos_replay_exactly_and_zero_means_now() {
-    let recorded = recorded_mtime_or_now(1_700_000_000_123_456_789);
+    // A multiple of 100 ns: Windows `FileTime` has 100 ns resolution, so a
+    // finer value would be truncated there (123_456_789 -> 123_456_700).
+    let recorded = recorded_mtime_or_now(1_700_000_000_123_456_700);
     assert_eq!(recorded.unix_seconds(), 1_700_000_000);
-    assert_eq!(recorded.nanoseconds(), 123_456_789);
+    assert_eq!(recorded.nanoseconds(), 123_456_700);
 
     let before = FileTime::from_system_time(SystemTime::now());
     let unset = recorded_mtime_or_now(0);
