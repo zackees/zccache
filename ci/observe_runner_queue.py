@@ -156,6 +156,22 @@ def observe_once(
     return observations
 
 
+def upstream_pending(jobs: Sequence[Mapping[str, object]], expected_jobs: Sequence[str], *, self_runner: str | None) -> bool:
+    """True while another job in the run is unfinished and could still gate a missing expected job.
+
+    GitHub omits a job from the run's jobs list until its ``needs`` are met, so
+    an expected job gated behind a slow barrier looks "missing" without being
+    starved (#1815). The observer's own job is excluded by runner name.
+    """
+    for job in jobs:
+        if job.get("name") in expected_jobs or job.get("completed_at") is not None:
+            continue
+        if self_runner and job.get("runner_name") == self_runner:
+            continue
+        return True
+    return False
+
+
 def queue_violations(observations: Sequence[QueueObservation], maximum: timedelta, *, missing_visible: bool = True) -> list[QueueObservation]:
     """Return only jobs that are still absent/queued beyond the hard bound."""
     return [
@@ -222,7 +238,8 @@ def main() -> int:
         summary = render_summary(observations, repository=args.repository, run_id=args.run_id)
         print(summary)
         _append_summary(summary)
-        violations = queue_violations(observations, maximum, missing_visible=time.monotonic() >= visibility_deadline)
+        missing_visible = time.monotonic() >= visibility_deadline and not upstream_pending(jobs, args.jobs, self_runner=os.environ.get("RUNNER_NAME"))
+        violations = queue_violations(observations, maximum, missing_visible=missing_visible)
         if violations:
             print(
                 "Hosted runner queue bound exceeded for: " + ", ".join(observation.job_name for observation in violations),

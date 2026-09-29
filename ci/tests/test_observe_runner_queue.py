@@ -150,3 +150,19 @@ def test_api_error_is_loud_and_distinct_from_a_queued_job() -> None:
 
     with pytest.raises(observe_runner_queue.GitHubApiError, match="HTTP 503"):
         observe_runner_queue.fetch_workflow_state(BrokenApi(), "zackees/zccache", 123)
+
+
+def test_missing_job_is_pending_while_an_upstream_job_is_unfinished() -> None:
+    jobs = [
+        {"name": "Observe macOS runner queue", "runner_name": "GitHub Actions 7", "completed_at": None},
+        {"name": "Cache pre-prune barrier / Wait", "runner_name": "GitHub Actions 3", "completed_at": None},
+    ]
+    assert observe_runner_queue.upstream_pending(jobs, ["macos / Test"], self_runner="GitHub Actions 7")
+
+
+def test_missing_job_is_a_violation_once_only_the_observer_remains() -> None:
+    jobs = [
+        {"name": "Observe macOS runner queue", "runner_name": "GitHub Actions 7", "completed_at": None},
+        {"name": "Cache pre-prune barrier / Wait", "runner_name": "GitHub Actions 3", "completed_at": "2026-09-29T04:41:00Z"},
+    ]
+    assert not observe_runner_queue.upstream_pending(jobs, ["macos / Test"], self_runner="GitHub Actions 7")
