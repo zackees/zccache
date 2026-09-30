@@ -549,7 +549,16 @@ def check(root: Path = ROOT) -> list[str]:
             "wrapper-e2e.yml:wrapper-e2e#1 must disable Linux build-cache "
             "while retaining the Windows wrapper cache"
         )
-    windows_test = by_location.get("ci-check.yml:test#2")
+    # Match the job's setup-soldr step by job prefix, not step position:
+    # inserting an unrelated step before it must not disarm this check.
+    windows_test = next(
+        (
+            step
+            for where, step in by_location.items()
+            if where.startswith("ci-check.yml:test#")
+        ),
+        None,
+    )
     if windows_test and _normal_expression(
         windows_test.inputs.get("build-cache", "true")
     ) != _normal_expression(WINDOWS_TEST_BUILD_CACHE):

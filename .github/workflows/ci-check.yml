@@ -74,6 +74,17 @@ jobs:
       - uses: actions/checkout@v6
       - name: Wait for current-main cache pre-prune
         uses: ./.github/actions/wait-cache-pre-prune
+      # pyo3-build-config's build script registers `rerun-if-env-changed=PATH`
+      # unless PYO3_PYTHON is set (pyo3-build-config impl_.rs find_interpreter),
+      # and `soldr cook` runs cargo with the cargo-chef tool dir prepended to
+      # PATH. Without a pinned interpreter the cooked pyo3 chain (pyo3,
+      # pyo3-ffi, pyo3-macros(-backend), pyo3-build-config) is dirty for the
+      # test build below and recompiles even on a cook-base hit. Linux only:
+      # an empty PYO3_PYTHON would break the macOS/Windows lanes.
+      - name: Pin PYO3_PYTHON (cook/test PATH parity)
+        if: startsWith(inputs.os, 'ubuntu')
+        shell: bash
+        run: echo "PYO3_PYTHON=python3" >> "$GITHUB_ENV"
       - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
@@ -92,8 +103,15 @@ jobs:
           ci-tests: true
           linker: fast
           # Cook bases run on Linux only (zackees/ci.yml#5 RUST-010, #1758).
-          prebuild-deps: ${{ startsWith(inputs.os, 'ubuntu') && 'soldr-cook' || 'none' }}
-          prebuild-deps-flags: ""
+          # The Linux cook runs in the deferred `Cook test dependencies` step
+          # below: setup-soldr forces its own SOLDR_CACHE_DIR for an in-action
+          # cook, and cargo hashes that path into every unit fingerprint
+          # (`dirty: ConfigSettingsChanged`), so a cook under the default dir
+          # is never reusable by the isolated-dir test build.
+          prebuild-deps: none
+          # `prebuild-deps: none` no longer pairs the registry with the cook,
+          # so keep the Cargo registry/source restore for the Linux cook.
+          cargo-registry-cache: ${{ startsWith(inputs.os, 'ubuntu') && 'true' || '' }}
           # #240: seed the isolated test SOLDR_CACHE_DIR (per-OS) from the
           # restored build-cache so the daemon-isolated test phase starts warm
           # across Linux/macOS/Windows.
@@ -102,6 +120,26 @@ jobs:
           # #1677: install the pinned toolchain normally; the standalone
           # cache's 7-11s measured saving did not justify its footprint.
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
+      # Cook the graph the `cargo test --workspace --lib --bins` build below
+      # compiles, under the SAME env as that build (same SOLDR_CACHE_DIR):
+      # `--tests` adds the dev-dependencies (criterion, plotters, ciborium,
+      # ...) and the test-profile feature unification (the empty-flag cook
+      # covered ~190 of ~285 third-party crates; `--workspace` must lead
+      # because `soldr cook -- --tests` fails with "unknown flag `--tests`").
+      # The flags are hashed into the cook-base key, so this job has its own
+      # entry instead of sharing the empty-flag one with check/clippy.
+      - name: Cook test dependencies
+        if: startsWith(inputs.os, 'ubuntu')
+        uses: zackees/setup-soldr/cook@v0 # v0.9.82 or later (floating major)
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
+          SOLDR_BROKER_FIRST_RESPONSE_MS: "30000"
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+        with:
+          flags: --workspace -- --tests
+          cook-delta: false # per-commit delta layer off (setup-soldr#528)
+          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}
       # Platform Test runs unit tests in libraries and binaries only — it
       # intentionally does NOT compile the integration test binaries under
       # `crates/*/tests/`. Most of those binaries' tests are #[ignore]'d, but
@@ -154,6 +192,27 @@ jobs:
           fi
 
           exit $status
+      # The cook-base post-step archives the whole target/ as it stands at job
+      # end. After the test build that is ~4 GB uncompressed (925 MB archive):
+      # incremental/ state, linked test executables and the workspace's own
+      # rlibs, none of which a later run can reuse (`[cache].never`:
+      # incremental, linked-tests; zackees/ci.yml#149). Drop everything owned
+      # by a workspace member so the saved cook base is third-party
+      # dependency outputs only (~280 MB), exactly what `soldr cook` left.
+      - name: Prune workspace outputs from target/ before the cook-base save
+        if: always() && startsWith(inputs.os, 'ubuntu')
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+        run: |
+          unset ZCCACHE_CACHE_DIR
+          rm -rf target/debug/incremental
+          pkgs=$(soldr cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(" ".join("-p " + p["name"] for p in json.load(sys.stdin)["packages"]))')
+          # shellcheck disable=SC2086
+          soldr cargo clean $pkgs
       - name: Stop isolated test cache
         if: always()
         shell: bash
