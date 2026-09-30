@@ -155,8 +155,11 @@ function parseCookBaseKey(key) {
   // Treat every dimension around the Cargo.lock hash as opaque profile data.
   // The regex is intentionally strict about the known v2 layout; unknown key
   // formats stay protected until their restore semantics are reviewed.
+  // The in-action cook writes `-soldrv0.9.25`; the standalone
+  // `setup-soldr/cook` sub-action writes `-soldr0.9.25` (no `v`). Both name the
+  // same release, so `v` is optional and the captured version excludes it.
   const match =
-    /^cook-base-v2-(linux|macos|windows)-(x64|arm64)-([a-z0-9]+)-rustc([0-9.]+)-f([a-z0-9]+)-l([0-9a-f]{16})-soldrv([0-9.]+)(?:-([a-z0-9][a-z0-9._-]*))?$/i.exec(
+    /^cook-base-v2-(linux|macos|windows)-(x64|arm64)-([a-z0-9]+)-rustc([0-9.]+)-f([a-z0-9]+)-l([0-9a-f]{16})-soldrv?([0-9.]+)(?:-([a-z0-9][a-z0-9._-]*))?$/i.exec(
       key,
     );
   if (!match) return null;

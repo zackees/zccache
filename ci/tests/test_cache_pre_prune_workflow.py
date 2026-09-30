@@ -888,3 +888,96 @@ def test_pre_prune_workflow_forecasts_before_the_barrier_and_gates_on_skip() -> 
     assert "planWriterBarrierSkip" in early
     # The early step is read-only and never deletes.
     assert "deleteActionsCacheById" not in early
+
+
+# The standalone `zackees/setup-soldr/cook` sub-action (the Linux "Cook test
+# dependencies" step) writes the soldr token without the `v` that the in-action
+# cook writes: `-soldr0.9.25` instead of `-soldrv0.9.25`. Auto-Release
+# 36690156553 failed closed on it; both spellings are one v2 layout.
+_COOK_NO_V = "cook-base-v2-linux-x64-glibc-rustc1.95.0-f6cafa616-lec2a428e3983361d-soldr0.9.25"
+_COOK_WITH_V = "cook-base-v2-linux-x64-glibc-rustc1.95.0-f6cafa616-lec2a428e3983361d-soldrv0.9.25"
+_CURRENT_LOCKS = {"linux": "ec2a428e3983361d", "macos": "ec2a428e3983361d", "windows": ["d2ef11473c3c1d13"]}
+
+
+def _node_json(expr: str, payload: dict) -> dict:
+    script = (
+        "const fs=require('node:fs');"
+        "const m=require(process.argv[1]);"
+        "const d=JSON.parse(fs.readFileSync(0,'utf8'));"
+        f"process.stdout.write(JSON.stringify({expr}));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
+        input=json.dumps(payload),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _row(cache_id: int, key: str, size: int) -> dict[str, object]:
+    return {"id": cache_id, "key": key, "ref": "refs/heads/main", "size_in_bytes": size, "created_at": "2026-09-30T00:00:00Z"}
+
+
+def test_cook_key_parser_accepts_sub_action_soldr_token_without_v() -> None:
+    parts = _node_json("m.parseCookBaseKey(d.key)", {"key": _COOK_NO_V})
+    assert parts == {
+        "os": "linux",
+        "arch": "x64",
+        "libc": "glibc",
+        "rustc": "1.95.0",
+        "flags": "6cafa616",
+        "lockHash": "ec2a428e3983361d",
+        "soldr": "0.9.25",
+        "suffix": "",
+    }
+    # Same soldr release, other spelling: identical classification.
+    assert _node_json("m.parseCookBaseKey(d.key)", {"key": _COOK_WITH_V}) == parts
+
+
+def test_cook_key_parser_still_rejects_malformed_soldr_tokens() -> None:
+    base = "cook-base-v2-linux-x64-glibc-rustc1.95.0-f6cafa616-lec2a428e3983361d"
+    for bad in (f"{base}-soldr", f"{base}-soldrv", f"{base}-soldrx0.9.25", f"{base}-soldr-0.9.25", f"{base}-0.9.25", f"{base}-soldrvv0.9.25"):
+        assert _node_json("m.parseCookBaseKey(d.key)", {"key": bad}) is None, bad
+
+
+def test_lock_transition_forecast_accepts_live_inventory_with_sub_action_cook_key() -> None:
+    caches = [
+        _row(1, "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-lec2a428e3983361d-soldrv0.9.25", 261_662_028),
+        _row(2, "cook-base-v2-linux-x64-glibc-rustc1.95.0-f9e7e4902-lec2a428e3983361d-soldrv0.9.25", 645_526_116),
+        _row(3, _COOK_NO_V, 279_507_264),
+        _row(4, "cook-base-v2-linux-arm64-glibc-rustc1.95.0-f6cafa616-lec2a428e3983361d-soldr0.9.25", 276_840_157),
+    ]
+    plan = _node_json(
+        "m.planLockTransitionPrePrune(d.caches,d.hashes,5_000_000_000,5_000_000_000)",
+        {"caches": caches, "hashes": _CURRENT_LOCKS},
+    )
+    assert plan["ok"] is True, plan.get("reason")
+    # Every generation is on the current lock: nothing is deleted or re-seeded.
+    assert plan["deleteIds"] == []
+    assert plan["staleCookIds"] == []
+    assert plan["estimatedNewBytes"] == 0
+
+
+def test_sub_action_cook_key_is_retired_by_lock_hash_and_kept_when_current() -> None:
+    old = "cook-base-v2-linux-x64-glibc-rustc1.95.0-f6cafa616-l1111111111111111-soldr0.9.25"
+    caches = [_row(1, old, 100), _row(2, _COOK_NO_V, 200)]
+    plan = _node_json("(()=>{const p=m.planCookBasePrune(d.caches,d.hashes);return {stale:p.stale.map(c=>c.id),keep:p.keep.map(c=>c.id)}})()", {"caches": caches, "hashes": _CURRENT_LOCKS})
+    assert plan == {"stale": [1], "keep": [2]}
+
+
+def test_v_and_non_v_soldr_spellings_share_one_reseed_profile() -> None:
+    # Old-lock generations of the same shape written by the two producers are
+    # one slot: the forecast books the larger, not the sum.
+    caches = [
+        _row(1, "cook-base-v2-linux-x64-glibc-rustc1.95.0-f6cafa616-l1111111111111111-soldr0.9.25", 300),
+        _row(2, "cook-base-v2-linux-x64-glibc-rustc1.95.0-f6cafa616-l1111111111111111-soldrv0.9.25", 500),
+    ]
+    plan = _node_json(
+        "m.planLockTransitionPrePrune(d.caches,d.hashes,1_000,1_000,2_000_000_000)",
+        {"caches": caches, "hashes": _CURRENT_LOCKS},
+    )
+    assert plan["ok"] is True, plan.get("reason")
+    assert plan["staleCookIds"] == [1, 2]
+    assert plan["estimatedNewBytes"] == 500 + 1_120_000_000
