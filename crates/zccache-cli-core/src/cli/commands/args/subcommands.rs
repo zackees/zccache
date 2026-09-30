@@ -111,8 +111,10 @@ pub(crate) enum MesonCommands {
         meson_bin: Option<PathBuf>,
         /// Extra environment variable names whose values feed the cache
         /// key. The current process env is queried at request time.
-        /// Repeatable. Common defaults (CC, CXX, CFLAGS, CXXFLAGS,
-        /// LDFLAGS, PKG_CONFIG_PATH) are always included.
+        /// Repeatable. The variables meson reads (CC, CXX, CPPFLAGS, CFLAGS,
+        /// CXXFLAGS, LDFLAGS, AR, STRIP, PKG_CONFIG*, ...) and the compiler
+        /// include/sysroot variables (CPATH, SDKROOT, INCLUDE, ...) are
+        /// always included.
         #[arg(long = "input-env", value_name = "NAME")]
         input_env: Vec<String>,
         /// Extra file paths whose content feeds the cache key. Repeatable.

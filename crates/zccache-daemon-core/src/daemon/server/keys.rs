@@ -430,33 +430,45 @@ pub(super) fn normalize_request_arg(arg: &str, key_root: Option<&Path>) -> Strin
     arg.to_string()
 }
 
-pub(super) fn request_env_fingerprint_vars(
-    client_env: Option<&[(String, String)]>,
-) -> Vec<(&str, &str)> {
+pub(super) fn request_env_fingerprint_vars<'a>(
+    client_env: Option<&'a [(String, String)]>,
+    compiler: &str,
+    args: &[String],
+) -> Vec<(&'a str, &'a str)> {
     let env = client_env.unwrap_or_default();
-    // Mirror the rustc context key's CARGO_* filter (issue #396): the
-    // request-level fingerprint must drop exactly what the slow path drops,
-    // otherwise worktrees with different target-dir leaf names never reach
-    // the artifact lookup. `key_env` owns the never-keyed list (#1806).
+    // `env!()`/`option_env!()` reads are validated per context through the
+    // recorded dep-info env-deps (`context_files_and_env_fresh`), so
+    // `CARGO_*` only needs to split the request when a proc-macro dylib could
+    // read it invisibly. This must stay at least as fine as the rustc context
+    // key (`RustcCompileContext::from_parsed_args`). `key_env` owns every
+    // list (#1806).
+    // C/C++ compilers never read `CARGO_*`; rustc reads it untracked only via
+    // proc-macros a non-plain driver (clippy, Dylint, wrappers), or an argv that emits no
+    // dep-info (nothing then reports the crate's `env!` reads).
+    let cargo = crate::compiler::detect_family(compiler) == crate::compiler::CompilerFamily::Rustc
+        && (!zccache_core::key_env::is_plain_rustc(compiler)
+            || !zccache_core::key_env::argv_emits_dep_info(args)
+            || zccache_core::key_env::argv_may_load_proc_macro(args));
     let mut vars: Vec<(&str, &str)> = env
         .iter()
         .filter_map(|(key, value)| {
             let key = key.as_str();
-            let include = (key.starts_with("CARGO_")
-                && !crate::depgraph::is_volatile_cargo_env_var(key)
-                && !zccache_core::key_env::is_never_keyed_env(key))
+            let include = (cargo && zccache_core::key_env::is_conservatively_keyed_cargo_env(key))
                 || zccache_core::key_env::REQUEST_CONTROL_ENV_KEYED.contains(&key);
             include.then_some((key, value.as_str()))
         })
         .collect();
     // C/C++ output-affecting variables (CL/_CL_/INCLUDE match
     // case-insensitively; the policy returns canonical names and last-wins
-    // values).
+    // values), the superset of what rustc keys, and the raw locale vars.
     vars.extend(zccache_core::key_env::keyed_cc_env(
         env,
         zccache_core::key_env::CcEnvScope::Any,
     ));
+    vars.extend(zccache_core::key_env::keyed_rustc_env_superset(env));
+    vars.extend(zccache_core::key_env::keyed_locale_env(env));
     vars.sort_unstable();
+    vars.dedup();
     vars
 }
 
@@ -479,10 +491,18 @@ pub(super) fn cc_env_key_flags(
         }
         _ => return Vec::new(),
     };
-    keyed_cc_env(client_env, scope)
+    let mut flags: Vec<String> = keyed_cc_env(client_env, scope)
         .into_iter()
         .map(|(name, value)| format!("zccache:env:{name}={value}"))
-        .collect()
+        .collect();
+    // gcc localizes diagnostics and a hit replays the stored stderr verbatim
+    // (clang does not localize; cl's language rides in `VSLANG`, keyed above).
+    if family == crate::compiler::CompilerFamily::Gcc {
+        if let Some(locale) = zccache_core::key_env::gcc_message_locale(client_env) {
+            flags.push(format!("zccache:env:MESSAGE_LOCALE={locale}"));
+        }
+    }
+    flags
 }
 
 /// Key flag separating MSVC compiles by who asked for `/showIncludes`.
@@ -543,7 +563,7 @@ pub(super) fn request_fingerprint(
         }
     });
     let cwd = normalize_path_for_request_key(cwd, key_root);
-    let env = request_env_fingerprint_vars(client_env);
+    let env = request_env_fingerprint_vars(client_env, &compiler, args);
     if let Err(never) = crate::hash::request_fingerprint::emit_request_fingerprint(
         &compiler,
         normalized_args,

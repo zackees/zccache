@@ -614,6 +614,12 @@ fn rustc_from_parsed_args_drops_cargo_target_dir() {
             "driver-library-and-env-identity".to_string(),
         ),
     ];
+    // A loaded proc-macro dylib is what keeps the CARGO_* set in play (#1806).
+    let mut args = args;
+    args.externs.push(ExternCrate {
+        name: "derive".to_string(),
+        path: NormalizedPath::from("/deps/libderive-abc.so"),
+    });
     let ctx = RustcCompileContext::from_parsed_args(&args, &client_env, test_compiler_hash());
     assert!(
         !ctx.env_vars.iter().any(|(k, _)| k == "CARGO_TARGET_DIR"),
@@ -839,44 +845,6 @@ fn env_dep_fold_distinguishes_values_and_unset() {
         ],
     );
     assert_eq!(ab, ba, "fold must sort by name for determinism");
-}
-
-fn key_with_client_env(env: &[(&str, &str)]) -> crate::context::ContextKey {
-    let args = parse_rustc_args(&["src/lib.rs".to_string()], Path::new("/workspace"));
-    let env: Vec<(String, String)> = env
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-        .collect();
-    RustcCompileContext::from_parsed_args(&args, &env, test_compiler_hash()).context_key()
-}
-
-/// #1806 stability: never-keyed variables must leave the key byte-identical.
-#[test]
-fn never_keyed_env_does_not_change_rustc_context_key() {
-    let base = key_with_client_env(&[("CARGO_PKG_NAME", "demo")]);
-    for name in [
-        "CARGO_TERM_COLOR",
-        "CARGO_TERM_PROGRESS_WHEN",
-        "CARGO_MAKEFLAGS",
-        "CARGO_INCREMENTAL",
-    ] {
-        let noisy = key_with_client_env(&[("CARGO_PKG_NAME", "demo"), (name, "x")]);
-        assert_eq!(base, noisy, "{name} must not split the key");
-    }
-}
-
-/// #1806 collision guard: env!()-visible CARGO_* variables still split keys.
-#[test]
-fn output_affecting_cargo_env_changes_rustc_context_key() {
-    for name in [
-        "CARGO_PKG_VERSION",
-        "CARGO_PKG_DESCRIPTION",
-        "CARGO_CRATE_NAME",
-    ] {
-        let a = key_with_client_env(&[(name, "1")]);
-        let b = key_with_client_env(&[(name, "2")]);
-        assert_ne!(a, b, "{name} must change the key");
-    }
 }
 
 fn h(byte: u8) -> zccache_hash::ContentHash {

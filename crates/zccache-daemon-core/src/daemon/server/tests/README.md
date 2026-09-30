@@ -13,6 +13,9 @@ cache inode only for eligible outputs, and switching modes migrates outputs.
 `store_mode.rs` covers the store direction: COPY/REFLINK never hardlink the
 compiler output into the cache.
 `fingerprint_encoding.rs` checks the request encoder against literal legacy bytes.
+`env_precision_1806.rs` and `link_env_1806.rs` prove the env-keying contract with
+real rustc compiles and a fake linker (#1806): read env never shares an artifact,
+unread env always does, and the linker's env splits the link key.
 
 `mod.rs` declares the per-domain submodules and owns the crate-wide canonical
 test guard for process-global cache-dir mutations (`CacheDirEnvGuard`).

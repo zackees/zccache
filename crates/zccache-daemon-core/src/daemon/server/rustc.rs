@@ -165,10 +165,11 @@ pub(super) fn build_rustc_compile_context(
         add_dylint_linker_key_material(&mut rustc_args, linker_hash);
     }
 
-    let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
+    let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args_with_driver(
         &rustc_args,
         client_env,
         compiler_hash,
+        is_plain_rustc_driver(compilation),
     );
 
     // Create a "compatible" CompileContext for dep_graph storage.
@@ -215,10 +216,11 @@ pub(super) async fn build_rustc_compile_context_async(
         add_dylint_linker_key_material(&mut rustc_args, linker_hash);
     }
 
-    let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args(
+    let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args_with_driver(
         &rustc_args,
         client_env,
         compiler_hash,
+        is_plain_rustc_driver(compilation),
     );
 
     let compat_ctx = CompileContext {
@@ -279,6 +281,19 @@ fn add_dylint_linker_key_material(
     args.codegen_flags
         .push(format!("dylint-linker-hash={linker_hash}"));
     args.codegen_flags.extend(args.linker_args.clone());
+}
+
+/// Whether `CARGO_*` may stay out of the context key: plain `rustc`, or the
+/// Dylint driver, whose artifact bytes are keyed like its inner rustc's and
+/// whose lint libraries fold `CARGO_*` into the verdict's input hash instead
+/// (`prepare_dylint_cache_env`). `clippy-driver` and wrappers are not.
+fn is_plain_rustc_driver(compilation: &crate::compiler::CacheableCompilation) -> bool {
+    let compiler = compilation.compiler.to_str().unwrap_or("");
+    zccache_core::key_env::is_plain_rustc(compiler)
+        || matches!(
+            crate::compiler::dylint_inner_rustc_args(compiler, &compilation.original_args),
+            Ok(Some(_))
+        )
 }
 
 fn rustc_args(compilation: &crate::compiler::CacheableCompilation) -> &[String] {

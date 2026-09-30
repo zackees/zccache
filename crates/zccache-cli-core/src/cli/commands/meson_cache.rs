@@ -27,8 +27,10 @@
 //! - The build-directory **absolute path** (same-build-dir restriction).
 //! - The source-directory **absolute path** (so a renamed source tree
 //!   gets a fresh entry — meson embeds the source path in `build.ninja`).
-//! - Selected environment variables: `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`,
-//!   `LDFLAGS`, `PKG_CONFIG_PATH` always; plus any extras supplied via
+//! - Selected environment variables: the variables meson reads (`CC`, `CXX`,
+//!   `CPPFLAGS`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `AR`, `STRIP`, `PKG_CONFIG*`,
+//!   ...) and the compiler-probe allowlist from `zccache_core::key_env`
+//!   (`CPATH`, `SDKROOT`, `INCLUDE`, ...) always; plus any extras supplied via
 //!   `--input-env`. Each as `NAME=VALUE` with absent vars contributing
 //!   `NAME=` (so set-vs-unset distinguishes).
 //! - Any extra `--input-file PATH` flags. Each file is read and its
@@ -63,13 +65,41 @@ const KEY_DOMAIN_TAG: &str = "zccache-meson-cache-v3";
 /// regardless of `--input-env` so a forgotten extra never silently
 /// publishes a stale cache hit.
 const DEFAULT_INPUT_ENV: &[&str] = &[
+    "AR",
     "CC",
-    "CXX",
+    "CC_LD",
     "CFLAGS",
+    "CPPFLAGS",
+    "CXX",
     "CXXFLAGS",
+    "CXX_LD",
     "LDFLAGS",
+    "OBJC",
+    "OBJCXX",
+    "PKG_CONFIG",
+    "PKG_CONFIG_LIBDIR",
     "PKG_CONFIG_PATH",
+    "PKG_CONFIG_SYSROOT_DIR",
+    "STRIP",
 ];
+
+/// Every environment variable that feeds the configure key: the meson-owned
+/// defaults, the compiler-probe variables `zccache_core::key_env` says change
+/// what a compiler finds or emits (configure runs compiler checks), and the
+/// caller's `--input-env` extras. Sorted and de-duplicated (#1806).
+pub(crate) fn input_env_names(extra_input_env: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = DEFAULT_INPUT_ENV.iter().map(|s| (*s).to_string()).collect();
+    names.extend(
+        zccache_core::key_env::GNU_CC_ENV_KEYED
+            .iter()
+            .chain(zccache_core::key_env::MSVC_CC_ENV_KEYED)
+            .map(|(name, _)| (*name).to_string()),
+    );
+    names.extend(extra_input_env.iter().cloned());
+    names.sort_unstable();
+    names.dedup();
+    names
+}
 
 /// Filenames meson reads as configure inputs. Recursively discovered
 /// under the source dir; each matching file's content enters the key.
@@ -105,17 +135,11 @@ pub(crate) fn cmd_configure(
         }
     };
 
-    let mut env_inputs: Vec<&str> = DEFAULT_INPUT_ENV.to_vec();
-    for extra in &extra_input_env {
-        if !env_inputs.iter().any(|s| s == extra) {
-            env_inputs.push(extra.as_str());
-        }
-    }
-    env_inputs.sort_unstable();
+    let env_inputs = input_env_names(&extra_input_env);
 
     let env_pairs: Vec<(String, String)> = env_inputs
         .iter()
-        .map(|name| ((*name).to_string(), std::env::var(name).unwrap_or_default()))
+        .map(|name| (name.clone(), std::env::var(name).unwrap_or_default()))
         .collect();
 
     // With `--no-walk` the caller takes full responsibility for naming

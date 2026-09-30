@@ -328,3 +328,42 @@ fn archive_dir_only_captures_allowlisted_entries() {
         );
     }
 }
+
+/// #1806: configure runs compiler probes, so every variable that changes what
+/// a compiler finds or emits, and every variable meson itself reads, must
+/// feed the key. A forgotten one publishes a stale configure.
+#[test]
+fn configure_key_env_covers_meson_and_compiler_probe_variables() {
+    let names = input_env_names(&["MY_EXTRA".to_string(), "CPATH".to_string()]);
+    for required in [
+        "CC",
+        "CXX",
+        "CPPFLAGS",
+        "CFLAGS",
+        "LDFLAGS",
+        "AR",
+        "STRIP",
+        "CC_LD",
+        "PKG_CONFIG",
+        "PKG_CONFIG_PATH",
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "SDKROOT",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "SOURCE_DATE_EPOCH",
+        "INCLUDE",
+        "CL",
+        "_CL_",
+        "MY_EXTRA",
+    ] {
+        assert!(
+            names.iter().any(|n| n == required),
+            "{required} must be keyed"
+        );
+    }
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(names, sorted, "names must be sorted and unique");
+}

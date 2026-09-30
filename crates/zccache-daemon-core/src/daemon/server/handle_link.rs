@@ -381,6 +381,11 @@ pub(super) async fn handle_link_ephemeral(
     for flag in &link_key_plan.flags {
         key_builder = key_builder.flag(flag);
     }
+    // The linker's own environment (library search dirs, subprogram lookup,
+    // Apple deployment target) decides what it links (#1806).
+    for (name, value) in zccache_core::key_env::keyed_link_env(env.as_deref().unwrap_or_default()) {
+        key_builder = key_builder.env(name, value);
+    }
 
     for (path, hash) in &hash_results {
         let Some(input_hash) = hash else {

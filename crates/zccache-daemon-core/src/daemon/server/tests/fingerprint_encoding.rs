@@ -29,15 +29,18 @@ fn request_fingerprint_encoding_compatibility() {
         (&["-MF", "dep.d"], b"-MF\0dep.d\0"),
     ];
     let env = vec![
-        ("CARGO_Z".to_owned(), String::new()),
-        ("CARGO_A".to_owned(), "first".to_owned()),
+        ("RUSTC_BOOTSTRAP".to_owned(), String::new()),
+        ("CPATH".to_owned(), "first".to_owned()),
+        // These arguments emit no dep-info, so `env!` reads are untracked and
+        // the CARGO_* set stays keyed (#1806).
+        ("CARGO_PKG_NAME".to_owned(), "kept".to_owned()),
         ("IGNORED".to_owned(), "not-keyed".to_owned()),
     ];
     for (arguments, encoded_arguments) in cases {
         let arguments: Vec<String> = arguments.iter().map(|value| (*value).to_owned()).collect();
         let mut expected = b"zccache-request-v2\0rustc\0".to_vec();
         expected.extend_from_slice(encoded_arguments);
-        expected.extend_from_slice(b"work\0CARGO_A=first\0CARGO_Z=\0");
+        expected.extend_from_slice(b"work\0CARGO_PKG_NAME=kept\0CPATH=first\0RUSTC_BOOTSTRAP=\0");
         assert_eq!(
             request_fingerprint(
                 Path::new("rustc"),

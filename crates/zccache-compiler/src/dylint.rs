@@ -21,6 +21,8 @@ pub fn dylint_env_affects_output(name: &str) -> bool {
     (name.starts_with("DYLINT_") && name != DYLINT_LIBS_ENV)
         || matches!(name, "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN")
         || name == "CLIPPY_DISABLE_DOCS_LINKS"
+        // Lint libraries run in-process and may read `CARGO_*` untracked (#1806).
+        || zccache_core::key_env::is_conservatively_keyed_cargo_env(name)
         || name == DYLINT_CACHE_INPUT_HASH_ENV
 }
 

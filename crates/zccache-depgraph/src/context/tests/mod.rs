@@ -12,6 +12,7 @@ use crate::search_paths::IncludeSearchPaths;
 
 mod cc;
 mod rustc;
+mod rustc_env;
 
 /// Fixed test `ContentHash` used by shared fixtures below that don't care
 /// about a specific compiler-identity value. Tests that assert

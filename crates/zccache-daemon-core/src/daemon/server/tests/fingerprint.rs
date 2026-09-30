@@ -544,28 +544,60 @@ fn link_flag_normalization_keeps_outputs_root_specific() {
     assert_eq!(normalized[8], "/DEF:$ZCCACHE_WORKTREE_ROOT/link/app.def");
 }
 
+fn rust_fingerprint(compiler: &str, args: &[String], env: &[(String, String)]) -> ContentHash {
+    request_fingerprint(
+        Path::new(compiler),
+        args,
+        Path::new("/workspace"),
+        Some(Path::new("/workspace")),
+        Some(env),
+    )
+}
+
+/// `env!()` reads are validated per context through recorded dep-info
+/// env-deps, so a plain rustc without a proc-macro keeps one request
+/// fingerprint across `CARGO_*` values (#1806).
 #[test]
-fn request_fingerprint_includes_rust_key_env() {
-    let args = vec!["src/lib.rs".to_string()];
-    let env_a = vec![("CARGO_PKG_VERSION".to_string(), "1.0.0".to_string())];
-    let env_b = vec![("CARGO_PKG_VERSION".to_string(), "1.0.1".to_string())];
-
-    let a = request_fingerprint(
-        Path::new("/usr/bin/rustc"),
-        &args,
-        Path::new("/workspace"),
-        Some(Path::new("/workspace")),
-        Some(&env_a),
+fn request_fingerprint_ignores_unread_cargo_env_for_plain_rustc() {
+    let args = vec![
+        "--emit=dep-info,metadata,link".to_string(),
+        "src/lib.rs".to_string(),
+    ];
+    let a = vec![("CARGO_PKG_VERSION".to_string(), "1.0.0".to_string())];
+    let b = vec![("CARGO_PKG_VERSION".to_string(), "1.0.1".to_string())];
+    assert_eq!(
+        rust_fingerprint("/usr/bin/rustc", &args, &a),
+        rust_fingerprint("/usr/bin/rustc", &args, &b)
     );
-    let b = request_fingerprint(
-        Path::new("/usr/bin/rustc"),
-        &args,
-        Path::new("/workspace"),
-        Some(Path::new("/workspace")),
-        Some(&env_b),
-    );
+}
 
-    assert_ne!(a, b);
+/// A proc-macro dylib or a non-plain driver reads the environment invisibly
+/// to dep-info, so `CARGO_*` must still split the request.
+#[test]
+fn request_fingerprint_includes_cargo_env_when_reads_are_untracked() {
+    let a = vec![("CARGO_PKG_VERSION".to_string(), "1.0.0".to_string())];
+    let b = vec![("CARGO_PKG_VERSION".to_string(), "1.0.1".to_string())];
+    let proc_macro = vec![
+        "--emit=dep-info,link".to_string(),
+        "--extern".to_string(),
+        "derive=/deps/libderive-abc.so".to_string(),
+        "src/lib.rs".to_string(),
+    ];
+    assert_ne!(
+        rust_fingerprint("/usr/bin/rustc", &proc_macro, &a),
+        rust_fingerprint("/usr/bin/rustc", &proc_macro, &b)
+    );
+    let plain = vec!["--emit=dep-info,link".to_string(), "src/lib.rs".to_string()];
+    assert_ne!(
+        rust_fingerprint("/usr/bin/clippy-driver", &plain, &a),
+        rust_fingerprint("/usr/bin/clippy-driver", &plain, &b)
+    );
+    // A direct run that emits no dep-info records no env-deps at all.
+    let bare = vec!["src/lib.rs".to_string()];
+    assert_ne!(
+        rust_fingerprint("/usr/bin/rustc", &bare, &a),
+        rust_fingerprint("/usr/bin/rustc", &bare, &b)
+    );
 }
 
 #[test]

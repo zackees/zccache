@@ -208,13 +208,81 @@ its own:
 
 ## Environment Keying Policy (#1806)
 
-`zccache_core::key_env` owns which environment variables reach a key. C/C++
-compiles key a per-family allowlist (`CPATH`, `SOURCE_DATE_EPOCH`, `SDKROOT`,
-`INCLUDE`, `CL`, ...) through `cc_env_key_flags` and the request fingerprint.
-A never-keyed list (`SOLDR_*`, `ZCCACHE_*` except the three request-control
-vars, `CI`, `GITHUB_*`, `TERM`, `CARGO_TERM_*`, jobserver vars) is dropped from
-both the request fingerprint and the rustc context key. Other `CARGO_*`
-variables stay keyed until env-dep tracking replaces the blanket rule.
+`zccache_core::key_env` owns which environment variables reach a key; every
+entry carries a one-line reason. Dropping a variable that changes output is a
+wrong-artifact bug, so each exclusion below is justified.
+
+**C/C++.** A per-family allowlist (`CPATH`, `SOURCE_DATE_EPOCH`, `SDKROOT`,
+`*_DEPLOYMENT_TARGET`, `INCLUDE`, `CL`, ...) reaches the context key through
+`cc_env_key_flags` and the request fingerprint. gcc additionally keys its
+canonical *message locale* (`gcc_message_locale`): a hit replays the stored
+stderr verbatim and gcc localizes diagnostics through gettext. The value
+follows gettext precedence (`LC_ALL` > `LC_MESSAGES` > `LANG`, `LANGUAGE` only
+outside `C`/`POSIX`), drops the codeset, and folds `C`/`POSIX`/`en`/`en_US` to
+"none" so CI and developer machines keep sharing artifacts. clang does not
+localize (not keyed); `cl.exe` selects its language with `VSLANG` (keyed).
+
+**Rustc.** `env!()`/`option_env!()` reads are *not* keyed by the context key.
+rustc reports them as dep-info `# env-dep:` lines, which
+`fold_rustc_env_deps_into_artifact_key` folds into the artifact key; the zero-hash
+fast paths (`context_files_and_env_fresh`, `check_with_env`) replay the list
+recorded by the prior compile of that context, so fast and slow decisions agree.
+The context key carries only what rustc itself reads: `RUSTC_BOOTSTRAP`, the
+Apple set (`SDKROOT`, `*_DEPLOYMENT_TARGET`; Apple or unknown-host targets only)
+and the linker set (`LIBRARY_PATH`, `LIB`, `LINK`, `_LINK_`, `COMPILER_PATH`,
+`GCC_EXEC_PREFIX`; only when a link step runs). **Conservative exception:** code
+running inside the compiler process can read *any* variable through an untracked
+`std::env::var`, invisible to dep-info, and a direct `rustc` run that emits no
+dep-info records no env-deps at all. In each of those cases (a proc-macro dylib
+on the command line, a non-plain driver such as `clippy-driver`, which reads
+`CARGO_PKG_RUST_VERSION` for its MSRV, or an argv without `--emit=dep-info`) the
+non-volatile `CARGO_*` set stays keyed. Dylint counts as plain: its artifact
+bytes are keyed like the inner rustc's, and `prepare_dylint_cache_env` folds
+`CARGO_*` into the verdict's input hash instead. The request fingerprint is
+always at least as fine as the context key (a finer fingerprint only costs a
+request-cache miss). A context records one artifact key, so when a recorded
+env-dep value changes `check` returns `SourceChanged` with the key for the
+current values: a stored artifact for that value hits, otherwise the crate
+compiles and the snapshot follows.
+
+**Link / archive.** `handle_link` keys `keyed_link_env` (linker set + Apple set)
+into the link cache key. Before #1806 no environment reached it.
+
+**Exec and Meson.** `zccache exec` already runs with a cleared environment plus
+only the caller-declared subset (precise, unchanged). `meson-cache` keys its
+meson-read defaults (now including `CPPFLAGS`, `AR`, `STRIP`, `CC_LD`,
+`PKG_CONFIG*`), the `key_env` compiler-probe allowlist (configure runs compiler
+checks), and `--input-env`; adding names re-keys every configure entry once.
+
+**Never keyed.** `SOLDR_*`, `ZCCACHE_*` (except the three request-control vars
+below), `CI`, `GITHUB_*`, `TERM`, `CARGO_TERM_*`, jobserver vars, and the volatile
+path vars (`CARGO_MANIFEST_DIR`, `CARGO_TARGET_DIR`, `CARGO_HOME`, ...). A crate
+that reads one through `env!` still splits per value, as an env-dep.
+
+**`ZCCACHE_FAST` / `ZCCACHE_SCAN_SYSTEM_HEADERS` stay in the key, deliberately.**
+They pick `-MMD` (skip system headers) vs `-MD`. In fast mode the recorded
+manifest omits system headers, so a hit is never re-validated against them; a
+context built that way cannot answer for a correctness-first request.
+`DependencyDiscoveryMode::apply_to_cc_context` therefore salts the context, and
+the request fingerprint must match. Scanning does not revalidate, so removing
+the salt would serve a partial manifest to safe-mode builds.
+
+**Journal audit** (`compile_journal/env.rs`, diagnostic only). Every listed
+variable is now keyed or provably covered: `CPATH`, `C_INCLUDE_PATH`,
+`CPLUS_INCLUDE_PATH`, `INCLUDE`, `SDKROOT`, `MACOSX_DEPLOYMENT_TARGET`,
+`IPHONEOS_DEPLOYMENT_TARGET` (cc allowlist; the Apple ones and `LIB`,
+`LIBRARY_PATH` also rustc/link); `CC`, `CXX`, `AR`, `LD`, `RANLIB`, `STRIP`,
+`CFLAGS`, `CXXFLAGS`, `CPPFLAGS`, `LDFLAGS`, `RUSTFLAGS`, `RUSTDOCFLAGS`,
+`CARGO_ENCODED_RUSTFLAGS` (consumed by cargo / build scripts, they reach the
+compiler as argv, which is keyed); `RUSTC`, `RUSTC_WRAPPER`, `RUSTUP_TOOLCHAIN`
+(select the compiler binary, whose identity is hashed); `HOST`, `TARGET`,
+`PROFILE`, `DEBUG`, `OPT_LEVEL`, `NUM_JOBS`, `OUT_DIR`, `DEP_*`,
+`CARGO_CFG_*`, `CARGO_FEATURE_*`, `CARGO_PKG_*`, `CARGO_CRATE_NAME`,
+`CARGO_PRIMARY_PACKAGE` (visible to the crate only through `env!`, hence
+env-deps; `--cfg` / features arrive as argv); `ANDROID_*`, `VCINSTALLDIR`,
+`WINDOWSSDKDIR` (locate toolchains / set `INCLUDE`/`LIB`, which are keyed);
+`ZCCACHE_PATH_REMAP` (changes argv the daemon injects, keyed via the remap
+flags). No gap needed its own bug.
 
 ## Explicit Rustc Host Policy
 

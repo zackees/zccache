@@ -147,9 +147,9 @@ fn equivalent_rustc_worktree_rebases_env_dependencies() {
                 equivalent_hash,
                 |_| Some("changed-metadata".to_string()),
             ),
-            CacheVerdict::Cold
+            CacheVerdict::SourceChanged { artifact_key } if artifact_key != artifact_a
         ),
-        "a changed compile-time env input must still miss safely"
+        "a changed compile-time env input must never reuse the old artifact key"
     );
 }
 
@@ -255,7 +255,7 @@ fn perf_out_dir_embedded_value_must_not_reuse_equivalent_worktree() {
         Vec::new(),
         None,
     );
-    graph
+    let artifact_a = graph
         .update_with_env(
             &a.map_key,
             ScanResult {
@@ -276,6 +276,9 @@ fn perf_out_dir_embedded_value_must_not_reuse_equivalent_worktree() {
         None,
     );
     assert!(b.rebased_from_equivalent_root);
+    // The embedded OUT_DIR differs from A's, so B must never be handed A's
+    // artifact key: the key for B's own value is looked up (and compiled on a
+    // miss).
     assert!(matches!(
         graph.check_with_env(
             &b.map_key,
@@ -283,15 +286,18 @@ fn perf_out_dir_embedded_value_must_not_reuse_equivalent_worktree() {
             hash_file,
             |_| { Some("/rustc-out-dir-b/target/out".to_string()) }
         ),
-        CacheVerdict::Cold
+        CacheVerdict::SourceChanged { artifact_key } if artifact_key != artifact_a
     ));
     let (verdict, reason) = graph.check_diagnostic_with_env(
         &b.map_key,
         |_| true,
         hash_file,
-        |_| Some("/rustc-out-dir-b/target/out".to_string()),
+        |_| Some("/rustc-out-dir-b2/target/out".to_string()),
     );
-    assert!(matches!(verdict, CacheVerdict::Cold));
+    assert!(matches!(
+        verdict,
+        CacheVerdict::SourceChanged { artifact_key } if artifact_key != artifact_a
+    ));
     assert!(reason.starts_with("rustc env dependency values changed"));
 }
 
@@ -419,5 +425,72 @@ fn rustc_metadata_compatibility_aliases_are_checkout_specific() {
             .get(&alias_b)
             .map(|entry| *entry),
         Some(b.map_key)
+    );
+}
+
+/// #1806: `CARGO_PKG_*` values a crate reads are env-deps of one context, not
+/// part of its key. Flipping such a value back must point at the artifact key
+/// built earlier for it (so a stored artifact hits) instead of forcing a
+/// recompile, and a value never built must get its own key.
+#[test]
+fn env_dep_value_flip_returns_the_earlier_artifact_key() {
+    let graph = DepGraph::new();
+    let logical_key = ContextKey::from_raw([0x52; 32]);
+    let names = vec!["CARGO_PKG_VERSION".to_string()];
+    let scan_result = || ScanResult {
+        resolved: Vec::new(),
+        unresolved: Vec::new(),
+        has_computed: false,
+    };
+    let env_of = |version: &'static str| move |_: &str| Some(version.to_string());
+    let a = graph.register_rustc_with_key_and_root_result(
+        logical_key,
+        context("/flip"),
+        Some(NormalizedPath::from("/flip")),
+        Vec::new(),
+        None,
+    );
+    let key_v1 = graph
+        .update_with_env(
+            &a.map_key,
+            scan_result(),
+            equivalent_hash,
+            &names,
+            env_of("1.0.0"),
+        )
+        .expect("v1 compile becomes warm");
+    assert!(matches!(
+        graph.check_with_env(&a.map_key, |_| true, equivalent_hash, env_of("1.0.0")),
+        CacheVerdict::Hit { artifact_key } if artifact_key == key_v1
+    ));
+
+    let CacheVerdict::SourceChanged {
+        artifact_key: key_v2,
+    } = graph.check_with_env(&a.map_key, |_| true, equivalent_hash, env_of("2.0.0"))
+    else {
+        panic!("a changed env-dep value must look up its own key");
+    };
+    assert_ne!(key_v1, key_v2, "a new value must never reuse the old key");
+    let compiled_v2 = graph
+        .update_with_env(
+            &a.map_key,
+            scan_result(),
+            equivalent_hash,
+            &names,
+            env_of("2.0.0"),
+        )
+        .expect("v2 compile becomes warm");
+    assert_eq!(compiled_v2, key_v2, "write side agrees with the read side");
+
+    assert!(matches!(
+        graph.check_with_env(&a.map_key, |_| true, equivalent_hash, env_of("1.0.0")),
+        CacheVerdict::SourceChanged { artifact_key } if artifact_key == key_v1
+    ));
+    assert!(
+        matches!(
+            graph.check_with_env(&a.map_key, |_| true, equivalent_hash, env_of("1.0.0")),
+            CacheVerdict::Hit { artifact_key } if artifact_key == key_v1
+        ),
+        "the env snapshot must follow the flip so the next check is a plain hit"
     );
 }

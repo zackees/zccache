@@ -355,6 +355,8 @@ impl DepGraph {
             }
         }
 
+        // Set when a recorded rustc env-dep value differs from the current one.
+        let mut env_snapshot = None;
         let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
             let Some(mut extern_hashes) = collect_rustc_extern_hashes(externs, &get_hash) else {
                 self.misses.fetch_add(1, Ordering::Relaxed);
@@ -368,7 +370,12 @@ impl DepGraph {
                 |path, key_root| self.cached_normalize_key_path(path, key_root),
             );
             let mut env_hashes = collect_rustc_env_hashes(&entry.rustc_env_deps, &env_value);
-            fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
+            let changed = env_hashes != entry.rustc_env_deps;
+            let folded = fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes);
+            if changed {
+                env_snapshot = Some(env_hashes);
+            }
+            folded
         } else {
             compute_artifact_key_with(
                 &entry.logical_key,
@@ -412,10 +419,23 @@ impl DepGraph {
                 return CacheVerdict::HeadersChanged { changed: drifted };
             }
 
+            // Only a recorded rustc env-dep value moved: the key computed
+            // from the CURRENT values is a legitimate lookup key (an earlier
+            // build under these values may be stored). A miss compiles.
+            if let Some(snapshot) = env_snapshot {
+                entry.rustc_env_deps = snapshot;
+                entry.artifact_key = Some(artifact_key);
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                return CacheVerdict::SourceChanged { artifact_key };
+            }
+
             self.misses.fetch_add(1, Ordering::Relaxed);
             CacheVerdict::Cold
         } else {
             // Fast path: only source changed, headers all fresh.
+            if let Some(snapshot) = env_snapshot {
+                entry.rustc_env_deps = snapshot;
+            }
             entry.artifact_key = Some(artifact_key);
             self.hits.fetch_add(1, Ordering::Relaxed);
             CacheVerdict::SourceChanged { artifact_key }
@@ -580,6 +600,7 @@ impl DepGraph {
         }
 
         let mut rustc_env_changed = false;
+        let mut env_snapshot = None;
         let artifact_key = if let Some(externs) = rustc_externs.as_deref() {
             let Some(mut extern_hashes) = collect_rustc_extern_hashes(externs, &get_hash) else {
                 self.misses.fetch_add(1, Ordering::Relaxed);
@@ -594,7 +615,11 @@ impl DepGraph {
             );
             let mut env_hashes = collect_rustc_env_hashes(&entry.rustc_env_deps, &env_value);
             rustc_env_changed = env_hashes != entry.rustc_env_deps;
-            fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes)
+            let folded = fold_rustc_env_deps_into_artifact_key(base, &mut env_hashes);
+            if rustc_env_changed {
+                env_snapshot = Some(env_hashes);
+            }
+            folded
         } else {
             compute_artifact_key_with(
                 &entry.logical_key,
@@ -654,10 +679,18 @@ impl DepGraph {
             }
 
             if rustc_env_changed {
-                self.misses.fetch_add(1, Ordering::Relaxed);
+                // Only a recorded env-dep value moved: the key computed from
+                // the CURRENT values is a legitimate lookup key (an earlier
+                // build under these values may be stored). A miss compiles.
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                entry.artifact_key = Some(artifact_key);
+                if let Some(snapshot) = env_snapshot {
+                    entry.rustc_env_deps = snapshot;
+                }
                 return (
-                    CacheVerdict::Cold,
-                    "rustc env dependency values changed; recompile forced".to_string(),
+                    CacheVerdict::SourceChanged { artifact_key },
+                    "rustc env dependency values changed; looking up the key for the current values"
+                        .to_string(),
                 );
             }
 
@@ -670,6 +703,9 @@ impl DepGraph {
             )
         } else {
             entry.artifact_key = Some(artifact_key);
+            if let Some(snapshot) = env_snapshot {
+                entry.rustc_env_deps = snapshot;
+            }
             self.hits.fetch_add(1, Ordering::Relaxed);
             (
                 CacheVerdict::SourceChanged { artifact_key },

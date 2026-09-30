@@ -379,64 +379,7 @@ where
     ContextKey(ContentHash::from_bytes(*hasher.finalize().as_bytes()))
 }
 
-/// CARGO_* environment variables that must NOT participate in the cache key.
-///
-/// These are volatile (absolute paths or build-host transients) and either do
-/// not affect compiled output or affect it only via paths that should already
-/// be normalized elsewhere. Including them cascades cache invalidation across
-/// the entire dep graph whenever the workspace is moved, cloned, or re-checked
-/// out at a different on-disk location.
-///
-/// What stays in the key (everything else starting with `CARGO_`):
-/// - `CARGO_PKG_VERSION`, `CARGO_PKG_NAME`, `CARGO_PKG_AUTHORS`,
-///   `CARGO_PKG_DESCRIPTION`, `CARGO_PKG_HOMEPAGE`, `CARGO_PKG_REPOSITORY`,
-///   `CARGO_PKG_LICENSE`, `CARGO_PKG_RUST_VERSION`, `CARGO_CRATE_NAME`, etc.
-///   These feed `env!()` macros and are baked into the compiled artifact.
-///
-/// Already excluded earlier in the filter (orthogonal reasons):
-/// - `CARGO_MAKEFLAGS` (job-server token, transient).
-/// - `CARGO_INCREMENTAL` (handled by stripping `-C incremental` from args).
-///
-/// Filtered here (this list):
-/// - `CARGO_MANIFEST_DIR` — absolute path to the crate dir; changes per
-///   checkout location. Cascades the cache.
-/// - `CARGO_MANIFEST_PATH` — absolute path to `Cargo.toml`; same issue.
-/// - `CARGO_TARGET_DIR` — output-placement state set by cargo. Two worktrees
-///   that share a zccache cache but pick different relative target-dir leaf
-///   names (e.g. `parent-cache-main-target` vs `parent-cache-sub-target`)
-///   otherwise cold-miss every rustc compilation even with
-///   `ZCCACHE_PATH_REMAP=auto`. Filtering is sound because `CARGO_TARGET_DIR`
-///   only directs cargo where to place build output — it is not embedded in
-///   rustc output via `env!()` in normal builds, and `--out-dir` / `-L` /
-///   `--extern` directory prefixes that cargo derives from it are already
-///   non-cache-key state (out_dir excluded; search_paths excluded; extern
-///   paths reduced to file-name identity). See issue #396.
-/// - `CARGO` / `CARGO_HOME` — Cargo's executable and package/tool state
-///   directory. Soldr deliberately relocates both beneath each cache root, so
-///   restoring an otherwise identical cache into a new root must not re-key
-///   every rustc invocation. They affect orchestration and dependency lookup,
-///   not the bytes rustc emits for a resolved invocation. See issue #1625.
-/// - `CARGO_TARGET_<TRIPLE>_LINKER` — Cargo consumes this selector and turns
-///   it into rustc linker arguments. Soldr points it at a cache-root-local
-///   shim, so the raw environment path is orchestration state and must not
-///   independently re-key unrelated compile units.
-const VOLATILE_CARGO_ENV_VARS: &[&str] = &[
-    "CARGO",
-    "CARGO_HOME",
-    "CARGO_MANIFEST_DIR",
-    "CARGO_MANIFEST_PATH",
-    "CARGO_TARGET_DIR",
-];
-
-/// Whether a Cargo environment variable describes orchestration or relocated
-/// tool state rather than compiler output identity.
-#[must_use]
-pub fn is_volatile_cargo_env_var(key: &str) -> bool {
-    VOLATILE_CARGO_ENV_VARS.contains(&key)
-        || key
-            .strip_prefix("CARGO_TARGET_")
-            .is_some_and(|target_key| target_key.ends_with("_LINKER"))
-}
+pub use zccache_core::key_env::is_volatile_cargo_env_var;
 
 /// All inputs defining a rustc compilation context.
 ///
@@ -478,7 +421,9 @@ pub struct RustcCompileContext {
     pub unknown_flags: Vec<String>,
     /// Sorted `--remap-path-prefix` values (affect embedded paths in output).
     pub remap_path_prefixes: Vec<String>,
-    /// Sorted CARGO_* environment variables that affect compilation via `env!()`.
+    /// Sorted environment variables that key the context: rustc's own
+    /// (`RUSTC_BOOTSTRAP`, Apple, linker) plus `CARGO_*` next to a proc-macro.
+    /// See `zccache_core::key_env` (#1806).
     pub env_vars: Vec<(String, String)>,
     /// Hash of the compiler binary (different rustc versions produce
     /// different output). Non-`Option` by design (issue #1166): see the
@@ -491,13 +436,27 @@ pub struct RustcCompileContext {
 impl RustcCompileContext {
     /// Build from parsed rustc args and client environment.
     ///
-    /// `client_env` should be the CARGO_* env vars from the client process.
-    /// These affect compilation via `env!()` macros and must be in the cache key.
+    /// `client_env` is the client process environment; only the variables
+    /// `zccache_core::key_env` classifies as output-affecting reach the key.
     #[must_use]
     pub fn from_parsed_args(
         args: &RustcParsedArgs,
         client_env: &[(String, String)],
         compiler_hash: ContentHash,
+    ) -> Self {
+        Self::from_parsed_args_with_driver(args, client_env, compiler_hash, true)
+    }
+
+    /// [`Self::from_parsed_args`] for a known driver. `plain_rustc` is
+    /// `false` for `clippy-driver`, `dylint-driver` and wrappers, whose
+    /// in-process code may read `CARGO_*` invisibly to dep-info; the
+    /// non-volatile `CARGO_*` set then stays keyed.
+    #[must_use]
+    pub fn from_parsed_args_with_driver(
+        args: &RustcParsedArgs,
+        client_env: &[(String, String)],
+        compiler_hash: ContentHash,
+        plain_rustc: bool,
     ) -> Self {
         let mut crate_types = args.crate_types.clone();
         crate_types.sort();
@@ -512,19 +471,36 @@ impl RustcCompileContext {
         let mut remap_path_prefixes = args.remap_path_prefixes.clone();
         remap_path_prefixes.sort();
 
-        // Filter CARGO_* env vars — these affect compilation output via env!() macro.
-        // Exclude CARGO_MAKEFLAGS (job server, not output-affecting),
-        // CARGO_INCREMENTAL (handled by stripping -C incremental), and
-        // VOLATILE_CARGO_ENV_VARS (absolute paths that cascade cache misses).
-        let mut env_vars: Vec<(String, String)> = client_env
-            .iter()
-            .filter(|(k, _)| {
-                k.starts_with("CARGO_")
-                    && !zccache_core::key_env::is_never_keyed_env(k)
-                    && !is_volatile_cargo_env_var(k)
-            })
-            .cloned()
-            .collect();
+        // Environment keying (#1806). `env!()` / `option_env!()` reads are
+        // NOT keyed here: rustc reports them as dep-info `# env-dep:` lines,
+        // which the artifact key folds in (`fold_rustc_env_deps_into_artifact_key`)
+        // and the fast path replays from the prior compile's recorded list.
+        // The context key keeps only what rustc itself reads, and, because a
+        // proc-macro's untracked `std::env::var` is invisible to dep-info,
+        // every non-volatile `CARGO_*` when a proc-macro dylib is loaded or the
+        // driver is not plain `rustc` (clippy reads `CARGO_PKG_RUST_VERSION`).
+        let facts = zccache_core::key_env::RustcEnvFacts::from_parts(
+            args.target.as_deref(),
+            &args.crate_types,
+            &args.emit_types,
+            args.externs
+                .iter()
+                .filter_map(|e| e.path.as_path().to_str()),
+            plain_rustc,
+        );
+        let mut env_vars: Vec<(String, String)> =
+            zccache_core::key_env::keyed_rustc_env(client_env, facts)
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        if facts.may_read_env_untracked {
+            env_vars.extend(
+                client_env
+                    .iter()
+                    .filter(|(k, _)| zccache_core::key_env::is_conservatively_keyed_cargo_env(k))
+                    .cloned(),
+            );
+        }
         env_vars.sort();
 
         Self {

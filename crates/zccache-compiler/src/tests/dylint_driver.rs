@@ -295,3 +295,59 @@ fn library_state_fails_open_when_missing_malformed_or_unhashable() {
     assert!(error.contains("uncached"));
     assert!(error.contains("missing.so"));
 }
+
+/// #1806: lint libraries run inside the driver and may read `CARGO_*`
+/// invisibly to dep-info (clippy reads `CARGO_PKG_RUST_VERSION`), so the
+/// Dylint input hash carries the same non-volatile `CARGO_*` set the rustc
+/// context key used to, while volatile paths and noise stay out.
+#[test]
+fn cargo_environment_is_part_of_the_dylint_input_hash() {
+    let temp = tempfile::tempdir().unwrap();
+    let driver = temp.path().join("dylint-driver");
+    let rustc = temp.path().join("rustc");
+    let library = temp.path().join("libfixture.so");
+    std::fs::write(&driver, b"driver").unwrap();
+    std::fs::write(&rustc, b"rustc").unwrap();
+    std::fs::write(&library, b"lint").unwrap();
+    let args = vec![
+        rustc.to_string_lossy().into_owned(),
+        "--crate-name".into(),
+        "fixture".into(),
+        "src/lib.rs".into(),
+    ];
+    let libs = serde_json::to_string(std::slice::from_ref(&library)).unwrap();
+    let hash_with = |extra: &[(&str, &str)]| {
+        let mut env = vec![(DYLINT_LIBS_ENV.to_string(), libs.clone())];
+        env.extend(
+            extra
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string())),
+        );
+        prepare_dylint_cache_env(&NormalizedPath::new(&driver), &args, temp.path(), &mut env)
+            .unwrap();
+        cache_input_hash(&env).to_string()
+    };
+    let base = hash_with(&[]);
+    for name in [
+        "CARGO_PKG_RUST_VERSION",
+        "CARGO_PKG_NAME",
+        "CARGO_CRATE_NAME",
+    ] {
+        assert_ne!(base, hash_with(&[(name, "1")]), "{name} must be hashed");
+        assert_ne!(
+            hash_with(&[(name, "1")]),
+            hash_with(&[(name, "2")]),
+            "{name}"
+        );
+    }
+    for name in [
+        "CARGO_MANIFEST_DIR",
+        "CARGO_TARGET_DIR",
+        "CARGO_TERM_COLOR",
+        "CARGO_MAKEFLAGS",
+        "SOLDR_CACHE",
+        "CI",
+    ] {
+        assert_eq!(base, hash_with(&[(name, "x")]), "{name} must not be hashed");
+    }
+}
