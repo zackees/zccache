@@ -504,7 +504,9 @@ async fn zccache_owned_maintenance_reclaims_a_retired_version_store() {
     .start();
     assert!(started.started.contains(&TASK_DISK_MAINTENANCE));
 
-    let swept = wait_until(|| !victim.exists()).await;
+    // The sweep removes the file, then the emptied directory; wait for the
+    // final state so the directory assertion cannot race the second step.
+    let swept = wait_until(|| !victim.exists() && !retired.exists()).await;
     stop(&state);
     assert!(
         swept,
