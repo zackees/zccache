@@ -6,6 +6,8 @@
 //! correctness bug), and two that differ only in a variable the crate never
 //! reads must share one (a miss is the spurious split the issue removes).
 
+#![cfg(target_os = "linux")]
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -104,7 +106,6 @@ fn toolchain_rustc() -> PathBuf {
         .expect("this regression needs the running toolchain's rustc")
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn read_cargo_env_never_shares_an_artifact_and_unread_env_always_does() {
