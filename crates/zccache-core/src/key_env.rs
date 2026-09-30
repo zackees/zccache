@@ -315,7 +315,7 @@ pub fn keyed_rustc_env(
         collect(env, APPLE_ENV_KEYED, false, &mut out);
     }
     if facts.links {
-        collect(env, LINK_ENV_KEYED, cfg!(windows), &mut out);
+        collect_link_table(env, &mut out);
     }
     out
 }
@@ -325,7 +325,7 @@ pub fn keyed_rustc_env(
 #[must_use]
 pub fn keyed_link_env(env: &[(String, String)]) -> Vec<(&'static str, &str)> {
     let mut out = Vec::new();
-    collect(env, LINK_ENV_KEYED, cfg!(windows), &mut out);
+    collect_link_table(env, &mut out);
     collect(env, APPLE_ENV_KEYED, false, &mut out);
     out
 }
@@ -406,6 +406,28 @@ pub fn keyed_cc_env(env: &[(String, String)], scope: CcEnvScope) -> Vec<(&'stati
         collect(env, table, std::ptr::eq(table, MSVC_CC_ENV_KEYED), &mut out);
     }
     out
+}
+
+/// Linker variables are case-insensitive on Windows and exact elsewhere; the
+/// key must not depend on the host, so an exact name wins and a differently
+/// cased one is used only when no exact match exists (a stray `lib` on Unix
+/// costs at most an extra split).
+fn collect_link_table<'a>(env: &'a [(String, String)], out: &mut Vec<(&'static str, &'a str)>) {
+    for (name, _) in LINK_ENV_KEYED {
+        let find = |exact: bool| {
+            env.iter().rev().find_map(|(k, v)| {
+                let hit = if exact {
+                    k == name
+                } else {
+                    k.eq_ignore_ascii_case(name)
+                };
+                hit.then_some(v.as_str())
+            })
+        };
+        if let Some(value) = find(true).or_else(|| find(false)) {
+            out.push((*name, value));
+        }
+    }
 }
 
 fn collect<'a>(
@@ -635,6 +657,14 @@ mod tests {
         ] {
             assert!(!is_plain_rustc(c), "{c}");
         }
+    }
+
+    #[test]
+    fn link_env_prefers_exact_case_and_falls_back_to_any_case() {
+        let e = env(&[("LIB", "exact"), ("lib", "other")]);
+        assert_eq!(keyed_link_env(&e), vec![("LIB", "exact")]);
+        assert_eq!(keyed_link_env(&env(&[("Lib", "x")])), vec![("LIB", "x")]);
+        assert!(keyed_link_env(&env(&[("LIBS", "x")])).is_empty());
     }
 
     #[test]
