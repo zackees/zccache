@@ -2,7 +2,7 @@ name: Coverage
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/coverage-wrapper-drift] # TEMP validation
     paths-ignore:
       - "**/*.md"
       - "LICENSE*"
@@ -93,7 +93,16 @@ jobs:
           # (issue #1025: cli_cache_root broke Coverage on every push since
           # 2026-07-07). Spawned children wouldn't contribute coverage
           # anyway — scope to in-process unit tests.
-          soldr cargo llvm-cov --workspace --lib --bins --lcov --output-path lcov.info
+          #
+          # --no-rustc-wrapper (#1856): by default cargo-llvm-cov points
+          # RUSTC_WRAPPER at itself and chains to the pre-existing wrapper.
+          # Since soldr v0.9.21 the shim re-entry asserts that RUSTC_WRAPPER
+          # still equals SOLDR_EFFECTIVE_RUSTC_WRAPPER (soldr#2545) and
+          # aborts on that sanctioned rewrite. Keeping the soldr-owned pair
+          # coherent (rather than bypassing the guard) means llvm-cov
+          # instruments through RUSTFLAGS and the soldr/zccache wrapper stays
+          # the only wrapper. Upstream false positive: zackees/soldr#3504.
+          soldr cargo llvm-cov --no-rustc-wrapper --workspace --lib --bins --lcov --output-path lcov.info
       - name: Stop isolated coverage cache
         if: always()
         shell: bash
