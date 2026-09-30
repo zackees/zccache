@@ -31,15 +31,19 @@ const NATIVE_PYTHON_F9_RESERVE_BYTES = 1_120_000_000;
 // carries no such entry to measure.
 const IN_FLIGHT_WRITER_MIN_RESERVE_BYTES = 1_600_000_000;
 
-// Old-lock fallbacks deliberately retired at a lock transition. These are
-// the four measured profiles selected to keep the replacement peak below
-// the pre-prune target while retaining both 100%-hit musl caches.
+// Old-lock build-cache fallbacks deliberately retired at a lock transition.
+// #1850: selected by (os, arch) only. The toolchain digest in the key moves
+// with every toolchain/config change, so the original digest-pinned list went
+// inert (nothing selected, 1.65 GB of old-lock builds kept next to their
+// re-seeds). The main (no suffix) and `dylint` profiles of these platforms are
+// retired; cross-target `check-*` profiles are the 100%-hit musl caches and
+// other suffixes are unmeasured, so both stay.
 const TRANSITION_BUILD_CACHE_FALLBACKS = [
-  { os: "linux", arch: "x64", digest: "6d40444a3fc5e4d0", suffix: "" },
-  { os: "windows", arch: "x64", digest: "0a12db972fd789a0", suffix: "" },
-  { os: "linux", arch: "arm64", digest: "6d40444a3fc5e4d0", suffix: "" },
-  { os: "linux", arch: "x64", digest: "032744c531163905", suffix: "" },
+  { os: "linux", arch: "x64" },
+  { os: "windows", arch: "x64" },
+  { os: "linux", arch: "arm64" },
 ];
+const RETIRED_BUILD_CACHE_SUFFIXES = new Set(["", "dylint"]);
 const TRANSITION_BUILD_CACHE_PROFILES = [
   { os: "linux", arch: "x64", digest: "6d40444a3fc5e4d0", suffix: "", minimumBytes: 695_272_185 },
   { os: "windows", arch: "x64", digest: "0a12db972fd789a0", suffix: "", minimumBytes: 563_360_821 },
@@ -283,6 +287,45 @@ function profileBytes(rows, parseParts, currentHashes, shapeFor, requiredProfile
   return bytes;
 }
 
+// #1850: dotted-version compare ("1.95.0" vs "1.100.0"); missing parts are 0.
+function compareDotted(a, b) {
+  const pa = String(a).split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const pb = String(b).split(".").map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+// #1850: main cook bases whose (os, arch, libc, flags, suffix) family also has
+// a strictly newer (rustc, soldr) generation. Producers write the newest
+// toolchain only, so a superseded generation is never re-seeded: it is dead
+// weight that neither needs a forecast reserve nor a forecast to be deleted.
+function supersededCookBaseIds(caches) {
+  const families = new Map();
+  const rows = [];
+  for (const cache of caches) {
+    if (cache.ref !== "refs/heads/main" || typeof cache.key !== "string") continue;
+    const parts = parseCookBaseKey(cache.key);
+    if (!parts || isRetiredMainKey(cache.key)) continue;
+    const family = [parts.os, parts.arch, parts.libc, parts.flags, parts.suffix].join("\u0000");
+    rows.push({ cache, parts, family });
+    const best = families.get(family);
+    if (!best || compareDotted(parts.rustc, best.rustc) > 0 ||
+        (compareDotted(parts.rustc, best.rustc) === 0 && compareDotted(parts.soldr, best.soldr) > 0)) {
+      families.set(family, { rustc: parts.rustc, soldr: parts.soldr });
+    }
+  }
+  const superseded = new Set();
+  for (const { cache, parts, family } of rows) {
+    const best = families.get(family);
+    const cmp = compareDotted(parts.rustc, best.rustc) || compareDotted(parts.soldr, best.soldr);
+    if (cmp < 0) superseded.add(cache.id);
+  }
+  return superseded;
+}
+
 function planLockTransitionPrePrune(
   caches,
   currentRootLockHashes,
@@ -292,7 +335,9 @@ function planLockTransitionPrePrune(
 ) {
   const currentHashes = currentLockHashesByOs(currentRootLockHashes);
   const currentBytes = effectiveCacheBytes(usageBytes, listedBytes);
-  const fail = (reason) => ({ ok: false, reason, deleteIds: [], selectedBuildCacheIds: [] });
+  const fail = (reason) => ({
+    ok: false, reason, deleteIds: [], selectedBuildCacheIds: [], retireFirstIds: [],
+  });
   if (!currentHashes) return fail("current Cargo.lock hashes unavailable");
   if (!Number.isFinite(currentBytes) || currentBytes <= 0) return fail("cache inventory bytes unavailable");
   if (!Number.isFinite(targetBytes) || targetBytes <= 0) return fail("invalid transition target");
@@ -331,10 +376,10 @@ function planLockTransitionPrePrune(
   const selectedBuildCacheIds = staleBuilds
     .filter((cache) => {
       const parts = setupSoldrBuildCacheKeyParts(cache.key);
-      return TRANSITION_BUILD_CACHE_FALLBACKS.some((candidate) =>
-        candidate.os === parts.os && candidate.arch === parts.arch &&
-        candidate.digest === parts.digest && candidate.suffix === parts.suffix,
-      );
+      return RETIRED_BUILD_CACHE_SUFFIXES.has(parts.suffix) &&
+        TRANSITION_BUILD_CACHE_FALLBACKS.some((candidate) =>
+          candidate.os === parts.os && candidate.arch === parts.arch,
+        );
     })
     .map((cache) => cache.id)
     .sort((a, b) => a - b);
@@ -352,8 +397,18 @@ function planLockTransitionPrePrune(
   );
   const orphanedBuildIds = new Set(orphanedBuilds.map((cache) => cache.id));
 
+  // Retire-first: superseded old-lock cook generations. They are already in
+  // the stale set, but unlike the rest of it they are not re-seeded, so the
+  // workflow may delete them before (and regardless of) the forecast verdict.
+  const supersededCooks = supersededCookBaseIds(mainRows);
+  const retireFirstIds = staleCooks
+    .filter((cache) => supersededCooks.has(cache.id))
+    .map((cache) => cache.id)
+    .sort((a, b) => a - b);
   const cookEstimate = profileBytes(
-    mainRows.filter((cache) => cache.key.startsWith("cook-base-v2-") && !isRetiredMainKey(cache.key)),
+    mainRows.filter((cache) =>
+      cache.key.startsWith("cook-base-v2-") && !isRetiredMainKey(cache.key) &&
+      !supersededCooks.has(cache.id)),
     parseCookBaseKey,
     currentHashes,
     (parts) => `${parts.os}\u0000${parts.arch}\u0000${parts.libc}\u0000${parts.rustc}\u0000${parts.flags}\u0000${parts.soldr}\u0000${parts.suffix}`,
@@ -401,6 +456,7 @@ function planLockTransitionPrePrune(
       currentBytes,
       projectedPeakBytes,
       targetBytes,
+      retireFirstIds,
       staleCookIds: staleCooks.map((cache) => cache.id),
       staleRegistryIds: staleRegistries.map((cache) => cache.id),
     };
@@ -414,6 +470,7 @@ function planLockTransitionPrePrune(
     staleCookIds: staleCooks.map((cache) => cache.id),
     staleRegistryIds: staleRegistries.map((cache) => cache.id),
     selectedBuildCacheIds,
+    retireFirstIds,
     estimatedNewBytes: newBytes,
   };
 }
@@ -594,4 +651,5 @@ module.exports = {
   setupSoldrCargoRegistryKeyParts,
   setupSoldrBuildCacheKeyParts,
   supersededBuildCacheIds,
+  supersededCookBaseIds,
 };

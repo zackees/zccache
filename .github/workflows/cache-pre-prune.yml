@@ -248,13 +248,41 @@ jobs:
               throw new Error("cache usage/list did not converge; refusing producer release");
             };
 
-            const before = await convergeInventory();
-            const plan = planLockTransitionPrePrune(
-              before.caches,
+            // Delete one planned cache; a concurrent delete (404) is verified
+            // absent by the next convergeInventory pass.
+            const deleteCache = async (cache, label) => {
+              if (await branchHead() !== expectedSha) {
+                throw new Error("main advanced during deletes; stopping pre-prune");
+              }
+              core.info(`Delete ${label}: ${cache.key} (id ${cache.id}, ${cache.size_in_bytes} bytes)`);
+              try {
+                await github.rest.actions.deleteActionsCacheById({ ...repo, cache_id: cache.id });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                core.info(`Cache id ${cache.id} disappeared before deletion; verifying absence below.`);
+              }
+            };
+            const planFor = (inventory) => planLockTransitionPrePrune(
+              inventory.caches,
               lockHashes,
-              before.usageBytes,
-              before.listedBytes,
+              inventory.usageBytes,
+              inventory.listedBytes,
             );
+
+            let before = await convergeInventory();
+            let plan = planFor(before);
+            // #1850: retire-first. Superseded old-lock generations are never
+            // re-seeded, so deleting them is safe whatever the forecast says,
+            // and leaving them in place is what made a failed forecast
+            // permanent (it could not prune, so it could never pass).
+            // Unknown key formats fail closed with an empty retire-first set.
+            const retireFirst = new Set(plan.retireFirstIds || []);
+            if (retireFirst.size > 0) {
+              const dead = before.caches.filter((cache) => retireFirst.has(cache.id));
+              for (const cache of dead) await deleteCache(cache, "superseded old-generation cache");
+              before = await convergeInventory(dead.map((cache) => cache.id));
+              plan = planFor(before); // forecast the post-delete peak
+            }
             if (!plan.ok) {
               throw new Error(`cache transition forecast failed closed: ${plan.reason}`);
             }
@@ -264,25 +292,15 @@ jobs:
               `Converged inventory: ${before.caches.length} entries, ` +
               `${before.listedBytes} listed bytes / ${before.usageBytes} usage bytes. ` +
               `Transition forecast ${plan.projectedPeakBytes} B (target ${plan.targetBytes} B); ` +
+              `${retireFirst.size} superseded generations retired first, ` +
               `${plan.staleCookIds.length} old-lock cook bases, ` +
               `${plan.staleRegistryIds.length} old-lock registries, and ` +
-              `${plan.selectedBuildCacheIds.length} measured build-cache fallbacks selected.`,
+              `${plan.selectedBuildCacheIds.length} build-cache fallbacks selected.`,
             );
             if (await branchHead() !== expectedSha) {
               throw new Error("main advanced before old-lock deletes; refusing stale plan");
             }
-            for (const cache of stale) {
-              if (await branchHead() !== expectedSha) {
-                throw new Error("main advanced during deletes; stopping pre-prune");
-              }
-              core.info(`Delete forecasted old-lock cache: ${cache.key} (id ${cache.id}, ${cache.size_in_bytes} bytes)`);
-              try {
-                await github.rest.actions.deleteActionsCacheById({ ...repo, cache_id: cache.id });
-              } catch (error) {
-                if (error.status !== 404) throw error;
-                core.info(`Old-lock cache id ${cache.id} disappeared before deletion; verifying absence below.`);
-              }
-            }
+            for (const cache of stale) await deleteCache(cache, "forecasted old-lock cache");
             const after = await convergeInventory(stale.map((cache) => cache.id));
             core.info(
               `Pre-prune verified for ${expectedSha}: ${after.caches.length} entries, ` +
