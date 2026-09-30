@@ -319,6 +319,8 @@ pub(super) struct SharedState {
     /// Serializes background and host-requested disk-maintenance passes for
     /// this exact cache root.
     pub(super) disk_maintenance: Mutex<()>,
+    /// Outcome of every pass the background maintenance loop finishes (#1846).
+    pub(super) disk_maintenance_progress: tokio::sync::watch::Sender<DiskMaintenanceProgress>,
     /// Serializes every depgraph snapshot for this exact cache root. The guard
     /// is acquired only on blocking threads (or the synchronous drop backstop),
     /// never by an async runtime worker.

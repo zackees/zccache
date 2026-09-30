@@ -23,7 +23,7 @@ use zccache_daemon_core::artifact::{
 };
 use zccache_daemon_core::audit::{audit_cache_root, AuditOptions, LogAuditContext};
 use zccache_daemon_core::core::NormalizedPath;
-use zccache_daemon_core::daemon::DaemonServer;
+use zccache_daemon_core::daemon::{DaemonServer, DiskMaintenanceProgress};
 use zccache_daemon_core::ipc::IpcConnection;
 use zccache_daemon_core::protocol::{
     ArtifactData, ArtifactOutput, ArtifactPayload, ExecCachePolicy, ExecOutputStreams, Request,
@@ -73,6 +73,7 @@ struct Daemon {
     client: IpcConnection,
     task: kernal_api::async_engine::Task<()>,
     shutdown: Arc<kernal_api::async_engine::Notify>,
+    maintenance: tokio::sync::watch::Receiver<DiskMaintenanceProgress>,
 }
 
 impl Daemon {
@@ -106,6 +107,7 @@ impl Daemon {
             server.set_dep_graph(graph);
         }
         let shutdown = server.shutdown_handle();
+        let maintenance = server.disk_maintenance_progress();
         let task = kernal_api::async_engine::launch(async move {
             server.run(0).await.expect("run daemon");
         });
@@ -116,6 +118,7 @@ impl Daemon {
             client,
             task,
             shutdown,
+            maintenance,
         }
     }
 
@@ -126,6 +129,42 @@ impl Daemon {
             .await
             .expect("receive response")
             .expect("daemon response")
+    }
+
+    /// Await the daemon's startup eviction scan through its completion signal
+    /// (#1846), not a wall-clock poll of the marker file.
+    ///
+    /// The scan queues behind artifact/depgraph loading and several
+    /// blocking-pool hops, so its latency is unbounded on a starved runner: a
+    /// fixed budget only measures CPU contention (it timed out once at 15.86 s
+    /// in CI). The maintenance loop publishes every pass outcome, so this
+    /// returns the moment the first full pass finishes -- or fails, reporting
+    /// the error instead of a bare timeout. `BACKSTOP` exists only to turn a
+    /// dead maintenance loop (which would never signal) into a diagnosed
+    /// failure rather than a hung job; it is not a latency expectation.
+    async fn wait_for_startup_eviction_scan(&mut self, cache_root: &Path) {
+        const BACKSTOP: Duration = Duration::from_secs(300);
+        let settled = tokio::time::timeout(BACKSTOP, async {
+            self.maintenance
+                .wait_for(DiskMaintenanceProgress::settled)
+                .await
+                .map(|_| ())
+        })
+        .await;
+        let progress = self.maintenance.borrow().clone();
+        assert!(
+            settled.is_ok(),
+            "maintenance loop never finished a pass within {BACKSTOP:?}: {progress:?}"
+        );
+        assert_eq!(
+            progress.last_error, None,
+            "startup eviction scan failed: {progress:?}"
+        );
+        let marker = cache_root.join(".disk-maintenance-last-full-v1");
+        assert!(
+            marker.exists(),
+            "full pass reported complete but left no marker: {progress:?}"
+        );
     }
 
     async fn stop(mut self) {
@@ -661,11 +700,7 @@ async fn strict_layout_validation_aggregates_all_runtime_flows() {
         "staged migration pointer",
     )
     .await;
-    wait_for(
-        &cache_root.join(".disk-maintenance-last-full-v1"),
-        "startup eviction scan",
-    )
-    .await;
+    cold.wait_for_startup_eviction_scan(&cache_root).await;
     // No cold-phase quiesce waits: per-unit publication (artifact bytes,
     // depgraph update, durable-index row send) completes before each compile
     // response, and `stop()` relies on the #1161 shutdown drain in

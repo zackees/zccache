@@ -184,6 +184,8 @@ mod dependency_policy;
 mod depfile_root;
 mod directory_link;
 mod disk_maintenance;
+mod disk_maintenance_progress;
+pub use disk_maintenance_progress::DiskMaintenanceProgress;
 mod embedded;
 mod embedded_bringup;
 mod handle_clear;

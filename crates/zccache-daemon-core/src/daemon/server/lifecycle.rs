@@ -303,6 +303,10 @@ pub(super) fn new_shared_state(
             journal: CompileJournal::new(crate::core::config::log_dir_from_cache_dir(cache_dir)),
             in_flight_bytes: AtomicUsize::new(0),
             disk_maintenance: Mutex::new(()),
+            disk_maintenance_progress: tokio::sync::watch::channel(
+                DiskMaintenanceProgress::default(),
+            )
+            .0,
             depgraph_persistence: StdMutex::new(()),
             artifact_publication: Arc::new(kernal_api::async_engine::RwLock::new(())),
             staged_materialization_lock: Arc::new(StdMutex::new(std::sync::Weak::new())),
@@ -348,6 +352,17 @@ impl DaemonServer {
     #[must_use]
     pub fn shutdown_handle(&self) -> Arc<kernal_api::async_engine::Notify> {
         Arc::clone(&self.shutdown)
+    }
+
+    /// Subscribe to disk-maintenance pass outcomes (#1846). Lets a caller
+    /// await the startup eviction scan itself instead of polling its marker
+    /// file against a wall-clock budget. In-process only: no IPC message.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn disk_maintenance_progress(
+        &self,
+    ) -> tokio::sync::watch::Receiver<DiskMaintenanceProgress> {
+        self.state.disk_maintenance_progress.subscribe()
     }
 
     /// Copy the daemon identity this daemon proves to identity probes.

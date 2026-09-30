@@ -1310,9 +1310,15 @@ pub(super) fn spawn_disk_maintenance(
                     Err(error) => tracing::warn!(%error, "disk maintenance preflight failed"),
                 }
             }
-            if let Err(error) =
-                maintain_state_disk(Arc::clone(&state), policy, kind, runtime_handle.as_ref()).await
-            {
+            let outcome =
+                maintain_state_disk(Arc::clone(&state), policy, kind, runtime_handle.as_ref())
+                    .await;
+            super::disk_maintenance_progress::record_pass(
+                &state.disk_maintenance_progress,
+                kind == MaintenanceKind::Full,
+                &outcome,
+            );
+            if let Err(error) = outcome {
                 tracing::warn!(
                     %error,
                     maintenance_kind = ?kind,

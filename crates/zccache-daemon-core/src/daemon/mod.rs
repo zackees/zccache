@@ -41,5 +41,5 @@ pub(crate) mod staged_stats;
 pub mod stats;
 pub mod trampoline;
 
-pub use server::{DaemonServer, DepGraphSetter};
+pub use server::{DaemonServer, DepGraphSetter, DiskMaintenanceProgress};
 pub use stats::{PhaseProfiler, ProfileSnapshot, StatsCollector};
