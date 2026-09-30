@@ -417,3 +417,58 @@ def test_composite_without_act_prefix_is_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert any("COMPOSITE_SAVE_CACHE_POLICY" in e for e in guard.check(tmp_path))
+
+
+def _cook_workflow(root: Path, body: str) -> None:
+    _workflow(
+        root,
+        "ci-check.yml",
+        "  test:\n    runs-on: ubuntu-latest\n    steps:\n" + body,
+    )
+
+
+def _cook_step(**overrides: str) -> str:
+    fields = {
+        "if": "startsWith(inputs.os, 'ubuntu')",
+        "cook-delta": "false",
+        "save-cache": guard.SAVE_CACHE_POLICY,
+    }
+    fields.update(overrides)
+    when = fields.pop("if")
+    lines = "".join(f'          {k}: "{v}"\n' for k, v in fields.items() if v)
+    return (
+        f"      - uses: zackees/setup-soldr/cook@{CURRENT}\n"
+        f"        if: {when}\n        with:\n          flags: --workspace\n{lines}"
+    )
+
+
+def test_budgeted_cook_subaction_is_accepted(tmp_path: Path) -> None:
+    _cook_workflow(tmp_path, _cook_step())
+    assert guard._cook_subaction_errors(tmp_path) == []
+
+
+def test_unbudgeted_cook_subaction_family_is_rejected(tmp_path: Path) -> None:
+    _workflow(
+        tmp_path,
+        "other.yml",
+        "  x:\n    runs-on: ubuntu-latest\n    steps:\n" + _cook_step(),
+    )
+    errors = guard._cook_subaction_errors(tmp_path)
+    assert any("no budget" in e for e in errors), errors
+
+
+def test_cook_subaction_must_be_linux_only_delta_free_and_main_saved(tmp_path: Path) -> None:
+    _cook_workflow(tmp_path, _cook_step(**{"if": "always()", "cook-delta": "true"}))
+    errors = guard._cook_subaction_errors(tmp_path)
+    assert any("Linux-only" in e for e in errors), errors
+    assert any("cook-delta: false" in e for e in errors), errors
+    _cook_workflow(tmp_path, _cook_step(**{"save-cache": "true"}))
+    assert any("SAVE_CACHE_POLICY" in e for e in guard._cook_subaction_errors(tmp_path))
+
+
+def test_cook_subaction_budgets_cannot_exceed_the_family_total(monkeypatch) -> None:
+    monkeypatch.setattr(
+        guard, "COOK_SUBACTION_BUDGETS", {"a.yml:x": 400_000_000, "b.yml:y": 400_000_000}
+    )
+    errors = guard._cook_subaction_errors(guard.ROOT)
+    assert any("COOK_SUBACTION_TOTAL_BUDGET_BYTES" in e for e in errors), errors

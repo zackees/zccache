@@ -35,6 +35,12 @@ Fails when:
   lock-transition re-seed past the pre-prune target.  Such a step must set
   ``prebuild-deps: none`` or ``LINUX_ONLY_COOK`` for its OS context.
 
+* a standalone ``setup-soldr/cook`` sub-action step is not listed in
+  ``COOK_SUBACTION_BUDGETS`` (a new cache family needs a measured budget before
+  it lands, #1850), can run off Linux, keeps the cook-delta layer, saves outside
+  ``SAVE_CACHE_POLICY``, or the listed budgets exceed
+  ``COOK_SUBACTION_TOTAL_BUDGET_BYTES``.
+
 The repository-wide cache total is checked separately, online, by
 ``ci/check_cache_budget.py``.
 
@@ -227,6 +233,16 @@ LINUX_ONLY_COOK = "${{ startsWith(%s, 'ubuntu') && 'soldr-cook' || 'none' }}"
 LINUX_ONLY_REUSABLE = {
     "ci-check-cross.yml": "called only from ci-linux.yml, on ubuntu runners",
 }
+# #1850: standalone `setup-soldr/cook` sub-action call sites. Each writes its
+# own cook-base entry (flags are hashed into the key), on every Linux arch the
+# job runs on. `workflow.yml:job` -> measured bytes across all legs. #1838's
+# Linux nextest test-deps cook measured 279,507,264 (x64) + 276,840,157
+# (arm64) B on 2026-09-30; budget rounds up with headroom.
+COOK_SUBACTION_BUDGETS: dict[str, int] = {
+    "ci-check.yml:test": 600_000_000,
+}
+COOK_SUBACTION_TOTAL_BUDGET_BYTES = 600_000_000
+COOK_SUBACTION_LINUX_ONLY_IF = "startsWith(inputs.os, 'ubuntu')"
 SHAPE_INPUTS = (
     "toolchain",
     "prebuild-deps",
@@ -484,6 +500,50 @@ def _act_save_policy_errors(steps: list[Step]) -> list[str]:
     return errors
 
 
+def _cook_subaction_errors(root: Path) -> list[str]:
+    """#1850: every standalone cook step is budgeted, Linux-only and main-saved."""
+    errors: list[str] = []
+    seen: set[str] = set()
+    save_policy = _normal_expression(SAVE_CACHE_POLICY)
+    for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for job_name, job in (doc.get("jobs") or {}).items():
+            for index, raw in enumerate(job.get("steps") or []):
+                if not str(raw.get("uses", "")).startswith(f"{ACTION}/cook@"):
+                    continue
+                where = f"{path.name}:{job_name}"
+                seen.add(where)
+                if where not in COOK_SUBACTION_BUDGETS:
+                    errors.append(
+                        f"{where}#{index} is a setup-soldr/cook cache family with no "
+                        "budget; measure it and add it to COOK_SUBACTION_BUDGETS (#1850)"
+                    )
+                if _normal_expression(raw.get("if", "")) != _normal_expression(
+                    COOK_SUBACTION_LINUX_ONLY_IF
+                ):
+                    errors.append(
+                        f"{where}#{index} must be gated on {COOK_SUBACTION_LINUX_ONLY_IF!r}: "
+                        "cook bases are Linux-only (#1758)"
+                    )
+                inputs = raw.get("with") or {}
+                if str(inputs.get("cook-delta", "")).strip().lower() != "false":
+                    errors.append(f"{where}#{index} must set cook-delta: false")
+                if _normal_expression(inputs.get("save-cache", "")) != save_policy:
+                    errors.append(
+                        f"{where}#{index} must use SAVE_CACHE_POLICY for save-cache"
+                    )
+    if root.resolve() == ROOT:
+        for where in sorted(set(COOK_SUBACTION_BUDGETS) - seen):
+            errors.append(f"{where} lists a cook budget but has no setup-soldr/cook step")
+    total = sum(COOK_SUBACTION_BUDGETS.values())
+    if total > COOK_SUBACTION_TOTAL_BUDGET_BYTES:
+        errors.append(
+            f"setup-soldr/cook budgets total {total} B, over the "
+            f"{COOK_SUBACTION_TOTAL_BUDGET_BYTES} B COOK_SUBACTION_TOTAL_BUDGET_BYTES"
+        )
+    return errors
+
+
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     errors.extend(_save_policy_errors())
@@ -492,6 +552,7 @@ def check(root: Path = ROOT) -> list[str]:
     steps = collect(root)
     errors.extend(_non_linux_cook_errors(steps))
     errors.extend(_act_save_policy_errors(steps))
+    errors.extend(_cook_subaction_errors(root))
 
     refs = sorted({s.ref for s in steps})
     if len(refs) > 1:
