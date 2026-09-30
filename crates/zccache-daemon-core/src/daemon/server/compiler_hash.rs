@@ -24,7 +24,10 @@ use std::io::Write as _;
 ///
 /// Bump on any layout change to the `Persisted*` types so the loader
 /// rejects older / newer snapshots instead of mis-decoding them.
-pub(super) const FORMAT_VERSION: u32 = 2;
+///
+/// 3: rustc identities also hash the compiler executable (see
+/// [`rustc_vv_identity`]); older entries hold `-vV`-only identities.
+pub(super) const FORMAT_VERSION: u32 = 3;
 
 /// Env override (milliseconds) for the `<compiler> -vV` identity probe
 /// timeout. See [`rustc_probe_timeout`].
@@ -596,12 +599,41 @@ fn warn_rustc_identity_fallback(path: &Path, reason: &'static str) {
     );
 }
 
+/// The identity of a rustc whose `-vV` probe succeeded: its `-vV` output plus
+/// the content hash of the executable itself.
+///
+/// `-vV` alone is not enough. Two builds of the same release print the same
+/// version, commit hash and LLVM version, yet can produce different artifacts:
+/// nixpkgs' rustc links proc-macros against a shared `libstd` with a nix
+/// RUNPATH, while rustup's links std statically. Keyed on `-vV` alone, a
+/// proc-macro built by one is served to the other, whose rustc then cannot
+/// load it (`libstd-<hash>.so: cannot open shared object file`). The
+/// executable is small (the compiler proper lives in `librustc_driver`), so
+/// hashing it is cheap, and the result is memoized by `(mtime, size)`.
+fn rustc_vv_identity(path: &Path, vv_output: &[u8]) -> ContentHash {
+    let mut hasher = crate::hash::StreamHasher::new();
+    hasher.update(vv_output);
+    match crate::hash::hash_file(path) {
+        Ok(executable) => {
+            hasher.update(executable.as_bytes());
+        }
+        Err(error) => {
+            tracing::warn!(
+                compiler = %path.display(),
+                %error,
+                "could not hash the rustc executable; its identity uses `-vV` output only"
+            );
+        }
+    }
+    hasher.finalize()
+}
+
 fn rustc_identity(path: &Path) -> Option<RustcIdentity> {
     let cmd = kernal_api::SpawnSpec::new(path).arg("-vV");
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
         ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => Some(
-            RustcIdentity::VerifiedVv(crate::hash::hash_bytes(&output.stdout)),
+            RustcIdentity::VerifiedVv(rustc_vv_identity(path, &output.stdout)),
         ),
         ProbeOutcome::TimedOut => {
             warn_probe_timeout(path, timeout);
@@ -630,7 +662,7 @@ async fn rustc_identity_async(path: std::path::PathBuf) -> Option<RustcIdentity>
     let timeout = rustc_probe_timeout();
     match output_within_async(cmd, timeout).await {
         ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => Some(
-            RustcIdentity::VerifiedVv(crate::hash::hash_bytes(&output.stdout)),
+            RustcIdentity::VerifiedVv(rustc_vv_identity(&path, &output.stdout)),
         ),
         ProbeOutcome::TimedOut => {
             warn_probe_timeout(&path, timeout);
@@ -659,7 +691,9 @@ async fn rustc_identity_async(path: std::path::PathBuf) -> Option<RustcIdentity>
 /// over a full blake3 over the binary. `-vV` prints the toolchain
 /// version + commit hash + LLVM version + host triple — all the bits
 /// the cache key must vary on — and runs in ~10 ms vs ~50-60 ms for
-/// the ~150 MB binary blake3 (issue #517).
+/// the ~150 MB binary blake3 (issue #517). The small rustc executable is
+/// hashed too, so different builds of one release stay apart (see
+/// [`rustc_vv_identity`]).
 ///
 /// Falls back to the file-content hash on spawn failure, non-zero
 /// exit, or empty stdout so cache keys are still well-defined for
@@ -671,7 +705,7 @@ pub(super) fn hash_rustc_identity(path: &Path) -> Option<ContentHash> {
     let timeout = rustc_probe_timeout();
     match output_within(cmd, timeout) {
         ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
-            Some(crate::hash::hash_bytes(&output.stdout))
+            Some(rustc_vv_identity(path, &output.stdout))
         }
         // A hung wrapper compiler: log it, then fall through to the
         // file-content hash so cache-key computation is never blocked (#972).
@@ -778,7 +812,7 @@ pub(super) async fn hash_rustc_identity_async(path: std::path::PathBuf) -> Optio
     let timeout = rustc_probe_timeout();
     match output_within_async(cmd, timeout).await {
         ProbeOutcome::Completed(output) if output.success && !output.stdout.is_empty() => {
-            Some(crate::hash::hash_bytes(&output.stdout))
+            Some(rustc_vv_identity(&path, &output.stdout))
         }
         ProbeOutcome::TimedOut => {
             warn_probe_timeout(&path, timeout);

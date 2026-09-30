@@ -233,7 +233,10 @@ fn hash_rustc_identity_matches_rustc_vv_output_when_rustc_available() {
         .output()
         .expect("rustc -vV must spawn");
     assert!(output.status.success());
-    let expected = crate::hash::hash_bytes(&output.stdout);
+    let mut expected = crate::hash::StreamHasher::new();
+    expected.update(&output.stdout);
+    expected.update(crate::hash::hash_file(rustc.as_path()).unwrap().as_bytes());
+    let expected = expected.finalize();
 
     assert_eq!(identity, expected);
     // And it must NOT match the full-binary hash — that's the whole
@@ -255,6 +258,42 @@ fn hash_rustc_identity_falls_back_to_file_hash_when_spawn_fails() {
     let file_hash = crate::hash::hash_file(&fake_rustc).ok();
 
     assert_eq!(identity, file_hash);
+}
+
+/// Two rustc builds that print the same `-vV` (e.g. rustup's and nixpkgs'
+/// rustc of one release) must not share an identity: their proc-macro
+/// artifacts are not interchangeable.
+#[cfg(unix)]
+#[test]
+fn hash_rustc_identity_separates_builds_with_identical_vv_output() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let write_rustc = |name: &str, build_note: &str| {
+        let path = tmp.path().join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n# {build_note}\necho 'rustc 1.98.1 (48a229cea 2026-09-01)'\n\
+                 echo 'release: 1.98.1'\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let rustup = write_rustc("rustc-rustup", "rustup build");
+    let nixpkgs = write_rustc("rustc-nixpkgs", "nixpkgs build");
+
+    let rustup_identity = hash_rustc_identity(&rustup).unwrap();
+    let nixpkgs_identity = hash_rustc_identity(&nixpkgs).unwrap();
+    assert_ne!(rustup_identity, nixpkgs_identity);
+
+    // The same build at another path keeps its identity, so identical
+    // toolchains still share cache entries.
+    let copy = tmp.path().join("rustc-rustup-copy");
+    std::fs::copy(&rustup, &copy).unwrap();
+    assert_eq!(hash_rustc_identity(&copy).unwrap(), rustup_identity);
 }
 
 // ── Issue #517: persisted compiler hash cache ───────────────────────────
