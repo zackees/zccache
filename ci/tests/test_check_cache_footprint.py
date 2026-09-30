@@ -472,3 +472,43 @@ def test_cook_subaction_budgets_cannot_exceed_the_family_total(monkeypatch) -> N
     )
     errors = guard._cook_subaction_errors(guard.ROOT)
     assert any("COOK_SUBACTION_TOTAL_BUDGET_BYTES" in e for e in errors), errors
+
+
+def _dylint_workflow(root: Path, name: str, runs_on: str = "ubuntu-latest", **inputs: str) -> None:
+    fields = {"dylint": "true", **inputs}
+    lines = "".join(f'          {k}: "{v}"\n' for k, v in fields.items())
+    _workflow(
+        root,
+        name,
+        f"  dylint:\n    runs-on: {runs_on}\n    steps:\n"
+        f"      - uses: zackees/setup-soldr@{CURRENT}\n        with:\n{lines}",
+    )
+
+
+def test_budgeted_dylint_output_producer_is_accepted(tmp_path: Path) -> None:
+    _dylint_workflow(tmp_path, "ci.yml")
+    assert guard._dylint_output_errors(tmp_path) == []
+
+
+def test_unbudgeted_dylint_output_producer_is_rejected(tmp_path: Path) -> None:
+    _dylint_workflow(tmp_path, "other.yml")
+    errors = guard._dylint_output_errors(tmp_path)
+    assert any("no budget" in e and "dylint-output" in e for e in errors), errors
+
+
+def test_dylint_output_producer_must_be_linux_only(tmp_path: Path) -> None:
+    _dylint_workflow(tmp_path, "ci.yml", runs_on="windows-latest")
+    assert any("Linux" in e for e in guard._dylint_output_errors(tmp_path))
+
+
+def test_dylint_output_cache_opt_out_needs_no_budget(tmp_path: Path) -> None:
+    _dylint_workflow(tmp_path, "other.yml", **{"dylint-output-cache": "false"})
+    assert guard._dylint_output_errors(tmp_path) == []
+
+
+def test_dylint_output_budgets_cannot_exceed_the_family_total(monkeypatch) -> None:
+    monkeypatch.setattr(
+        guard, "DYLINT_OUTPUT_BUDGETS", {"ci.yml:dylint": 900_000_000, "b.yml:y": 1}
+    )
+    errors = guard._dylint_output_errors(guard.ROOT)
+    assert any("DYLINT_OUTPUT_TOTAL_BUDGET_BYTES" in e for e in errors), errors

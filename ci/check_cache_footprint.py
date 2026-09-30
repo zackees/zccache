@@ -244,6 +244,17 @@ COOK_SUBACTION_BUDGETS: dict[str, int] = {
 }
 COOK_SUBACTION_TOTAL_BUDGET_BYTES = 300_000_000
 COOK_SUBACTION_LINUX_ONLY_IF = "inputs.os == 'ubuntu-latest'"
+# #1858: a setup-soldr step with `dylint: true` writes a lock-keyed
+# `setup-soldr-dylint-output-v2-*` entry (default `dylint-output-cache: true`),
+# which the pre-prune forecast charges as a re-seed on every Cargo.lock change.
+# `workflow.yml:job` -> measured bytes of one generation. ci.yml:dylint measured
+# 862,838,957 B on linux-x64 (2026-09-30). A new producer needs a measured
+# budget and must stay Linux-only; the cap keeps the honest transition forecast
+# inside the 9.2 GB pre-prune target with room for the other lock-keyed families.
+DYLINT_OUTPUT_BUDGETS: dict[str, int] = {
+    "ci.yml:dylint": 900_000_000,
+}
+DYLINT_OUTPUT_TOTAL_BUDGET_BYTES = 900_000_000
 SHAPE_INPUTS = (
     "toolchain",
     "prebuild-deps",
@@ -545,6 +556,47 @@ def _cook_subaction_errors(root: Path) -> list[str]:
     return errors
 
 
+def _dylint_output_errors(root: Path) -> list[str]:
+    """#1858: every dylint-output producer is budgeted, Linux-only and capped."""
+    errors: list[str] = []
+    seen: set[str] = set()
+    for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for job_name, job in (doc.get("jobs") or {}).items():
+            for index, raw in enumerate(job.get("steps") or []):
+                uses = str(raw.get("uses", ""))
+                if not uses.startswith(f"{ACTION}@"):
+                    continue
+                inputs = raw.get("with") or {}
+                if str(inputs.get("dylint", "")).strip().lower() != "true":
+                    continue
+                if str(inputs.get("dylint-output-cache", "")).strip().lower() == "false":
+                    continue
+                where = f"{path.name}:{job_name}"
+                seen.add(where)
+                if where not in DYLINT_OUTPUT_BUDGETS:
+                    errors.append(
+                        f"{where}#{index} writes a lock-keyed dylint-output cache family "
+                        "with no budget; measure it and add it to DYLINT_OUTPUT_BUDGETS "
+                        "(#1858)"
+                    )
+                if not str(job.get("runs-on", "")).startswith("ubuntu"):
+                    errors.append(
+                        f"{where}#{index} must run on Linux: the dylint-output family is "
+                        "budgeted for linux-x64 only (#1858)"
+                    )
+    if root.resolve() == ROOT:
+        for where in sorted(set(DYLINT_OUTPUT_BUDGETS) - seen):
+            errors.append(f"{where} lists a dylint-output budget but has no dylint step")
+    total = sum(DYLINT_OUTPUT_BUDGETS.values())
+    if total > DYLINT_OUTPUT_TOTAL_BUDGET_BYTES:
+        errors.append(
+            f"dylint-output budgets total {total} B, over the "
+            f"{DYLINT_OUTPUT_TOTAL_BUDGET_BYTES} B DYLINT_OUTPUT_TOTAL_BUDGET_BYTES"
+        )
+    return errors
+
+
 def check(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     errors.extend(_save_policy_errors())
@@ -554,6 +606,7 @@ def check(root: Path = ROOT) -> list[str]:
     errors.extend(_non_linux_cook_errors(steps))
     errors.extend(_act_save_policy_errors(steps))
     errors.extend(_cook_subaction_errors(root))
+    errors.extend(_dylint_output_errors(root))
 
     refs = sorted({s.ref for s in steps})
     if len(refs) > 1:

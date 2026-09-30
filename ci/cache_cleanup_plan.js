@@ -364,6 +364,133 @@ function supersededGenerationIds(caches) {
   return superseded;
 }
 
+// #1858: lock-keyed families that re-seed on a Cargo.lock change but were never
+// forecast. Each parser is strict; unknown formats in an owned namespace fail
+// the forecast closed (see `unknownOwnedCacheKey`).
+//
+// `setup-soldr-dylint-output-v2-<os>-<arch>-<nonlock>-<lock>`: `<nonlock>` hashes
+// the toolchain identity, driver revision, cargo config, workspace manifests,
+// target shape and suffix; `<lock>` is the Cargo.lock hash. The producer's
+// restore-key drops only `<lock>`, so a prior generation is a warm fallback only
+// for the same `<nonlock>`.
+function dylintOutputKeyParts(key) {
+  const match =
+    /^setup-soldr-dylint-output-v2-(linux|macos|windows)-(x64|arm64)-([0-9a-f]{16})-([0-9a-f]{16})$/i.exec(
+      key,
+    );
+  if (!match) return null;
+  return {
+    os: match[1].toLowerCase(),
+    arch: match[2].toLowerCase(),
+    shape: match[3].toLowerCase(),
+    lockHash: match[4].toLowerCase(),
+  };
+}
+
+// zccache-action bench entries (`action.yml` registry-key / target-key with
+// shared-key `bench`). The registry key restores across locks
+// (`registry-restore` is the prefix without the lock); the target restore key
+// embeds the lock, so an old-lock target entry can never be restored.
+function benchLockedKeyParts(key) {
+  const registry =
+    /^cargo-registry-(linux|macos|windows)-(x64|arm64)-bench-([0-9a-f]{16})$/i.exec(key);
+  if (registry) {
+    return {
+      kind: "bench-registry", os: registry[1].toLowerCase(), arch: registry[2].toLowerCase(),
+      shape: "", lockHash: registry[3].toLowerCase(), crossLockRestore: true,
+    };
+  }
+  const target =
+    /^cargo-target-(linux|macos|windows)-(x64|arm64)-bench-([0-9a-f]{16})-[0-9a-f]{40}$/i.exec(key);
+  if (target) {
+    return {
+      kind: "bench-target", os: target[1].toLowerCase(), arch: target[2].toLowerCase(),
+      shape: "", lockHash: target[3].toLowerCase(), crossLockRestore: false,
+    };
+  }
+  return null;
+}
+
+// Lock-independent families the transition forecast deliberately ignores. They
+// still need a strict parser so a producer format change is reviewed rather
+// than silently unmodelled.
+const IGNORED_OWNED_KEY_PATTERNS = [
+  // dylint foundation: host triple + tool/toolchain/driver identity, no lock.
+  // v1 is the pre-dylint-mode producer (seen in the #1758 fixture): it hashes
+  // Cargo.lock into an opaque digest, so it cannot be lock-matched here; no
+  // first-party job produces it today.
+  /^setup-soldr-dylint-v[12]-(?:linux|macos|windows)-(?:x64|arm64)-[a-z0-9_]+(?:-[a-z0-9_]+)+?-[0-9a-f]{16}(?:-[a-z0-9._-]+)?$/i,
+  // cross-compiler prepare archives: target, soldr repo, soldr version.
+  /^setup-soldr-prepare-v3-(?:linux|macos|windows)-(?:x64|arm64)-[a-z0-9_-]+?-r[0-9a-f]{16}-s[0-9a-f]{16}(?:-x[a-z0-9._-]+)?$/i,
+  /^soldr-mini-v2-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+-v[0-9.]+$/i,
+  // Retired producer; deleted by planCountPrune, never re-seeded.
+  /^cook-delta-v2-/i,
+];
+
+// Owned namespaces: a main-ref key here must match a known family, or the
+// forecast fails closed. Other keys (sccache/, setup-uv-, per-commit zccache-*)
+// are content- or commit-addressed and are covered by the in-flight reserve.
+function unknownOwnedCacheKey(key) {
+  const owned =
+    /^(?:setup-soldr-|soldr-mini-|cook-)/i.test(key) ||
+    /^cargo-(?:registry|target)-.+-bench-/i.test(key);
+  if (!owned) return false;
+  return !(
+    parseCookBaseKey(key) ||
+    setupSoldrCargoRegistryKeyParts(key) ||
+    setupSoldrBuildCacheKeyParts(key) ||
+    dylintOutputKeyParts(key) ||
+    benchLockedKeyParts(key) ||
+    IGNORED_OWNED_KEY_PATTERNS.some((pattern) => pattern.test(key))
+  );
+}
+
+function newestGenerationFirst(a, b) {
+  const delta = (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0);
+  return delta !== 0 ? delta : (Number(b.id) || 0) - (Number(a.id) || 0);
+}
+
+// #1858: re-seed accounting for lock-keyed families with a single live
+// generation per (kind, os, arch). `stale` are every non-current-lock row
+// (deleted with a passing forecast: one generation per family, never old plus
+// new). `retireFirst` are the rows that no producer can restore or re-seed (an
+// old lock beside a current-lock generation, an older `<nonlock>` shape, or an
+// old-lock target entry); they are safe to delete before the verdict.
+// `chargeBytes` is one re-seed per family that has no current-lock generation.
+function planLockKeyedReseeds(rows, currentHashes) {
+  const families = new Map();
+  for (const row of rows) {
+    const family = `${row.kind}\u0000${row.parts.os}\u0000${row.parts.arch}`;
+    const group = families.get(family) || [];
+    group.push(row);
+    families.set(family, group);
+  }
+  const stale = [];
+  const retireFirst = [];
+  let chargeBytes = 0;
+  for (const group of families.values()) {
+    const isCurrent = (row) => currentHashes.get(row.parts.os).has(row.parts.lockHash);
+    const staleRows = group.filter((row) => !isCurrent(row));
+    stale.push(...staleRows.map((row) => row.cache));
+    if (group.some(isCurrent)) {
+      retireFirst.push(...staleRows.map((row) => row.cache));
+      continue;
+    }
+    const sorted = group.slice().sort((a, b) => newestGenerationFirst(a.cache, b.cache));
+    const newest = sorted[0];
+    const liveRows = group.filter((row) => row.parts.shape === newest.parts.shape);
+    if (newest.parts.crossLockRestore === false) {
+      retireFirst.push(...staleRows.map((row) => row.cache));
+    } else {
+      retireFirst.push(
+        ...group.filter((row) => row.parts.shape !== newest.parts.shape).map((row) => row.cache),
+      );
+    }
+    chargeBytes += Math.max(...liveRows.map((row) => Number(row.cache.size_in_bytes) || 0));
+  }
+  return { stale, retireFirst, chargeBytes };
+}
+
 function planLockTransitionPrePrune(
   caches,
   currentRootLockHashes,
@@ -390,6 +517,9 @@ function planLockTransitionPrePrune(
     }
     if (cache.key.startsWith("setup-soldr-buildcache-") && !setupSoldrBuildCacheKeyParts(cache.key)) {
       return fail(`unknown build-cache key format: ${cache.key}`);
+    }
+    if (unknownOwnedCacheKey(cache.key)) {
+      return fail(`unknown cache key format: ${cache.key}`);
     }
   }
 
@@ -441,7 +571,19 @@ function planLockTransitionPrePrune(
   const supersededCooks = supersededCookBaseIds(mainRows);
   const supersededOthers = supersededGenerationIds(mainRows);
   const supersededOtherRows = mainRows.filter((cache) => supersededOthers.has(cache.id));
+  // #1858: dylint-output and the lock-keyed bench entries re-seed on a lock
+  // change; charge one re-seed per family and retire the unrestorable rows.
+  const reseedRows = mainRows
+    .map((cache) => {
+      const dylint = dylintOutputKeyParts(cache.key);
+      if (dylint) return { cache, kind: "dylint-output", parts: { ...dylint, crossLockRestore: true } };
+      const bench = benchLockedKeyParts(cache.key);
+      return bench ? { cache, kind: bench.kind, parts: bench } : null;
+    })
+    .filter(Boolean);
+  const reseeds = planLockKeyedReseeds(reseedRows, currentHashes);
   const retireFirstIds = [...new Set([
+    ...reseeds.retireFirst.map((cache) => cache.id),
     ...staleCooks
       .filter((cache) => supersededCooks.has(cache.id) || isRetiredMainKey(cache.key))
       .map((cache) => cache.id),
@@ -487,11 +629,12 @@ function planLockTransitionPrePrune(
     : Math.max(0, NATIVE_PYTHON_F9_RESERVE_BYTES - nativePythonObservedBytes);
   const deletedCaches = [...new Map([
     ...staleCooks, ...staleRegistries, ...selectedBuilds, ...retiredBuilds, ...orphanedBuilds,
-    ...supersededOtherRows,
+    ...supersededOtherRows, ...reseeds.stale,
   ].map((cache) => [cache.id, cache])).values()];
   const deletedBytes = deletedCaches
     .reduce((sum, cache) => sum + (Number(cache.size_in_bytes) || 0), 0);
-  const newBytes = cookEstimate + registryEstimate + buildEstimate + nativePythonReserve;
+  const newBytes = cookEstimate + registryEstimate + buildEstimate + nativePythonReserve +
+    reseeds.chargeBytes;
   const projectedPeakBytes = currentBytes - deletedBytes + newBytes;
   if (projectedPeakBytes > targetBytes) {
     return {
@@ -680,7 +823,9 @@ module.exports = {
   TRANSITION_BUILD_CACHE_FALLBACKS,
   TRANSITION_BUILD_CACHE_PROFILES,
   cacheShape,
+  benchLockedKeyParts,
   cargoLockHashes,
+  dylintOutputKeyParts,
   effectiveCacheBytes,
   inFlightWriterReserveBytes,
   isRetiredMainKey,
@@ -690,10 +835,12 @@ module.exports = {
   planHardCap,
   parseCookBaseKey,
   planCookBasePrune,
+  planLockKeyedReseeds,
   planLockTransitionPrePrune,
   setupSoldrCargoRegistryKeyParts,
   setupSoldrBuildCacheKeyParts,
   supersededBuildCacheIds,
   supersededCookBaseIds,
   supersededGenerationIds,
+  unknownOwnedCacheKey,
 };
