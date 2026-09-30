@@ -5,6 +5,8 @@
 //! focused submodules so soldr-facing wrapper changes do not touch every layer.
 
 mod detach_outputs;
+#[cfg(test)]
+mod detach_outputs_tests;
 mod diag;
 mod env;
 pub(crate) mod ipc;
