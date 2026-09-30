@@ -11,6 +11,8 @@ from ci.publish_amalgamate import (
     INTERNAL_MODULES,
     AmalgamatedModule,
     drop_python_extension_bindings,
+    internal_manifest_dependencies,
+    merge_internal_dependencies,
     prepare_zccache_crate_for_publish,
     rewrite_rust_source_for_amalgamation,
     rewrite_zccache_manifest,
@@ -211,6 +213,13 @@ sha2 = { workspace = true, optional = true }
 
     core_src = root / "crates" / "zccache-core" / "src"
     core_src.mkdir(parents=True)
+    (core_src.parent / "Cargo.toml").write_text(
+        "[dependencies]\nmemchr = { workspace = true }\n", encoding="utf-8"
+    )
+    (root / "crates" / "zccache-hash").mkdir(parents=True)
+    (root / "crates" / "zccache-hash" / "Cargo.toml").write_text(
+        "[dependencies]\nsha2 = { workspace = true }\n", encoding="utf-8"
+    )
     (core_src / "lib.rs").write_text(
         "pub mod config;\nuse zccache_hash::ContentHash;\n",
         encoding="utf-8",
@@ -275,6 +284,9 @@ sha2 = { workspace = true, optional = true }
         encoding="utf-8"
     )
     assert "zccache-core =" not in (zccache / "Cargo.toml").read_text(encoding="utf-8")
+    merged = tomllib.loads((zccache / "Cargo.toml").read_text(encoding="utf-8"))
+    assert merged["dependencies"]["memchr"] == {"workspace": True}
+    assert merged["dependencies"]["sha2"] == {"workspace": True}
 
 
 def test_release_metadata_allows_only_public_zccache_crate(
@@ -341,3 +353,47 @@ def test_facade_kernal_api_features_cover_internal_crates() -> None:
         "kernal-api features list, or `cargo package -p zccache` fails during "
         "the release."
     )
+
+
+def test_merged_manifest_declares_every_inlined_crate_dependency(
+    tmp_path: Path,
+) -> None:
+    """Regression for the 1.15.0 crates.io verify failure (#1844).
+
+    `sha2` (daemon-core) and `memchr` (depgraph) were used by inlined sources
+    but the packaged `zccache` manifest did not declare them (or only as
+    optional), so `cargo package` verification failed to compile.
+    """
+
+    repo = Path(__file__).parents[2]
+    manifest_path = tmp_path / "Cargo.toml"
+    shutil.copyfile(repo / "crates" / "zccache" / "Cargo.toml", manifest_path)
+    module_map = {module.crate: module.module for module in INTERNAL_MODULES}
+    rewrite_zccache_manifest(manifest_path, module_map)
+    merge_internal_dependencies(manifest_path, repo, INTERNAL_MODULES)
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+
+    declared: dict[str, object] = dict(manifest["dependencies"])
+    for table in manifest.get("target", {}).values():
+        declared.update(table.get("dependencies", {}))
+
+    for module in INTERNAL_MODULES:
+        unconditional = not module.declaration.lstrip().startswith("#[cfg")
+        source = repo / "crates" / module.crate / "Cargo.toml"
+        for _section, name, spec in internal_manifest_dependencies(source):
+            if name in module_map:
+                continue
+            assert name in declared, f"{module.crate} needs {name}"
+            source_optional = isinstance(spec, dict) and spec.get("optional")
+            facade_optional = isinstance(declared[name], dict) and declared[name].get(
+                "optional"
+            )
+            if unconditional and not source_optional:
+                assert not facade_optional, f"{name} must not be optional"
+
+    # Every `dep:<name>` feature item must still point at an optional dep.
+    for items in manifest["features"].values():
+        for item in items:
+            if item.startswith("dep:"):
+                dep = declared[item[4:]]
+                assert isinstance(dep, dict) and dep.get("optional"), item

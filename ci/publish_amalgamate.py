@@ -8,6 +8,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import tomllib
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -144,6 +146,7 @@ def prepare_zccache_crate_for_publish(
     write_publish_lib_rs(zccache_src, modules)
     write_publish_build_rs(zccache_dir)
     rewrite_zccache_manifest(zccache_dir / "Cargo.toml", module_map)
+    merge_internal_dependencies(zccache_dir / "Cargo.toml", root, modules)
     assert_publish_crate_is_self_contained(zccache_dir, module_map)
 
 
@@ -293,6 +296,122 @@ def rewrite_zccache_manifest(manifest_path: Path, module_map: dict[str, str]) ->
         text = rewrite_feature_items(text, feature, remove=removals, add=additions)
     text = ensure_build_dependency(text, "prost-build = { workspace = true }")
     text = ensure_build_dependency(text, "protoc-bin-vendored = { workspace = true }")
+    manifest_path.write_text(text, encoding="utf-8")
+
+
+def internal_manifest_dependencies(
+    manifest_path: Path,
+) -> list[tuple[str, str, object]]:
+    """Return `(section, name, spec)` for each external dep a manifest declares.
+
+    `section` is `dependencies` or `target.<cfg>.dependencies`. Dev and build
+    dependencies are excluded: dev deps are not shipped and the amalgamated
+    build script is generated separately.
+    """
+
+    data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    found: list[tuple[str, str, object]] = [
+        ("dependencies", name, spec)
+        for name, spec in data.get("dependencies", {}).items()
+    ]
+    for target, table in data.get("target", {}).items():
+        found.extend(
+            (f"target.{target}.dependencies", name, spec)
+            for name, spec in table.get("dependencies", {}).items()
+        )
+    return found
+
+
+def _toml_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return (
+            "{ " + ", ".join(f"{k} = {_toml_value(v)}" for k, v in value.items()) + " }"
+        )
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def render_dependency_line(name: str, spec: object) -> str:
+    return f"{name} = {_toml_value(spec)}"
+
+
+def _section_header(section: str) -> str:
+    if section == "dependencies":
+        return "[dependencies]"
+    target = section[len("target.") : -len(".dependencies")]
+    return f"[target.'{target}'.dependencies]"
+
+
+def _is_optional(spec: object) -> bool:
+    return isinstance(spec, dict) and spec.get("optional") is True
+
+
+def merge_internal_dependencies(
+    manifest_path: Path,
+    root: Path,
+    modules: Sequence[AmalgamatedModule],
+) -> None:
+    """Make the facade manifest declare every external dep the inlined code uses.
+
+    Inlined crate sources compile as modules of `zccache`, so their external
+    dependencies must be declared by the `zccache` manifest. Any dependency an
+    inlined crate declares that the facade lacks is added (with the inlined
+    crate's own spec). A module that is compiled unconditionally (no `cfg`
+    gate) needs its non-optional dependencies to be non-optional in the facade
+    too; the now-dangling `dep:<name>` feature items are dropped.
+    """
+
+    internal = {module.crate for module in modules}
+    text = manifest_path.read_text(encoding="utf-8")
+    declared = tomllib.loads(text)
+    known: dict[str, object] = dict(declared.get("dependencies", {}))
+    for table in declared.get("target", {}).values():
+        known.update(table.get("dependencies", {}))
+
+    additions: dict[str, list[str]] = {}
+    made_required: set[str] = set()
+    for module in modules:
+        unconditional = not module.declaration.lstrip().startswith("#[cfg")
+        source_manifest = root / "crates" / module.crate / "Cargo.toml"
+        for section, name, spec in internal_manifest_dependencies(source_manifest):
+            if name in internal:
+                continue
+            if isinstance(spec, dict) and "path" in spec:
+                raise RuntimeError(
+                    f"{module.crate} depends on non-inlined path crate {name}; "
+                    "add it to INTERNAL_MODULES"
+                )
+            if name not in known:
+                additions.setdefault(section, []).append(
+                    render_dependency_line(name, spec)
+                )
+                known[name] = spec
+            elif unconditional and not _is_optional(spec) and _is_optional(known[name]):
+                made_required.add(name)
+
+    for name in sorted(made_required):
+        text = re.sub(
+            rf"(?m)^({re.escape(name)}\s*=\s*\{{[^\n]*?)(?:,\s*optional\s*=\s*true|optional\s*=\s*true\s*,\s*)",
+            r"\1",
+            text,
+            count=1,
+        )
+        text = re.sub(rf'\s*"dep:{re.escape(name)}",?', "", text)
+        text = re.sub(r",\s*\]", "]", text)
+    for section, lines in additions.items():
+        header = _section_header(section)
+        block = "\n".join(lines)
+        if header in text:
+            text = insert_into_section(text, header, block)
+        else:
+            marker = re.search(
+                r"(?m)^\[(?:dev-dependencies|\[bench\]|\[bin\]|lints)", text
+            )
+            at = marker.start() if marker else len(text)
+            text = text[:at] + f"{header}\n{block}\n\n" + text[at:]
     manifest_path.write_text(text, encoding="utf-8")
 
 
