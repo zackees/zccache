@@ -393,9 +393,21 @@ The ordered tiers are:
    rustc run outside zccache (plain `cargo`, rust-analyzer, `ZCCACHE_DISABLE=1`)
    passes its `check_file_is_writeable` and renames over the output instead of
    failing (#1791). The file's group can write it; digest verification still
-   refuses a modified blob. Windows keeps the `READONLY` attribute, so a
-   wrapper-less rustc over a hardlinked output still fails there until the
-   ACL-based equivalent lands (#1791).
+   refuses a modified blob. Windows keeps the `READONLY` attribute
+   (there is no mode-bit equivalent, and a deny-write ACE is native code that
+   belongs in kernal-api, not zccache), so a wrapper-less rustc over a
+   hardlinked output still fails there: the probe test
+   `wrapperless_rustc_rebuild_after_a_hit_in_every_mode` pins the refusal.
+   Under `ZCCACHE_DISABLE=1` the wrapper instead copy-detaches the read-only
+   outputs named by the rustc invocation (`--out-dir`/`-o`, filtered by
+   `--crate-name` + `extra-filename`) before exec'ing rustc
+   (`wrap/detach_outputs.rs`), briefly clearing the shared attribute only if
+   Windows refuses the delete; the daemon re-seals on the next hit and digest
+   verification guards the blob meanwhile. A plain `cargo`/rust-analyzer
+   rebuild on Windows over a hardlinked hit stays open (#1791); the sanctioned
+   mitigation is `ZCCACHE_MODE=AUTO`/`COPY`, which does not hardlink. In-place
+   writes by the owner are refused on every platform (pinned by the same
+   test).
    Each stored blob carries a durable digest so a restarted daemon can rebuild
    the in-memory ledger safely even when prior aliases were deleted. Watcher
    changes mark entries suspect; the next hit hashes the blob and refuses a

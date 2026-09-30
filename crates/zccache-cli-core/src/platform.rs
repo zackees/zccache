@@ -19,7 +19,7 @@ pub(crate) mod fs {
 
     #[cfg(feature = "cli")]
     pub(crate) mod permissions {
-        pub(crate) use kernal_api::platform::fs::make_executable;
+        pub(crate) use kernal_api::platform::fs::{make_executable, set_readonly};
     }
 
     #[cfg(feature = "cli")]

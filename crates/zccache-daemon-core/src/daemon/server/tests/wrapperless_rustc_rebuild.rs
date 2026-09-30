@@ -8,8 +8,12 @@
 //! succeed. Where LINK or REFLINK_OR_LINK_OR_COPY actually hardlinks, the
 //! shared file is sealed `r--rw-r--` on Unix (#1791): rustc sees a writable
 //! output and renames over it, while the owner's in-place writes are still
-//! refused. Windows keeps the READONLY attribute, so a hardlinked delivery
-//! there still hits rustc's refusal until the ACL follow-up in #1791.
+//! refused. Windows keeps the READONLY attribute (an ACL deny ACE would need
+//! a kernal-api capability), so a hardlinked delivery there still hits rustc's
+//! refusal; that is pinned below, and the `ZCCACHE_DISABLE` wrapper avoids it
+//! by detaching the outputs first (`wrap/detach_outputs.rs`, #1791).
+//! On every platform a shared output must still refuse the owner's in-place
+//! write.
 
 use super::super::*;
 use std::process::{Command, Output};
@@ -146,7 +150,7 @@ fn hit_then_wrapperless_rebuild(
     .unwrap();
     for (output, (blob, original)) in outputs.iter().zip(blobs) {
         let shared = crate::platform::fs::identity::same_file(output, &blob).unwrap();
-        if shared && !kernal_api::platform::host::target_is_windows() && !privileged(root) {
+        if shared && !privileged(root) {
             assert!(
                 std::fs::OpenOptions::new()
                     .append(true)

@@ -4,6 +4,7 @@
 //! resolution, rustfmt caching, and IPC request/response handling live in
 //! focused submodules so soldr-facing wrapper changes do not touch every layer.
 
+mod detach_outputs;
 mod diag;
 mod env;
 pub(crate) mod ipc;

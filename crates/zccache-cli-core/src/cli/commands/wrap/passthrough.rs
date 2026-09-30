@@ -51,6 +51,12 @@ pub(super) fn run_passthrough(args: &[String], reason: Option<&str>) -> ExitCode
     let tool_args = args.get(1..).unwrap_or(&[]);
     let resolved = resolve_compiler_path(tool);
 
+    // #1791: a hit's read-only hardlinked output would make rustc refuse to
+    // replace it (Windows). Only the user-visible ZCCACHE_DISABLE bypass.
+    if reason.is_some() && super::detach_outputs::is_rustc(&resolved) {
+        super::detach_outputs::detach_readonly_rustc_outputs(tool_args);
+    }
+
     if let Some(reason) = reason {
         let warning = format!(
             "zccache[warn][F]: {reason}; running {} directly, uncached\n",

@@ -62,8 +62,9 @@ pub(crate) mod fs {
         /// the owner's in-place writes while rustc sees a writable file and
         /// renames over it. The cost is that the file's group may write it;
         /// digest verification still refuses a modified blob before serving.
-        /// Windows keeps the `READONLY` attribute; an ACL-based equivalent is
-        /// the remaining part of #1791.
+        /// Windows keeps the `READONLY` attribute: an ACL deny ACE is native
+        /// code that must live in kernal-api, and the `ZCCACHE_DISABLE`
+        /// wrapper copy-detaches outputs instead (#1791).
         pub(crate) fn seal_cache_blob(path: &std::path::Path) -> std::io::Result<()> {
             if kernal_api::platform::host::target_is_windows() {
                 return set_readonly(path, true);
