@@ -42,7 +42,18 @@ steps:
 | `target-dir` | `target` | Path to the cargo target directory |
 | `shared-key` | `""` | Extra cache key for matrix isolation |
 | `zccache-version` | `latest` | Version to install; use `source` to build the checked-out repo |
-| `save-cache` | `true` | Set `false` for PR builds (restore-only) |
+| `save-cache` | `auto` | `auto` skips saves on GitHub-hosted `pull_request` runs and saves otherwise; on a local runner it always saves. `true` always saves, `false` never saves. See [Save policy](#save-policy) |
+
+## Save policy
+
+`save-cache` is resolved once at setup by `ci/save_cache_policy.py`, which logs a single line such as
+`save-policy: runner=local (ACT=true) mode=auto → save`.
+
+- `true` / `false`: always / never save, on every runner.
+- `auto` (default) on a GitHub-hosted runner: skip when `GITHUB_EVENT_NAME` is `pull_request` (the entry is scoped to `refs/pull/N/merge` and counts against the 10 GB budget), save otherwise.
+- `auto` on a local runner: always save, because local cache servers (act/bosn) have no ref scoping and no budget.
+
+A runner is local when `ACT == "true"`, or `ACTIONS_CACHE_URL` / `ACTIONS_RESULTS_URL` points at a loopback, private or link-local address. This is the same rule as `zackees/setup-soldr#537`, so both actions agree. Consumers should pass `auto` (or nothing) rather than an event expression such as `github.event_name != 'pull_request'`, which would keep local runs cold.
 
 ## Outputs
 

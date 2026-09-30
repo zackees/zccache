@@ -1053,7 +1053,7 @@ How it works:
 | `target-dir` | `target` | Path to the cargo target directory |
 | `shared-key` | `""` | Extra key for matrix isolation (typically the target triple) |
 | `zccache-version` | `latest` | Version to install |
-| `save-cache` | `true` | Set `false` for PR builds (restore-only, saves cache budget) |
+| `save-cache` | `auto` | `auto` skips saves on GitHub-hosted PRs and saves otherwise (always on local runners); `true`/`false` always/never save. See [Save policy](action/README.md#save-policy) |
 
 ### Restore policy
 

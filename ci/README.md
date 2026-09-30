@@ -6,6 +6,7 @@ Python scripts for development tooling. Rust commands go through `soldr <tool>` 
 
 - **`uv run --no-project python ci/incremental_build.py --samples 5 --output incremental-build.json`** - Measures warm rebuilds after touching compile, link, exec, connection, and shared-state surfaces. Records timing distributions, rebuilt packages, and aggregate process-tree RSS.
 - **`uv run --no-project python ci/compile_boundary.py`** - Reports compile-handler references to server-private symbols and rejects new glob imports. Pass `--deny-all-globs` after the remaining legacy imports are removed.
+- **`ci/save_cache_policy.py`** - Resolves the zccache Action's `save-cache: auto|true|false` (default `auto`) once per job: skip on GitHub-hosted `pull_request`, always save on local runners (act/bosn). See `action/README.md` (#1783)
 - **`./lint`** - Workspace linting (rustfmt + clippy), supports single-file mode
 - **`./test`** - Workspace tests, supports per-crate filtering
 - **`./perf.sh`** - Performance benchmarks (zccache vs sccache vs bare clang)

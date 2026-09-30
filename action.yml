@@ -90,10 +90,12 @@ inputs:
     default: "latest"
   save-cache:
     description: >
-      Whether to save caches at the end. Set to "false" for PR builds
-      where you only want to restore (saves GHA cache budget).
+      Whether to save caches at the end: "auto", "true" or "false".
+      "auto" (default) skips saves on GitHub-hosted pull_request runs (saves
+      GHA cache budget) and saves otherwise; on a local runner (act/bosn) it
+      always saves. "true" always saves, "false" never saves.
     required: false
-    default: "true"
+    default: "auto"
 
 outputs:
   cache-hit-compilation:
@@ -560,6 +562,24 @@ runs:
       run: |
         echo "RUSTC_WRAPPER=zccache" >> "$GITHUB_ENV"
 
+    # --- Resolve save-cache (auto -> true/false), logged once (#1783) ---
+    - name: Resolve save-cache policy
+      id: save-policy
+      shell: bash
+      env:
+        INPUT_SAVE_CACHE: ${{ inputs.save-cache }}
+      run: |
+        # Python is required for the runner-aware `auto` decision; without
+        # it fall back to the pre-#1783 behavior (save) and say so.
+        PY="$(command -v python3 || command -v python || true)"
+        if [ -z "$PY" ]; then
+          echo "save-policy: python not found, falling back to save-cache=true" >&2
+          echo "save=true" >> "$GITHUB_OUTPUT"
+        else
+          SAVE="$("$PY" "${{ github.action_path }}/ci/save_cache_policy.py")"
+          echo "save=$SAVE" >> "$GITHUB_OUTPUT"
+        fi
+
     # --- Write state for cleanup action ---
     - name: Save state for cleanup
       shell: bash
@@ -570,7 +590,7 @@ runs:
         echo "${{ steps.keys.outputs.compilation-key }}" > "$STATE_DIR/compilation-key"
         echo "${{ steps.keys.outputs.registry-key }}" > "$STATE_DIR/registry-key"
         echo "${{ steps.keys.outputs.target-key }}" > "$STATE_DIR/target-key"
-        echo "${{ inputs.save-cache }}" > "$STATE_DIR/save-cache"
+        echo "${{ steps.save-policy.outputs.save }}" > "$STATE_DIR/save-cache"
         echo "${{ inputs.cache-compilation }}" > "$STATE_DIR/cache-compilation"
         echo "${{ inputs.cache-cargo-registry }}" > "$STATE_DIR/cache-registry"
         echo "${{ inputs.cache-target }}" > "$STATE_DIR/cache-target"
