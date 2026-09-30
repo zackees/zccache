@@ -125,14 +125,14 @@ def test_transition_pre_prune_retires_dead_generations_first_then_forecasts_and_
     # #1850: superseded generations are deleted BEFORE the forecast verdict,
     # the inventory is re-converged, and the post-delete peak is re-forecast.
     retire = script.index("plan.retireFirstIds")
-    reconverge = script.index("convergeInventory(dead.map((cache) => cache.id))")
+    reconverge = script.index("convergeAfterDeletes(dead.map((cache) => cache.id))")
     verdict = script.index("if (!plan.ok)")
     assert retire < script.index("deleteCache(cache, \"superseded") < reconverge < verdict
     assert reconverge < script.index("plan = planFor(before)", reconverge) < verdict
     # The forecast-dependent transition deletes stay behind the fail-closed verdict.
     assert verdict < script.index("deleteCache(cache, \"forecasted old-lock cache\")")
     assert script.count("deleteActionsCacheById") == 1  # one guarded helper
-    assert "convergeInventory(stale.map((cache) => cache.id))" in script
+    assert "convergeAfterDeletes(stale.map((cache) => cache.id))" in script
     # The planner's fixed profile allowlist, rather than row count, bounds
     # selection: one profile may have several stale lock generations.
     assert "plan.selectedBuildCacheIds.length > 4" not in script
@@ -517,7 +517,7 @@ def test_pre_prune_is_push_only_and_waiter_is_read_only_and_exact_sha() -> None:
     assert 1420 * 15 / 60 < 360
     retire = next(step for step in pre_prune if step.get("name") == "Forecast and retire old-lock cache generations")
     assert "error.status !== 404" in retire["with"]["script"]
-    assert "convergeInventory(stale.map((cache) => cache.id))" in retire["with"]["script"]
+    assert "convergeAfterDeletes(stale.map((cache) => cache.id))" in retire["with"]["script"]
 
 
 def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> None:

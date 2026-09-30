@@ -229,7 +229,10 @@ jobs:
               throw new Error("current Cargo.lock hashes unavailable; refusing pre-prune");
             }
 
-            const convergeInventory = async (mustBeAbsent = []) => {
+            // Pre-delete: the eventually consistent usage counter and the
+            // listing must agree and hold still, so no stale or mid-flight
+            // inventory ever drives a delete.
+            const convergeInventory = async () => {
               let priorSignature = "";
               for (let attempt = 0; attempt < 40; attempt += 1) {
                 if (await branchHead() !== expectedSha) {
@@ -238,10 +241,45 @@ jobs:
                 const inventory = await readInventory();
                 const signature = `${inventory.usageBytes}:${inventory.listedBytes}`;
                 const closeEnough = Math.abs(inventory.usageBytes - inventory.listedBytes) <= 1_000_000;
-                const targetsAbsent = mustBeAbsent.every((id) =>
+                if (closeEnough && signature === priorSignature) return inventory;
+                priorSignature = signature;
+                await sleep(15_000);
+              }
+              throw new Error("cache usage/list did not converge; refusing producer release");
+            };
+
+            // #1854: after our own deletes the usage counter lags the listing
+            // (observed: more than 10 minutes, run 36720817402) while the
+            // listing is already correct. The agreed pre-delete inventory
+            // plus the ids we removed is the accounting, so wait on the
+            // listing only: every deleted id absent and the id/size set
+            // unchanged between two reads. Bytes come from that listing.
+            // Anything still changing after 40 polls fails closed.
+            const convergeAfterDeletes = async (deletedIds) => {
+              const signatureOf = (caches) =>
+                caches.map((cache) => `${cache.id}:${cache.size_in_bytes}`).sort().join(",");
+              let priorSignature = "";
+              for (let attempt = 0; attempt < 40; attempt += 1) {
+                if (await branchHead() !== expectedSha) {
+                  throw new Error("main advanced during pre-prune; refusing stale inventory");
+                }
+                const inventory = await readInventory();
+                const signature = signatureOf(inventory.caches);
+                const absent = deletedIds.every((id) =>
                   inventory.caches.every((cache) => cache.id !== id),
                 );
-                if (closeEnough && signature === priorSignature && targetsAbsent) return inventory;
+                if (absent && signature === priorSignature) {
+                  core.info(
+                    `Post-delete listing settled after ${attempt + 1} reads: ${inventory.caches.length} entries, ` +
+                    `${inventory.listedBytes} listed bytes (usage counter reads ${inventory.usageBytes}; ` +
+                    "the counter lags our own deletes and is not waited on).",
+                  );
+                  return {
+                    usageBytes: inventory.listedBytes,
+                    listedBytes: inventory.listedBytes,
+                    caches: inventory.caches,
+                  };
+                }
                 priorSignature = signature;
                 await sleep(15_000);
               }
@@ -249,7 +287,7 @@ jobs:
             };
 
             // Delete one planned cache; a concurrent delete (404) is verified
-            // absent by the next convergeInventory pass.
+            // absent by the next convergeAfterDeletes pass.
             const deleteCache = async (cache, label) => {
               if (await branchHead() !== expectedSha) {
                 throw new Error("main advanced during deletes; stopping pre-prune");
@@ -280,7 +318,7 @@ jobs:
             if (retireFirst.size > 0) {
               const dead = before.caches.filter((cache) => retireFirst.has(cache.id));
               for (const cache of dead) await deleteCache(cache, "superseded old-generation cache");
-              before = await convergeInventory(dead.map((cache) => cache.id));
+              before = await convergeAfterDeletes(dead.map((cache) => cache.id));
               plan = planFor(before); // forecast the post-delete peak
             }
             if (!plan.ok) {
@@ -301,7 +339,7 @@ jobs:
               throw new Error("main advanced before old-lock deletes; refusing stale plan");
             }
             for (const cache of stale) await deleteCache(cache, "forecasted old-lock cache");
-            const after = await convergeInventory(stale.map((cache) => cache.id));
+            const after = await convergeAfterDeletes(stale.map((cache) => cache.id));
             core.info(
               `Pre-prune verified for ${expectedSha}: ${after.caches.length} entries, ` +
               `${after.listedBytes} listed bytes / ${after.usageBytes} usage bytes. ` +
