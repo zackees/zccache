@@ -236,13 +236,14 @@ LINUX_ONLY_REUSABLE = {
 # #1850: standalone `setup-soldr/cook` sub-action call sites. Each writes its
 # own cook-base entry (flags are hashed into the key), on every Linux arch the
 # job runs on. `workflow.yml:job` -> measured bytes across all legs. #1838's
-# Linux nextest test-deps cook measured 279,507,264 (x64) + 276,840,157
-# (arm64) B on 2026-09-30; budget rounds up with headroom.
+# Linux nextest test-deps cook measured 279,507,264 B on x64 (2026-09-30). Its
+# arm64 leg (276,840,157 B) pushed the lock-transition forecast over the 9.2 GB
+# pre-prune target (#1852), so the step is x64-only.
 COOK_SUBACTION_BUDGETS: dict[str, int] = {
-    "ci-check.yml:test": 600_000_000,
+    "ci-check.yml:test": 300_000_000,
 }
-COOK_SUBACTION_TOTAL_BUDGET_BYTES = 600_000_000
-COOK_SUBACTION_LINUX_ONLY_IF = "startsWith(inputs.os, 'ubuntu')"
+COOK_SUBACTION_TOTAL_BUDGET_BYTES = 300_000_000
+COOK_SUBACTION_LINUX_ONLY_IF = "inputs.os == 'ubuntu-latest'"
 SHAPE_INPUTS = (
     "toolchain",
     "prebuild-deps",

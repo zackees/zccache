@@ -429,7 +429,7 @@ def _cook_workflow(root: Path, body: str) -> None:
 
 def _cook_step(**overrides: str) -> str:
     fields = {
-        "if": "startsWith(inputs.os, 'ubuntu')",
+        "if": guard.COOK_SUBACTION_LINUX_ONLY_IF,
         "cook-delta": "false",
         "save-cache": guard.SAVE_CACHE_POLICY,
     }

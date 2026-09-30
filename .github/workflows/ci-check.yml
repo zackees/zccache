@@ -128,8 +128,10 @@ jobs:
       # because `soldr cook -- --tests` fails with "unknown flag `--tests`").
       # The flags are hashed into the cook-base key, so this job has its own
       # entry instead of sharing the empty-flag one with check/clippy.
+      # Linux x64 only (#1852): the arm64 leg added a 277 MB cook base that
+      # pushed the lock-transition forecast over the 9.2 GB pre-prune target.
       - name: Cook test dependencies
-        if: startsWith(inputs.os, 'ubuntu')
+        if: inputs.os == 'ubuntu-latest'
         uses: zackees/setup-soldr/cook@v0 # v0.9.82 or later (floating major)
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}

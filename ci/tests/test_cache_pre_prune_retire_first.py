@@ -100,14 +100,21 @@ def test_live_1850_inventory_is_forecast_to_fit_after_retiring_dead_generations(
     assert plan["ok"] is True, plan.get("reason")
     assert plan["projectedPeakBytes"] <= TARGET
     by_id = {c["id"]: c["key"] for c in caches}
-    # Only the soldr 0.9.25 generations that a 0.9.26 sibling supersedes.
-    assert sorted(by_id[i] for i in plan["retireFirstIds"]) == [
+    # The soldr 0.9.25 cook generations that a 0.9.26 sibling supersedes (#1852
+    # adds superseded mini/prepare generations and the retired arm64 f6caf leg).
+    cooks = sorted(
+        by_id[i] for i in plan["retireFirstIds"]
+        if by_id[i].startswith("cook-base") and "f6cafa616" not in by_id[i]
+    )
+    assert cooks == [
         "cook-base-v2-linux-arm64-glibc-rustc1.95.0-fnone-l" + OLD_LOCK + "-soldrv0.9.25",
         "cook-base-v2-linux-x64-glibc-rustc1.95.0-f9e7e4902-l" + OLD_LOCK + "-soldrv0.9.25",
         "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l" + OLD_LOCK + "-soldrv0.9.25",
     ]
-    # The lone soldr0.9.25 f6cafa616 (#1838) family has no newer sibling.
-    assert not any("f6cafa616" in by_id[i] for i in plan["retireFirstIds"])
+    # The x64 soldr0.9.25 f6cafa616 (#1838) family has no newer sibling.
+    assert not any(
+        "f6cafa616" in by_id[i] and "linux-x64" in by_id[i] for i in plan["retireFirstIds"]
+    )
     # Retire-first is a subset of the transition deletes, never current keys.
     assert set(plan["retireFirstIds"]) <= set(plan["deleteIds"])
     assert all(OLD_LOCK in by_id[i] for i in plan["deleteIds"] if "cook-base" in by_id[i])
@@ -158,7 +165,7 @@ def test_genuinely_over_budget_generation_still_fails_closed_after_retire_first(
     assert "exceeds transition target" in plan["reason"]
     assert plan["deleteIds"] == []
     assert plan["projectedPeakBytes"] > TARGET
-    assert len(plan["retireFirstIds"]) == 3  # dead generations still retirable
+    assert len(plan["retireFirstIds"]) >= 3  # dead generations still retirable
 
 
 def test_current_generation_cook_bases_are_never_retire_first() -> None:

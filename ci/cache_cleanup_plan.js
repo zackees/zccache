@@ -16,6 +16,9 @@ const RETIRED_MAIN_PATTERNS = [
   // The macOS and Windows generations (~3 GB) pushed a full lock-transition
   // re-seed past the target, so the pre-prune failed closed on every push.
   /^cook-base-v2-(?:macos|windows)-/i,
+  // #1852: the #1838 test-deps cook runs on Linux x64 only; the arm64 leg
+  // (277 MB) pushed the transition forecast over the target and is retired.
+  /^cook-base-v2-linux-arm64-glibc-rustc[0-9.]+-f6cafa616-l[0-9a-f]{16}-soldrv?[0-9.]+$/i,
   /^cook-base-v2-windows-x64-msvc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
   /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23-xdylint$/i,
 ];
@@ -326,6 +329,41 @@ function supersededCookBaseIds(caches) {
   return superseded;
 }
 
+// #1852: lock-independent producer generations that are superseded within
+// their own family. Neither is re-seeded (producers write the newest only), so
+// like superseded cook bases they are retire-first and carry no forecast
+// reserve. `soldr-mini-v2-<os>-<arch>-<libc>-v<soldr>`: the higher soldr wins.
+// `setup-soldr-prepare-v3-...-s<signature>...`: the signature is opaque, so the
+// newest entry of the otherwise identical shape wins.
+function supersededGenerationIds(caches) {
+  const groups = new Map();
+  for (const cache of caches) {
+    if (cache.ref !== "refs/heads/main" || typeof cache.key !== "string") continue;
+    let shape = null;
+    const mini = /^(soldr-mini-v2-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+)-v([0-9.]+)$/i.exec(cache.key);
+    const prepare = /^(setup-soldr-prepare-v3-.+?-)s[0-9a-f]{16}((?:-.+)?)$/i.exec(cache.key);
+    if (mini) {
+      shape = mini[1];
+    } else if (prepare) {
+      shape = prepare[1] + "\u0000" + prepare[2];
+    } else {
+      continue;
+    }
+    const group = groups.get(shape) || [];
+    group.push({ cache, version: mini ? mini[2] : null });
+    groups.set(shape, group);
+  }
+  const superseded = new Set();
+  for (const group of groups.values()) {
+    group.sort((a, b) =>
+      a.version !== null
+        ? compareDotted(b.version, a.version)
+        : Date.parse(b.cache.created_at) - Date.parse(a.cache.created_at));
+    for (const row of group.slice(1)) superseded.add(row.cache.id);
+  }
+  return superseded;
+}
+
 function planLockTransitionPrePrune(
   caches,
   currentRootLockHashes,
@@ -401,10 +439,14 @@ function planLockTransitionPrePrune(
   // the stale set, but unlike the rest of it they are not re-seeded, so the
   // workflow may delete them before (and regardless of) the forecast verdict.
   const supersededCooks = supersededCookBaseIds(mainRows);
-  const retireFirstIds = staleCooks
-    .filter((cache) => supersededCooks.has(cache.id))
-    .map((cache) => cache.id)
-    .sort((a, b) => a - b);
+  const supersededOthers = supersededGenerationIds(mainRows);
+  const supersededOtherRows = mainRows.filter((cache) => supersededOthers.has(cache.id));
+  const retireFirstIds = [...new Set([
+    ...staleCooks
+      .filter((cache) => supersededCooks.has(cache.id) || isRetiredMainKey(cache.key))
+      .map((cache) => cache.id),
+    ...supersededOtherRows.map((cache) => cache.id),
+  ])].sort((a, b) => a - b);
   const cookEstimate = profileBytes(
     mainRows.filter((cache) =>
       cache.key.startsWith("cook-base-v2-") && !isRetiredMainKey(cache.key) &&
@@ -445,6 +487,7 @@ function planLockTransitionPrePrune(
     : Math.max(0, NATIVE_PYTHON_F9_RESERVE_BYTES - nativePythonObservedBytes);
   const deletedCaches = [...new Map([
     ...staleCooks, ...staleRegistries, ...selectedBuilds, ...retiredBuilds, ...orphanedBuilds,
+    ...supersededOtherRows,
   ].map((cache) => [cache.id, cache])).values()];
   const deletedBytes = deletedCaches
     .reduce((sum, cache) => sum + (Number(cache.size_in_bytes) || 0), 0);
@@ -652,4 +695,5 @@ module.exports = {
   setupSoldrBuildCacheKeyParts,
   supersededBuildCacheIds,
   supersededCookBaseIds,
+  supersededGenerationIds,
 };
