@@ -218,6 +218,14 @@ jobs:
           rustup default "$toolchain"
           rustc --version
 
+      # #1861/#1807: record runner hardware identity + contention baseline in
+      # its own step, outside every timed benchmark command.
+      - name: Record runner identity
+        shell: bash
+        env:
+          MATRIX_LABEL: ${{ matrix.label }}
+        run: bash ci/runner_identity.sh begin
+
       # --- Per-test perf guard steps -----------------------------------
       # Each benchmark test gets its own step so the GitHub Actions UI shows
       # per-test timing and failure status. Each step writes its results to
@@ -322,6 +330,13 @@ jobs:
           uv run python -m ci.perf_guard --run-benchmarks --language rust --test perf_rust_workspace_link \
             --attempts 3 --benchmark-binary "$PWD/perf-guard-bin/perf_bench_test" \
             --output-dir perf-guard-output/perf_rust_workspace_link || true
+
+      - name: Record runner contention delta
+        if: always()
+        shell: bash
+        env:
+          MATRIX_LABEL: ${{ matrix.label }}
+        run: bash ci/runner_identity.sh end
 
       - name: Aggregate perf guard results
         id: perf_guard

@@ -19,6 +19,7 @@ from ci import (
     perf_floor,
     perf_precision,
     perf_watchdog,
+    runner_identity,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -991,6 +992,11 @@ def parse_attempt_log(text: str) -> list[dict[str, Any]]:
     return perf_precision.apply_metric_precision(
         benchmark_stats.parse_benchmark_log(text), text
     )
+
+
+def parse_runner_identity(text: str) -> list[dict[str, Any]]:
+    """Parse the runner-identity block(s) from a Perf Guard job log (#1861)."""
+    return runner_identity.parse_runner_identity(text)
 
 
 def _load_input_log(path: Path) -> list[list[dict[str, Any]]]:
