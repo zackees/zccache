@@ -41,6 +41,44 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # GEN-021 verified reuse, SHADOW mode only (zackees/ci.yml#162). It records
+  # whether this main push's tree is byte-identical to a PR head whose Linux
+  # CI passed the jobs listed below, in the job summary. Observation only:
+  # nothing needs this job, `--mode shadow` always reports reuse=false, and
+  # continue-on-error keeps any failure here from turning the run red.
+  # Required jobs: green on both recent PR and main-push runs; the cache
+  # pre-prune barrier is main-push cache plumbing, not validation, so it is
+  # deliberately not a proof requirement.
+  reuse-shadow:
+    name: Verified reuse decision (shadow)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out ci-lint (zackees/ci.yml, pinned)
+        uses: actions/checkout@v6
+        with:
+          repository: zackees/ci.yml
+          ref: b93b8c4a20ce3cd476c75a278ad01a31bde2438b
+          path: .ci-lint
+          persist-credentials: false
+      - name: Verified reuse decision (GEN-021, shadow)
+        working-directory: .ci-lint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -m ci_lint reuse-check --workflow ci-linux.yml --mode shadow
+          --max-age-hours 24
+          --required-job "x86 / Check"
+          --required-job "x86 / Test"
+          --required-job "x86-musl / Check (linux-x86-musl)"
+          --required-job "arm-musl / Check (linux-arm-musl)"
+
   cache-pre-prune:
     name: Cache pre-prune barrier
     uses: ./.github/workflows/wait-cache-pre-prune.yml
