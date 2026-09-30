@@ -1,6 +1,8 @@
 name: Linux
 
 on:
+  # Manual full run (includes native arm64); see the `arm` job.
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:
@@ -54,6 +56,12 @@ jobs:
 
   arm:
     needs: cache-pre-prune
+    # Native arm64 is off the PR and main-push paths: its cook/registry/build
+    # caches were ~1 GB of the repo's 10 GB on main. It runs only on a manual
+    # dispatch (ci-full equivalent), which never saves caches (save-cache is
+    # main-push-only). The arm64 musl cross check below still runs on every
+    # PR and push (cheap, compiles the aarch64 target from the x64 runner).
+    if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/ci-check.yml
     with:
       os: ubuntu-24.04-arm
