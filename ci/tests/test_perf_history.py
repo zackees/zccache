@@ -54,3 +54,17 @@ def test_history_inventory_uses_tracked_surfaces(monkeypatch, tmp_path):
         }
     ]
     assert any(".github/workflows/perf-rust-cluster.yml" in args for call in calls for args in call)
+
+
+def test_regenerating_the_inventory_keeps_hand_recorded_provenance(tmp_path):
+    # #1807: sample provenance lives beside the git-log rows and must survive
+    # `perf_history.py --output ci/perf_threshold_history.json`.
+    path = tmp_path / "history.json"
+    path.write_text(
+        '[{"kind": "warm-floor-provenance", "issue": 1807}, {"commit": "abc", "subject": "x"}]'
+    )
+
+    assert perf_history.curated_entries(path) == [{"kind": "warm-floor-provenance", "issue": 1807}]
+    assert perf_history.curated_entries(tmp_path / "missing.json") == []
+    path.write_text("not json")
+    assert perf_history.curated_entries(path) == []

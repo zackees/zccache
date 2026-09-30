@@ -58,6 +58,22 @@ def history_inventory(repo: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def curated_entries(path: Path) -> list[dict[str, Any]]:
+    """Hand-recorded entries (no `commit`) in an existing inventory file.
+
+    The file is a regenerated git-log inventory, but sample provenance for a
+    threshold change (#1807) is recorded next to it and must survive a
+    regeneration, so those entries are carried over ahead of the commits.
+    """
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(existing, list):
+        return []
+    return [entry for entry in existing if isinstance(entry, dict) and "commit" not in entry]
+
+
 def _flatten(payload: Any, prefix: str = "") -> dict[str, int | float | None]:
     values: dict[str, int | float | None] = {}
     if isinstance(payload, dict):
@@ -119,6 +135,8 @@ def main() -> int:
             print(f"RATCHET FAIL: {violation}")
         return 1 if violations else 0
     payload = history_inventory(args.repo)
+    if args.output:
+        payload = [*curated_entries(args.output), *payload]
     rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")

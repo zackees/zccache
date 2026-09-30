@@ -1,5 +1,146 @@
 [
   {
+    "issue": 1807,
+    "kind": "warm-floor-provenance",
+    "rows": [
+      {
+        "bare_ms": {
+          "max": 62.1,
+          "min": 35.9
+        },
+        "benchmark": "c-static-library-link",
+        "gate": "absolute zccache hit budget 0.9 ms (both baselines)",
+        "n_attempts": 17,
+        "n_runs": 14,
+        "per_run_best_ratio_vs_bare": {
+          "max": 165.2,
+          "median": 142.7,
+          "min": 115.0
+        },
+        "per_run_best_ratio_vs_sccache": {
+          "max": 183.7,
+          "median": 144.6,
+          "min": 111.8
+        },
+        "run_ids": [
+          36493296576,
+          36504459992,
+          36507856283,
+          36519157225,
+          36520159059,
+          36522679106,
+          36525780332,
+          36529823748,
+          36540216239,
+          36679149864,
+          36683332751,
+          36724711217,
+          36732975369,
+          36735417112
+        ],
+        "scenario": "Static archive, Warm",
+        "zccache_hit_ms": {
+          "max": 0.426,
+          "median": 0.376,
+          "min": 0.251,
+          "p90": 0.411
+        }
+      },
+      {
+        "bare_ms": {
+          "max": 70.4,
+          "min": 44.5
+        },
+        "benchmark": "cpp-driver-link",
+        "gate": "absolute zccache hit budget 0.9 ms (both baselines)",
+        "n_attempts": 15,
+        "n_runs": 15,
+        "per_run_best_ratio_vs_bare": {
+          "max": 200.0,
+          "median": 167.8,
+          "min": 103.0
+        },
+        "per_run_best_ratio_vs_sccache": {
+          "max": 216.6,
+          "median": 179.9,
+          "min": 110.2
+        },
+        "run_ids": [
+          36493296576,
+          36495649775,
+          36504459992,
+          36507856283,
+          36519157225,
+          36520159059,
+          36522679106,
+          36525780332,
+          36529823748,
+          36540216239,
+          36679149864,
+          36683332751,
+          36724711217,
+          36732975369,
+          36735417112
+        ],
+        "scenario": "Driver link, Warm",
+        "zccache_hit_ms": {
+          "max": 0.432,
+          "median": 0.358,
+          "min": 0.234,
+          "p90": 0.399
+        }
+      },
+      {
+        "bare_ms": {
+          "max": 9982.9,
+          "min": 4425.2
+        },
+        "benchmark": "cpp-response-file",
+        "gate": "ratio floors 339.1x bare / 337.2x sccache (was 411.2 / 408.5)",
+        "n_attempts": 20,
+        "n_runs": 15,
+        "per_run_best_ratio_vs_bare": {
+          "max": 537.1,
+          "median": 508.0,
+          "min": 389.6
+        },
+        "per_run_best_ratio_vs_sccache": {
+          "max": 537.7,
+          "median": 509.9,
+          "min": 387.4
+        },
+        "run_ids": [
+          36493296576,
+          36495649775,
+          36504459992,
+          36507856283,
+          36519157225,
+          36520159059,
+          36522679106,
+          36525780332,
+          36529823748,
+          36540216239,
+          36679149864,
+          36683332751,
+          36724711217,
+          36732975369,
+          36735417112
+        ],
+        "scenario": "Multi-file RSP, Warm",
+        "zccache_hit_ms": {
+          "max": 19.65,
+          "median": 18.2,
+          "min": 10.66,
+          "p90": 19.077
+        }
+      }
+    ],
+    "rule": "hit budget = 2 x max observed hit, rounded up to 0.1 ms; ratio floor = min(per-run best guard-visible ratio) / 1.2. per_run_best_ratio_* below are ns-precise; the guard sees the table (whole-ms hit times), where the cpp-response-file minimum per-run best is 406.909x bare / 404.636x sccache (run 36735417112), which gives the 339.1 / 337.2 floors.",
+    "sample_size_note": "n_runs is 14-15 (>= 10) for these rows, but only 2 of the 15 runs are on the fast hosted runner class (bare ~4.5 s / ~45 ms), so the fast-class tail is thinly sampled; re-tighten once more fast-class runs exist. The other 20 warm ratio floors still rest on n=3 (#1805) and are not changed here: their worst per-run best ratio in these runs clears the floor.",
+    "source": "per-attempt ZCCACHE_BENCH_METRIC_V1 records (ns) from the perf-guard-{c,cpp}-output artifacts of every retained Perf Guard main run after #1767",
+    "window": "2026-09-28T21:14Z..2026-09-30T15:26Z"
+  },
+  {
     "commit": "0174df259f4662f93227c9af92188d4592781a5d",
     "paths": [
       "ci/perf_floor.py",

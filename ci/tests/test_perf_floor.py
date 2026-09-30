@@ -190,7 +190,14 @@ def test_warm_ratio_floor_covers_every_row_perf_guard_evaluates() -> None:
         ("rust-workspace-link", "Workspace staticlib link, Warm", "bare"),
         ("rust-workspace-link", "Workspace staticlib link, Warm", "sccache"),
     }
-    assert set(perf_floor.WARM_RATIO_FLOORS) == expected_rows
+    # #1807: sub-millisecond rows are gated on an absolute hit budget instead.
+    budget_rows = {
+        (benchmark, scenario, baseline)
+        for benchmark, scenario in perf_floor.WARM_HIT_BUDGET_SECONDS
+        for baseline in ("bare", "sccache")
+    }
+    assert set(perf_floor.WARM_RATIO_FLOORS) | budget_rows == expected_rows
+    assert not set(perf_floor.WARM_RATIO_FLOORS) & budget_rows
     for row, floor in perf_floor.WARM_RATIO_FLOORS.items():
         assert floor > perf_guard.DEFAULT_WARM_BARE_THRESHOLD, row
 

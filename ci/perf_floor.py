@@ -95,19 +95,25 @@ def effective_floor(
 #
 # (benchmark, scenario, baseline) -> floor. See ci/perf_threshold_history.json
 # for the full per-row sample table (n, min/median/max, margin, run ids).
+#
+# #1807 revisions (provenance record in ci/perf_threshold_history.json):
+# * The four sub-millisecond link rows (`c-static-library-link`,
+#   `cpp-driver-link`, bare + sccache) moved to `WARM_HIT_BUDGET_SECONDS`.
+# * The `cpp-response-file` "Multi-file RSP, Warm" floors were re-derived with
+#   the same `min / 1.2` rule over 15 main runs (per-run best of the retained
+#   attempts, the statistic the gate uses) instead of 3. The original 3 all came
+#   from the slow hosted runner class (bare ~9.9 s); the fast class (bare
+#   ~4.5 s) lands at 407-455x, below the old 411.2x / 408.5x floors.
+# Every other row's worst per-run best ratio in those 15 runs clears its floor.
 WARM_RATIO_FLOORS: dict[tuple[str, str, str], float] = {
     ("c-inline", "Single-file, Warm", "bare"): 24.35,
     ("c-inline", "Single-file, Warm", "sccache"): 2.85,
-    ("c-static-library-link", "Static archive, Warm", "bare"): 117.5,
-    ("c-static-library-link", "Static archive, Warm", "sccache"): 115.8,
-    ("cpp-driver-link", "Driver link, Warm", "bare"): 134.1,
-    ("cpp-driver-link", "Driver link, Warm", "sccache"): 143.3,
     ("cpp-inline", "Multi-file, Warm", "bare"): 581.3,
     ("cpp-inline", "Multi-file, Warm", "sccache"): 577.2,
     ("cpp-inline", "Single-file, Warm", "bare"): 104.3,
     ("cpp-inline", "Single-file, Warm", "sccache"): 3.06,
-    ("cpp-response-file", "Multi-file RSP, Warm", "bare"): 411.2,
-    ("cpp-response-file", "Multi-file RSP, Warm", "sccache"): 408.5,
+    ("cpp-response-file", "Multi-file RSP, Warm", "bare"): 339.1,
+    ("cpp-response-file", "Multi-file RSP, Warm", "sccache"): 337.2,
     ("cpp-response-file", "Single-file RSP, Warm", "bare"): 79.1,
     ("cpp-response-file", "Single-file RSP, Warm", "sccache"): 2.34,
     ("cpp-sibling-remap", "Sibling-workspace no __FILE__, Warm", "bare"): 93.5,
@@ -133,3 +139,45 @@ def warm_ratio_floor(benchmark: str, scenario: str, baseline: str) -> float | No
     ratchet has no hosted release-profile samples for.
     """
     return WARM_RATIO_FLOORS.get((benchmark, scenario, baseline))
+
+
+# #1807: absolute zccache warm-hit budgets for rows whose hit is sub-millisecond.
+#
+# `bare / zccache` is the wrong statistic there. The hit itself is ~0.25-0.43 ms
+# and steady, but the bare baseline (a 50-object `ar` / driver link) swings
+# 36-70 ms with the hosted runner class, so the ratio swung 100-200x while
+# zccache did not change (run 36735417112: 0.33 ms against a 38 ms baseline is
+# 115x; a 0.38 ms hit against a 62 ms baseline in run 36540216239 is 165x). A
+# floor on that ratio is a floor on the runner lottery. A regression changes
+# the added time, so gate that directly: the hit must stay under a fixed budget.
+#
+# Budget = 2 x the worst hit seen in 15 release-profile main runs (max 0.426 ms
+# for the archive link, 0.432 ms for the driver link), rounded up to 0.9 ms.
+# That is 2x headroom over the noise and below #1768's ~1 ms/hit regression
+# (warm C hit 1.4 ms -> 0.2 ms): a hit back at >= 1 ms fails. It applies to both
+# the bare and sccache comparison, which share one zccache time. The precise
+# hit time comes from the benchmark's ns metric record, not the table, which
+# prints it in whole milliseconds (see `perf_guard.apply_metric_precision`).
+# Provenance: ci/perf_threshold_history.json.
+#
+# (benchmark, scenario) -> max zccache warm-hit seconds.
+WARM_HIT_BUDGET_SECONDS: dict[tuple[str, str], float] = {
+    ("c-static-library-link", "Static archive, Warm"): 0.0009,
+    ("cpp-driver-link", "Driver link, Warm"): 0.0009,
+}
+
+
+def warm_hit_budget_seconds(benchmark: str, scenario: str) -> float | None:
+    """Absolute warm-hit budget for a sub-millisecond row, or None if ratio-gated."""
+    return WARM_HIT_BUDGET_SECONDS.get((benchmark, scenario))
+
+
+def hit_budget_floor(budget_seconds: float, baseline_seconds: float) -> float:
+    """The `baseline / zccache` ratio equivalent to holding the hit to `budget`.
+
+    `zccache <= budget` is `baseline / zccache >= baseline / budget`. Reports,
+    the weakest-check pick and the miss margin all speak in ratio floors, so a
+    budget row states its floor the same way `effective_floor` does for cold
+    rows; the pass/fail decision itself compares times, not this ratio.
+    """
+    return baseline_seconds / budget_seconds

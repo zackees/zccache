@@ -13,8 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ci import benchmark_stats, perf_distribution, perf_floor, perf_watchdog
-
+from ci import (
+    benchmark_stats,
+    perf_distribution,
+    perf_floor,
+    perf_precision,
+    perf_watchdog,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "perf-guard-output"
@@ -86,9 +91,18 @@ class ScenarioStatus:
     best_baseline_seconds: float | None = None
     samples: list[ScenarioSample] = field(default_factory=list)
     reference_baseline_seconds: float | None = None
+    # #1807: sub-millisecond warm hits are gated on this absolute zccache time,
+    # not on a ratio against a runner-speed-dependent baseline.
+    hit_budget_seconds: float | None = None
 
     def floor_for(self, sample: ScenarioSample | None) -> float:
         """The ratio floor `sample` is held to (see `ci/perf_floor.py`)."""
+        if self.hit_budget_seconds is not None:
+            if sample is None or sample.baseline_seconds <= 0:
+                return self.threshold
+            return perf_floor.hit_budget_floor(
+                self.hit_budget_seconds, sample.baseline_seconds
+            )
         return perf_floor.effective_floor(
             self.threshold,
             self.reference_baseline_seconds,
@@ -96,10 +110,15 @@ class ScenarioStatus:
         )
 
     def sample_passed(self, sample: ScenarioSample) -> bool:
+        if self.hit_budget_seconds is not None:
+            return sample.zccache_seconds <= self.hit_budget_seconds
         return sample.ratio >= self.floor_for(sample)
 
     @property
     def passed(self) -> bool:
+        if self.hit_budget_seconds is not None:
+            # No numeric sample means no hit time to hold to the budget.
+            return any(self.sample_passed(sample) for sample in self.samples)
         if self.reference_baseline_seconds is not None and self.samples:
             return any(self.sample_passed(sample) for sample in self.samples)
         return self.best_ratio is not None and self.best_ratio >= self.threshold
@@ -476,6 +495,11 @@ def evaluate_attempts(
                     apply_warm_ratchet=apply_warm_ratchet,
                 )
                 key = ScenarioKey(str(row["benchmark"]), str(row["scenario"]), baseline)
+                hit_budget = (
+                    perf_floor.warm_hit_budget_seconds(key.benchmark, key.scenario)
+                    if apply_warm_ratchet and mode == "warm"
+                    else None
+                )
                 status = statuses.get(key)
                 if status is None:
                     status = ScenarioStatus(
@@ -490,6 +514,7 @@ def evaluate_attempts(
                         reference_baseline_seconds=perf_floor.reference_bare_seconds(
                             key.benchmark, key.scenario, baseline
                         ),
+                        hit_budget_seconds=hit_budget,
                     )
                     statuses[key] = status
                 status.attempts_seen += 1
@@ -628,6 +653,17 @@ def _format_status_check(report: GuardReport, status: ScenarioStatus) -> str:
             f" ({status.threshold:.2f}x floor re-based: this runner's bare run beat "
             f"the {_format_seconds(reference)} reference, so zccache keeps the "
             f"{_format_seconds((1 / status.threshold - 1) * reference)} added-time budget)"
+        )
+    if status.hit_budget_seconds is not None:
+        # #1807: say why this row is not a ratio floor, so the absolute budget
+        # is not mistaken for a ratio that quietly went missing.
+        return (
+            f"{status.language} {status.benchmark_label} / {status.scenario} "
+            f"vs {status.baseline_label}: expected zccache hit <= "
+            f"{_format_seconds(status.hit_budget_seconds)} (absolute warm-hit "
+            f"budget; the ratio against a sub-millisecond hit tracks runner "
+            f"speed, not zccache), actual {zc_time} "
+            f"(ratio {actual} vs baseline {bl_time})"
         )
     return (
         f"{status.language} {status.benchmark_label} / {status.scenario} "
@@ -853,6 +889,7 @@ def format_report_json(
                 "baseline_label": status.baseline_label,
                 "threshold": status.threshold,
                 "reference_baseline_seconds": status.reference_baseline_seconds,
+                "hit_budget_seconds": status.hit_budget_seconds,
                 "best_ratio": status.best_ratio,
                 "best_attempt": status.best_attempt,
                 "attempts_seen": status.attempts_seen,
@@ -949,9 +986,16 @@ def _append_step_summary(markdown: str) -> None:
         handle.write(markdown)
 
 
+def parse_attempt_log(text: str) -> list[dict[str, Any]]:
+    """Parse one benchmark attempt's output into guard rows."""
+    return perf_precision.apply_metric_precision(
+        benchmark_stats.parse_benchmark_log(text), text
+    )
+
+
 def _load_input_log(path: Path) -> list[list[dict[str, Any]]]:
     text = path.read_text(encoding="utf-8")
-    return [benchmark_stats.parse_benchmark_log(text)]
+    return [parse_attempt_log(text)]
 
 
 def collect_run_metadata(command: list[str]) -> dict[str, Any]:
@@ -992,7 +1036,7 @@ def _run_attempts(
         returncode, output = run_benchmarks_once(
             log_path, benchmark_language, benchmark_binary, test_name
         )
-        rows = benchmark_stats.parse_benchmark_log(output)
+        rows = parse_attempt_log(output)
         parsed_attempts.append(rows)
         write_attempt_json(
             output_dir,
