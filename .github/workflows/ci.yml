@@ -67,6 +67,7 @@ jobs:
         uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
+          job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           # Local act runs (bosn; pull_request events) save fully; GitHub keeps
           # the #1677 main-push-only rule. See SAVE_CACHE_POLICY in ci/check_cache_footprint.py.
@@ -114,6 +115,7 @@ jobs:
       - id: setup-soldr
         uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
+          job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}
           zccache-seed-strict: true
@@ -296,6 +298,7 @@ jobs:
         uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
+          job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}
           zccache-seed-strict: true
@@ -338,6 +341,7 @@ jobs:
         uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
+          job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}
           zccache-seed-strict: true
@@ -367,6 +371,7 @@ jobs:
         uses: ./.github/actions/wait-cache-pre-prune
       - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
+          job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}
           zccache-seed-strict: true
