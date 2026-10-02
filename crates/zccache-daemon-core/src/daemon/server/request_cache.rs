@@ -20,7 +20,18 @@ pub(super) struct RequestCacheEntry {
     pub(super) depfile_path: Option<CachedRequestPath>,
     pub(super) input_paths: Vec<CachedRequestPath>,
     pub(super) cross_root_shareable: bool,
+    /// A rustc `--test` harness entry, served only to requests whose
+    /// admission policy admits harnesses (zccache#1550).
+    pub(super) test_harness: bool,
     pub(super) cached_at: std::time::Instant,
+}
+
+impl RequestCacheEntry {
+    /// Mark whether this entry serves a rustc `--test` harness.
+    pub(super) fn for_test_harness(mut self, test_harness: bool) -> Self {
+        self.test_harness = test_harness;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -205,6 +205,7 @@ pub(super) async fn prepare_dylint_request(
     let bypass_compiler: NormalizedPath = compiler_path.into();
     state.stats.record_compilation();
     state.stats.record_non_cacheable();
+    test_harness_admission::observe_bypass();
     record_session_stat(&state.sessions, sid, |tracker| {
         tracker.record_non_cacheable()
     });
@@ -240,8 +241,11 @@ pub(super) async fn bypass_time_macro_request(
     client_env: &Option<Vec<(String, String)>>,
     stdin: &[u8],
 ) -> Option<Response> {
-    let parsed =
-        crate::compiler::parse_invocation(compiler_path.to_str().unwrap_or(""), effective_args);
+    let parsed = crate::compiler::parse_invocation_with_admission(
+        compiler_path.to_str().unwrap_or(""),
+        effective_args,
+        test_harness_admission::for_request(client_env.as_deref()),
+    );
     let found = match &parsed {
         crate::compiler::ParsedInvocation::Cacheable(compilation) => {
             find_time_macro_use(compilation, cwd)
@@ -255,6 +259,7 @@ pub(super) async fn bypass_time_macro_request(
     let bypass_compiler: NormalizedPath = compiler_path.into();
     state.stats.record_compilation();
     state.stats.record_non_cacheable();
+    test_harness_admission::observe_bypass();
     record_session_stat(&state.sessions, sid, |tracker| {
         tracker.record_non_cacheable()
     });
@@ -316,6 +321,7 @@ pub(super) async fn discover_request_system_includes(
     // that the compiler has no default includes. Run directly and re-probe.
     state.stats.record_compilation();
     state.stats.record_non_cacheable();
+    test_harness_admission::observe_bypass();
     record_session_stat(&state.sessions, sid, |tracker| {
         tracker.record_non_cacheable()
     });
@@ -367,7 +373,17 @@ pub(super) async fn parse_single_compile_request(
 ) -> Result<ParsedSingleRequest, Response> {
     let t0 = std::time::Instant::now();
     let compiler_str = compiler.to_str().unwrap_or("");
-    let parsed = crate::compiler::parse_invocation(compiler_str, effective_args);
+    let parsed = crate::compiler::parse_invocation_with_admission(
+        compiler_str,
+        effective_args,
+        test_harness_admission::for_request(client_env.as_deref()),
+    );
+    let refused_test_harness = parsed.is_rustc_test_harness()
+        && matches!(
+            parsed,
+            crate::compiler::ParsedInvocation::NonCacheable { .. }
+        );
+    test_harness_admission::observe_parsed(&parsed);
     let compilation = match parsed {
         crate::compiler::ParsedInvocation::Cacheable(compilation) => compilation,
         crate::compiler::ParsedInvocation::NonCacheable { reason } => {
@@ -397,7 +413,7 @@ pub(super) async fn parse_single_compile_request(
                     &cwd_path,
                 )?;
             }
-            return Err(run_compiler_direct(
+            let response = run_compiler_direct(
                 state,
                 compiler,
                 raw_args,
@@ -408,7 +424,15 @@ pub(super) async fn parse_single_compile_request(
                 &stdin,
                 state.depfile_tmpdir.as_path(),
             )
-            .await);
+            .await;
+            if refused_test_harness {
+                test_harness_admission::observe_skipped_harness_outputs(
+                    compiler_str,
+                    effective_args,
+                    cwd,
+                );
+            }
+            return Err(response);
         }
         crate::compiler::ParsedInvocation::MultiFile {
             compilations,
@@ -464,6 +488,7 @@ pub(super) async fn parse_single_compile_request(
             )
         {
             state.stats.record_non_cacheable();
+            test_harness_admission::observe_bypass();
             record_session_stat(&state.sessions, sid, |tracker| {
                 tracker.record_non_cacheable()
             });

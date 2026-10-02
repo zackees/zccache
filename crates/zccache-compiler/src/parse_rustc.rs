@@ -87,25 +87,36 @@ const RUSTC_CACHEABLE_CRATE_TYPES: &[&str] = &["lib", "rlib", "staticlib", "proc
 /// crate-type table.
 ///
 /// The exclusion keys on `--test` itself, not on the crate type. See
-/// [`zccache_core::config::CACHE_TEST_BINS_ENV`] for the opt-in escape hatch.
-const RUSTC_TEST_HARNESS_REASON: &str = "test harness link product not cacheable";
+/// [`zccache_core::config::TestHarnessAdmission`] for the request-scoped
+/// opt-in (zccache#1550).
+pub const RUSTC_TEST_HARNESS_REASON: &str = "test harness link product not cacheable";
 
-/// True when [`zccache_core::config::CACHE_TEST_BINS_ENV`] opts this process
-/// back into caching `--test` harness links (zccache#1525).
-///
-/// Set it if you can demonstrate a real hit rate on your workload — e.g. a
-/// build where the harness's input closure genuinely does not move between
-/// runs. Off by default because the common case is the opposite.
-///
-/// Value grammar is the canonical zccache-owned boolean, parsed by
-/// [`zccache_core::config::cache_test_binaries_enabled`]: `1` or case-insensitive
-/// `true` enables it, and everything else — unset, empty, `0`, `false`, or any
-/// typo — leaves the exclusion in force. Deliberately NOT a hand-rolled
-/// parser: soldr#2740 found five mutually disagreeing truthy parsers in the
-/// sibling repo, one of which made `FOO=false` turn a switch *on*.
 #[cfg(feature = "native")]
-fn test_harness_caching_enabled() -> bool {
-    zccache_core::config::cache_test_binaries_enabled()
+impl CacheableCompilation {
+    /// True when this admitted compilation is a rustc `--test` harness link.
+    ///
+    /// Reads the canonical parser's own record: `--test` is kept in
+    /// `unknown_flags` (cache-key material) precisely so it is visible here.
+    #[must_use]
+    pub fn is_rustc_test_harness(&self) -> bool {
+        self.family == CompilerFamily::Rustc
+            && self.unknown_flags.iter().any(|flag| flag == "--test")
+    }
+}
+
+#[cfg(feature = "native")]
+impl ParsedInvocation {
+    /// True when this invocation is a rustc `--test` harness link, whether the
+    /// request's [`zccache_core::config::TestHarnessAdmission`] admitted it or
+    /// refused it.
+    #[must_use]
+    pub fn is_rustc_test_harness(&self) -> bool {
+        match self {
+            Self::Cacheable(compilation) => compilation.is_rustc_test_harness(),
+            Self::NonCacheable { reason } => reason == RUSTC_TEST_HARNESS_REASON,
+            Self::MultiFile { .. } => false,
+        }
+    }
 }
 
 /// Host dynamic-library file-name pattern for proc-macros, matching
@@ -279,20 +290,14 @@ const RUSTC_FLAGS_WITH_VALUE: &[&str] = &[
     "--env-set",
 ];
 
-/// Parse a rustc invocation to determine cacheability.
+/// Parse a rustc invocation to determine cacheability — no environment access.
 ///
 /// Cacheable: `--crate-type` is `lib`, `rlib`, `staticlib`, `proc-macro`, or `bin`.
-/// Non-cacheable: `dylib`, `cdylib`, and any `--test` harness link
-/// (see [`RUSTC_TEST_HARNESS_REASON`]).
-#[cfg(feature = "native")]
-pub(crate) fn parse_rustc_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
-    parse_rustc_invocation_with_policy(compiler, args, test_harness_caching_enabled())
-}
-
-/// Testable core of [`parse_rustc_invocation`] — no environment access.
+/// Non-cacheable: `dylib`, `cdylib`, and — unless `cache_test_bins` — any
+/// `--test` harness link (see [`RUSTC_TEST_HARNESS_REASON`]).
 ///
-/// `cache_test_bins` is the already-resolved value of
-/// [`zccache_core::config::CACHE_TEST_BINS_ENV`].
+/// `cache_test_bins` is the already-resolved, request-scoped
+/// [`zccache_core::config::TestHarnessAdmission`] (zccache#1550).
 /// Threading it in as an argument keeps the crate's parallel test suite
 /// deterministic: no test has to mutate process-global environment state to
 /// exercise either side of the policy. Mirrors the

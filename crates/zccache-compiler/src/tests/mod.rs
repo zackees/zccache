@@ -14,6 +14,7 @@ pub mod dylint_driver;
 pub mod modules;
 pub mod rustc;
 mod rustc_host;
+mod rustc_test_harness_admission;
 
 /// Shared helper: lift a `&[&str]` literal into the `&[String]` that
 /// `parse_invocation` expects.

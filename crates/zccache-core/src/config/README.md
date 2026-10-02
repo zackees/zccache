@@ -30,6 +30,10 @@ Split into focused submodules (file-size discipline: every source file < 1,000 L
   `MaterializationMode` enum (`AUTO`/`LINK`/`COPY`/`REFLINK`), its grammar, and
   the only readers of the variable (process env and forwarded client env);
   tests in `materialization_mode_tests.rs`, including a guard against raw reads.
+- **`test_harness_admission.rs`** - `TestHarnessAdmission` (#1550): the
+  request-scoped `--test` harness admission policy (explicit option, then the
+  request's forwarded `ZCCACHE_CACHE_TEST_BINS`, then the process default) and
+  `MAX_ADMITTED_TEST_HARNESS_BYTES`.
 - **`cleanup.rs`** - Legacy / stale temp-state cleanup
   (`cleanup_legacy_temp_root_state`, `cleanup_stale_depfile_dirs`).
 - **`tests.rs`** - Unit tests for all of the above (kept here because they

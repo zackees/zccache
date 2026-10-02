@@ -17,13 +17,17 @@ use crate::daemon::server::{
 
 pub use crate::audit::{AuditConfig, AuditContext, AuditEvent};
 pub use crate::core::config::{InvalidMaterializationMode, MaterializationMode};
+pub use crate::core::config::{TestHarnessAdmission, MAX_ADMITTED_TEST_HARNESS_BYTES};
 pub use crate::daemon::compile_journal::ChildMemory;
 pub use crate::daemon::server::compile_resource_gate::{
     HostAdmissionClassifier, HostAdmissionError, HostAdmissionPermit, HostCompilerRequest,
 };
+pub use crate::daemon::server::{AdmissionDisposition, AdmissionReason};
 pub use control::EmbeddedEventSink;
+pub use observed::{CompileObservation, CompileOptions, ObservedCompileResponse};
 
 mod control;
+mod observed;
 mod reporting;
 mod termination;
 
@@ -673,39 +677,16 @@ impl ZccacheService {
     /// cancellation result does not wait for a cleanup acknowledgement; hosts should
     /// treat `Cancelled` as terminal (no retry inside the same shutdown).
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse> {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let mut done = None;
-        self.compile_streaming(request, |chunk| match chunk {
-            CompileChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
-            CompileChunk::Stderr(bytes) => stderr.extend_from_slice(&bytes),
-            CompileChunk::Done {
-                exit_code,
-                cached,
-                cache_outcome,
-                compile_id,
-                child_memory,
-            } => done = Some((exit_code, cached, cache_outcome, compile_id, child_memory)),
-        })
-        .await?;
-        let (exit_code, cached, cache_outcome, compile_id, child_memory) =
-            done.ok_or_else(|| {
-                EmbeddedError::Compile(
-                    "streaming compile completed without a Done event".to_string(),
-                )
-            })?;
-        Ok(CompileResponse {
-            exit_code,
-            stdout,
-            stderr,
-            cached,
-            cache_outcome,
-            compile_id,
-            child_memory,
-        })
+        self.compile_with_options(request, CompileOptions::default())
+            .await
+            .map(|observed| observed.response)
     }
 
-    async fn compile_inner(&self, request: CompileRequest) -> Result<CompileResponse> {
+    async fn compile_inner(
+        &self,
+        request: CompileRequest,
+        options: CompileOptions,
+    ) -> Result<ObservedCompileResponse> {
         let _compile_permit = self.acquire_compile_permit().await?;
         let compile_id = request
             .audit
@@ -752,6 +733,7 @@ impl ZccacheService {
             cwd: request.cwd.into_path_buf(),
             env: Some(request.env),
             stdin: request.stdin,
+            test_harness_admission: options.test_harness_admission,
         });
         let outcome = self.await_compile(compile_future).await;
         // Every `compile.started` must get a `compile.finished`, including on
@@ -806,14 +788,23 @@ impl ZccacheService {
             CacheOutcome::Error => {}
         }
         termination::emit_compile_finished(self, &audit, &response, elapsed_ns);
-        Ok(CompileResponse {
-            exit_code: response.exit_code,
-            stdout: response.stdout.as_ref().clone(),
-            stderr: response.stderr.as_ref().clone(),
-            cached: response.cached,
-            cache_outcome,
-            compile_id,
-            child_memory: response.child_memory,
+        let (admission, reason) = response.admission;
+        Ok(ObservedCompileResponse {
+            observation: CompileObservation {
+                cache_outcome,
+                admission,
+                reason,
+                logical_artifact_bytes: response.logical_artifact_bytes,
+            },
+            response: CompileResponse {
+                exit_code: response.exit_code,
+                stdout: response.stdout.as_ref().clone(),
+                stderr: response.stderr.as_ref().clone(),
+                cached: response.cached,
+                cache_outcome,
+                compile_id,
+                child_memory: response.child_memory,
+            },
         })
     }
 
@@ -825,49 +816,13 @@ impl ZccacheService {
     /// Retained output is capped at 1 MiB per stream by default; set
     /// `ZCCACHE_STREAM_CAPTURE_LIMIT_BYTES` to a positive byte count to change
     /// it. Truncation is explicit and the same marker is cached and replayed.
-    pub async fn compile_streaming<F>(&self, request: CompileRequest, mut on_chunk: F) -> Result<()>
+    pub async fn compile_streaming<F>(&self, request: CompileRequest, on_chunk: F) -> Result<()>
     where
         F: FnMut(CompileChunk),
     {
-        const CHUNK_BYTES: usize = 64 * 1024;
-        let (sender, mut receiver) = kernal_api::async_engine::channel(8);
-        let context = crate::daemon::compile_output::OutputContext::new(sender);
-        let compile =
-            crate::daemon::compile_output::scope(context.clone(), self.compile_inner(request));
-        let mut compile = std::pin::pin!(compile);
-
-        let response = loop {
-            let chunk = receiver.recv();
-            let mut chunk = std::pin::pin!(chunk);
-            match kernal_api::biased_race!((chunk.as_mut()), (compile.as_mut())).await {
-                kernal_api::async_engine::BiasedRace2::First(chunk) => {
-                    if let Some(chunk) = chunk {
-                        emit_output_chunk(&mut on_chunk, chunk);
-                    }
-                }
-                kernal_api::async_engine::BiasedRace2::Second(result) => break result?,
-            }
-        };
-        while let Ok(chunk) = receiver.try_recv() {
-            emit_output_chunk(&mut on_chunk, chunk);
-        }
-
-        if !context.was_live() {
-            for chunk in response.stdout.chunks(CHUNK_BYTES) {
-                on_chunk(CompileChunk::Stdout(chunk.to_vec()));
-            }
-            for chunk in response.stderr.chunks(CHUNK_BYTES) {
-                on_chunk(CompileChunk::Stderr(chunk.to_vec()));
-            }
-        }
-        on_chunk(CompileChunk::Done {
-            exit_code: response.exit_code,
-            cached: response.cached,
-            cache_outcome: response.cache_outcome,
-            compile_id: response.compile_id,
-            child_memory: response.child_memory,
-        });
-        Ok(())
+        self.compile_streaming_with_options(request, CompileOptions::default(), on_chunk)
+            .await
+            .map(|_observation| ())
     }
 
     /// Return a daemon-compatible stats snapshot.
@@ -988,20 +943,6 @@ impl ZccacheService {
             mode,
             flushed: DetailedFlushReport::from_report(report),
         })
-    }
-}
-
-fn emit_output_chunk<F>(on_chunk: &mut F, chunk: crate::daemon::compile_output::OutputChunk)
-where
-    F: FnMut(CompileChunk),
-{
-    match chunk {
-        crate::daemon::compile_output::OutputChunk::Stdout(bytes) => {
-            on_chunk(CompileChunk::Stdout(bytes));
-        }
-        crate::daemon::compile_output::OutputChunk::Stderr(bytes) => {
-            on_chunk(CompileChunk::Stderr(bytes));
-        }
     }
 }
 

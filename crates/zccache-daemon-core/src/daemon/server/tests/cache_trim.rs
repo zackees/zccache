@@ -31,6 +31,7 @@ fn test_request_entry(cached_at: std::time::Instant) -> RequestCacheEntry {
         depfile_path: None,
         input_paths: vec![CachedRequestPath::capture(&source_path, None)],
         cross_root_shareable: false,
+        test_harness: false,
         cached_at,
     }
 }

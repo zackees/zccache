@@ -650,6 +650,7 @@ pub(super) fn request_cache_entry(
         depfile_path,
         input_paths,
         cross_root_shareable,
+        test_harness: false,
         cached_at: std::time::Instant::now(),
     }
 }

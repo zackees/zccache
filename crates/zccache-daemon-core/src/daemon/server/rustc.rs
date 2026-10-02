@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod link_key;
+
 /// Fallback compiler-identity hash used only when `CompilerHashCache`
 /// cannot even `stat` the compiler binary (the initial `std::fs::metadata`
 /// call in `get_or_hash_with[_async]` fails) — a pathological case since
@@ -154,15 +156,13 @@ pub(super) fn build_rustc_compile_context(
     let compiler_hash = compiler_hash_cache
         .get_or_hash_rustc_identity(compiler_identity_path.as_path())
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
-    if let Some(linker) = rustc_args
-        .linker
-        .clone()
-        .filter(|_| is_dylint_cdylib_args(&rustc_args))
-    {
-        let linker_hash = compiler_hash_cache
-            .get_or_hash_with(&linker, hash_cc_identity)
-            .unwrap_or(COMPILER_HASH_UNAVAILABLE);
-        add_dylint_linker_key_material(&mut rustc_args, linker_hash);
+    if let Some(product) = link_key::linked_product(&rustc_args) {
+        let linker_hash = rustc_args.linker.clone().map(|linker| {
+            compiler_hash_cache
+                .get_or_hash_with(&linker, hash_cc_identity)
+                .unwrap_or(COMPILER_HASH_UNAVAILABLE)
+        });
+        link_key::add_link_key_material(&mut rustc_args, product, linker_hash);
     }
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args_with_driver(
@@ -204,16 +204,17 @@ pub(super) async fn build_rustc_compile_context_async(
         .get_or_hash_rustc_identity_async(compiler_identity_path.as_path())
         .await
         .unwrap_or(COMPILER_HASH_UNAVAILABLE);
-    if let Some(linker) = rustc_args
-        .linker
-        .clone()
-        .filter(|_| is_dylint_cdylib_args(&rustc_args))
-    {
-        let linker_hash = compiler_hash_cache
-            .get_or_hash_with_async(&linker, hash_cc_identity_async)
-            .await
-            .unwrap_or(COMPILER_HASH_UNAVAILABLE);
-        add_dylint_linker_key_material(&mut rustc_args, linker_hash);
+    if let Some(product) = link_key::linked_product(&rustc_args) {
+        let linker_hash = match rustc_args.linker.clone() {
+            Some(linker) => Some(
+                compiler_hash_cache
+                    .get_or_hash_with_async(&linker, hash_cc_identity_async)
+                    .await
+                    .unwrap_or(COMPILER_HASH_UNAVAILABLE),
+            ),
+            None => None,
+        };
+        link_key::add_link_key_material(&mut rustc_args, product, linker_hash);
     }
 
     let rustc_ctx = crate::depgraph::RustcCompileContext::from_parsed_args_with_driver(
@@ -272,15 +273,6 @@ fn is_dylint_cdylib_args(args: &crate::depgraph::RustcParsedArgs) -> bool {
                 .and_then(std::ffi::OsStr::to_str)
                 .is_some_and(|stem| stem.eq_ignore_ascii_case("dylint-link"))
         })
-}
-
-fn add_dylint_linker_key_material(
-    args: &mut crate::depgraph::RustcParsedArgs,
-    linker_hash: ContentHash,
-) {
-    args.codegen_flags
-        .push(format!("dylint-linker-hash={linker_hash}"));
-    args.codegen_flags.extend(args.linker_args.clone());
 }
 
 /// Whether `CARGO_*` may stay out of the context key: plain `rustc`, or the

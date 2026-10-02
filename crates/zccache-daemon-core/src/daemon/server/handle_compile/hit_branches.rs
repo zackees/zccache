@@ -116,6 +116,11 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
         client_env,
     );
     let req_entry = state.request_cache.get(&request_fp)?;
+    if req_entry.test_harness
+        && !test_harness_admission::for_request(client_env).admits_test_harness()
+    {
+        return None;
+    }
     let request_cache_lookup_ns = t_request_cache_lookup.elapsed().as_nanos() as u64;
     if !request_cache_entry_matches_root(&req_entry, request_cache_key_root.as_ref()) {
         return None;
@@ -401,6 +406,10 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
             input_paths,
             request_cache_key_root.as_ref(),
             worktree_bound,
+        )
+        .for_test_harness(
+            is_rustc
+                && test_harness_admission::is_test_harness_request(compiler_path, effective_args),
         ),
     );
     Some(response)
@@ -570,6 +579,13 @@ pub(super) async fn try_depgraph_cached_hit(
                 input_paths,
                 request_cache_key_root.as_ref(),
                 worktree_bound,
+            )
+            .for_test_harness(
+                is_rustc
+                    && test_harness_admission::is_test_harness_request(
+                        compiler_path,
+                        effective_args,
+                    ),
             ),
         );
     }

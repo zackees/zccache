@@ -107,6 +107,9 @@ pub(crate) struct EmbeddedCompileRequest {
     pub(crate) cwd: PathBuf,
     pub(crate) env: Option<Vec<(String, String)>>,
     pub(crate) stdin: Vec<u8>,
+    /// The host's explicit `--test` harness policy (zccache#1550); `None`
+    /// resolves from `env`, then the service default.
+    pub(crate) test_harness_admission: Option<crate::core::config::TestHarnessAdmission>,
 }
 
 pub(crate) struct EmbeddedCompileResult {
@@ -116,6 +119,10 @@ pub(crate) struct EmbeddedCompileResult {
     pub(crate) cached: bool,
     /// Memory measured for the children this compile spawned (zccache#1588).
     pub(crate) child_memory: crate::daemon::compile_journal::ChildMemory,
+    /// The pipeline's admission decision for this request (zccache#1550).
+    pub(crate) admission: (AdmissionDisposition, AdmissionReason),
+    /// Logical compiler-artifact bytes, when a pipeline seam measured them.
+    pub(crate) logical_artifact_bytes: Option<u64>,
 }
 
 pub(crate) struct EmbeddedStatsSnapshot {
@@ -222,6 +229,8 @@ mod staged_publish;
 mod staging_root;
 mod state;
 mod supervise;
+mod test_harness_admission;
+pub use test_harness_admission::{AdmissionDisposition, AdmissionReason};
 mod util;
 mod wal;
 mod watch;
