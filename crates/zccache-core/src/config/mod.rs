@@ -14,6 +14,7 @@ pub mod namespace;
 pub mod paths;
 pub mod resolve;
 pub mod retired_store;
+mod test_harness_admission;
 
 use super::NormalizedPath;
 
@@ -111,6 +112,7 @@ pub use retired_store::{
     sweep_retired_version_stores_in_with_mode, touch_store_activity_marker,
     RetiredStoreSweepReport, RetiredSweepMode, LAST_ACTIVE_MARKER_FILE,
 };
+pub use test_harness_admission::{TestHarnessAdmission, MAX_ADMITTED_TEST_HARNESS_BYTES};
 
 /// Top-level configuration for zccache.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

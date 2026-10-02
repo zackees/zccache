@@ -641,7 +641,11 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     // publication or transfer it to the detached persist task. Re-acquiring a
     // fair RwLock while already holding a read guard can self-deadlock when a
     // Clear/GC writer is queued between the two reads.
-    let store_stats = if let Some(publication_guard) = begin_artifact_publication(state_arc).await {
+    // zccache#1550: an admitted `--test` harness is size-bounded here, after
+    // its outputs are known and already materialized for the caller.
+    let store_stats = if !test_harness_admission::admit_store(compilation, rust_output_bytes) {
+        MissArtifactStoreStats::default()
+    } else if let Some(publication_guard) = begin_artifact_publication(state_arc).await {
         // #955: the miss persist (a large rustc `.rlib` copy when it can't be
         // hardlinked cross-volume) is synchronous; run it under block_in_place
         // so it doesn't park the tokio worker. See process::run_cpu_blocking.

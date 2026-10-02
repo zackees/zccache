@@ -198,6 +198,23 @@ its own:
   boolean grammar: `1`/`true` only) if you can demonstrate a real hit
   rate; `--test` stays in `unknown_flags` so harness and non-harness
   builds of the same source keep distinct keys.
+- **Harness admission is request-scoped** (zccache#1550). The policy
+  (`TestHarnessAdmission::{SharedOnly, All}`) resolves per compile: the
+  embedded `CompileOptions::test_harness_admission`, else
+  `ZCCACHE_CACHE_TEST_BINS` in the request's forwarded environment, else
+  the service process's own variable. An already-running daemon therefore
+  honours a caller's opt-in without a restart or environment mutation, and
+  `shared-only` requests are never served a harness an `all` request
+  stored (the request-level fast path skips harness entries for them). An
+  admitted harness is keyed like any rustc unit (argv incl. `--test`,
+  `--cfg`, `-C` options, target, extern rlib hashes, sources) **plus its
+  linker inputs**: the explicit `-C linker` identity (or `default`) and
+  every `-C link-arg(s)`, which the context key otherwise drops. Storage
+  is bounded twice: a harness whose outputs exceed
+  `MAX_ADMITTED_TEST_HARNESS_BYTES` (512 MiB) runs uncached, and every
+  entry is subject to the store's byte budget and age expiry.
+  `compile_with_options` reports the decision as a `CompileObservation`
+  (`admitted`/`skipped`, a stable reason, logical artifact bytes).
 - **Native libraries in link steps are a documented blind spot.**
   `bin`/`staticlib` units linking system libraries via `-L`/`-l` do not
   content-hash the resolved library bytes (matching sccache). An

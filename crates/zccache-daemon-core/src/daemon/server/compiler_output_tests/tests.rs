@@ -263,7 +263,11 @@ mod dylint_sidecar_tests {
 
         let key_with_linker_hash = |linker_hash: ContentHash, compiler_hash: ContentHash| {
             let mut parsed = parse();
-            add_dylint_linker_key_material(&mut parsed, linker_hash);
+            link_key::add_link_key_material(
+                &mut parsed,
+                link_key::LinkedProduct::DylintCdylib,
+                Some(linker_hash),
+            );
             crate::depgraph::RustcCompileContext::from_parsed_args(&parsed, &[], compiler_hash)
                 .context_key()
         };
@@ -723,7 +727,11 @@ fn dylint_key_material_preserves_repeated_codegen_precedence() {
     };
     let key = |values| {
         let mut parsed = parse(values);
-        add_dylint_linker_key_material(&mut parsed, ContentHash::from_bytes([7; 32]));
+        link_key::add_link_key_material(
+            &mut parsed,
+            link_key::LinkedProduct::DylintCdylib,
+            Some(ContentHash::from_bytes([7; 32])),
+        );
         crate::depgraph::RustcCompileContext::from_parsed_args(
             &parsed,
             &[],

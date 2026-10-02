@@ -4,7 +4,7 @@
 //! For rustc, see [`crate::parse_rustc`].
 
 use std::sync::Arc;
-use zccache_core::NormalizedPath;
+use zccache_core::{config::TestHarnessAdmission, NormalizedPath};
 
 use super::detect::{detect_family, is_source_file, MODULE_EXTENSIONS};
 use super::{
@@ -102,9 +102,24 @@ pub(crate) fn default_output(
 ///
 /// Arg parsing is read-only analysis — it never modifies what goes to
 /// the compiler. The compiler always receives the exact original args.
+///
+/// A rustc `--test` harness follows the service process's
+/// [`zccache_core::config::CACHE_TEST_BINS_ENV`] default; a caller holding a
+/// request-scoped policy uses [`parse_invocation_with_admission`].
 #[must_use]
 pub fn parse_invocation(compiler: &str, args: &[String]) -> ParsedInvocation {
-    parse_invocation_with(compiler, args, true)
+    parse_invocation_with_admission(compiler, args, TestHarnessAdmission::from_process_env())
+}
+
+/// [`parse_invocation`] under an already-resolved, request-scoped rustc
+/// `--test` harness admission policy (zccache#1550). Reads no environment.
+#[must_use]
+pub fn parse_invocation_with_admission(
+    compiler: &str,
+    args: &[String],
+    admission: TestHarnessAdmission,
+) -> ParsedInvocation {
+    parse_invocation_with(compiler, args, true, admission)
 }
 
 /// The per-source object layout of a GNU-style compile that is non-cacheable
@@ -120,7 +135,9 @@ pub fn side_output_compilations(
     args: &[String],
 ) -> Option<Vec<CacheableCompilation>> {
     unmodeled_side_output_flag(args, false)?;
-    match parse_invocation_with(compiler, args, false) {
+    // Side outputs are a GNU-family shape; rustc never reaches this parse, so
+    // its harness policy is immaterial here.
+    match parse_invocation_with(compiler, args, false, TestHarnessAdmission::SharedOnly) {
         ParsedInvocation::Cacheable(compilation) => Some(vec![compilation]),
         ParsedInvocation::MultiFile { compilations, .. } => Some(compilations),
         ParsedInvocation::NonCacheable { .. } => None,
@@ -131,6 +148,7 @@ fn parse_invocation_with(
     compiler: &str,
     args: &[String],
     reject_side_outputs: bool,
+    admission: TestHarnessAdmission,
 ) -> ParsedInvocation {
     let family = detect_family(compiler);
     // Rustfmt is not a compiler — reject here, CLI handles it separately.
@@ -141,7 +159,11 @@ fn parse_invocation_with(
     }
     // Rustc has a completely different invocation model — dispatch early.
     if family == CompilerFamily::Rustc {
-        return super::parse_rustc::parse_rustc_invocation(compiler, args);
+        return super::parse_rustc::parse_rustc_invocation_with_policy(
+            compiler,
+            args,
+            admission.admits_test_harness(),
+        );
     }
 
     // MSVC / clang-cl use Windows-style slash flags (`/c`, `/Fo:foo.obj`).

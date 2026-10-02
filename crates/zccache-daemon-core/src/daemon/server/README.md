@@ -15,6 +15,7 @@ Topic-focused submodules:
 - `state.rs` — `SharedState`, the daemon's central state object
 - `cached_artifact.rs` — `CachedArtifact`, `CachedPayload`, payload materialization, legacy `.meta` migration
 - `compiler_hash.rs` — compiler-binary hash memoization keyed by `(mtime, size)`
+- `test_harness_admission.rs` — request-scoped rustc `--test` harness admission (#1550): resolves the policy per request, size-bounds admitted harnesses, and records the admission observation for the embedded API
 - `request_cache.rs` — request-level fast-path records (`RequestCacheEntry`, `CachedRequestPath`, etc.)
 - `rsp_cache.rs` — response-file (`@file`) expansion + caching
 - `cache_trim.rs` — time-based + size-capped trimmers for the ephemeral caches

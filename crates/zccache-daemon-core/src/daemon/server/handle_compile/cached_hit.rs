@@ -96,7 +96,11 @@ pub(super) async fn materialize_cached_compile_hit_offloaded(
     request: OwnedCachedHitMaterializeRequest,
 ) -> Result<Response, CachedHitFailure> {
     let launcher = Arc::clone(&request.state);
-    match launcher
+    // The blocking materializer runs outside this task's scope, so the
+    // embedded admission observation (#1550) reads the served size here.
+    let observed_key =
+        test_harness_admission::observing().then(|| request.artifact_key_hex.clone());
+    let result = match launcher
         .launch_blocking(move || {
             materialize_cached_compile_hit(CachedHitMaterializeRequest {
                 state: &request.state,
@@ -128,7 +132,13 @@ pub(super) async fn materialize_cached_compile_hit_offloaded(
             tracing::error!(%error, "cache-hit materialization task failed");
             Err(CachedHitFailure::CacheRead)
         }
+    };
+    if let (Ok(Response::CompileResult { cached: true, .. }), Some(key)) = (&result, observed_key) {
+        if let Some(served) = lookup_artifact_with_disk_fallback(&launcher, &key) {
+            test_harness_admission::record_artifact_bytes(served.meta.total_size);
+        }
     }
+    result
 }
 
 #[derive(Debug)]

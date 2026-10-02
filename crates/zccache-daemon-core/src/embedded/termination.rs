@@ -61,6 +61,11 @@ mod tests {
             stdout: Arc::new(Vec::new()),
             stderr: Arc::new(Vec::new()),
             cached: false,
+            admission: (
+                crate::daemon::server::AdmissionDisposition::Admitted,
+                crate::daemon::server::AdmissionReason::Cacheable,
+            ),
+            logical_artifact_bytes: None,
         }
     }
 

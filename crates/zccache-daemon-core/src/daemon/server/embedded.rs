@@ -278,21 +278,25 @@ impl EmbeddedDaemon {
         // cache_store) attribute their sub-phase records to this compile_id.
         // No-op unless ZCCACHE_INNER_TRACE is set; the IPC wrapper path does
         // not open a scope, so only embedded compiles emit sub-phase records.
-        let (mut response, attributed_miss_reason, context_key, child_memory) =
-            capture_miss_reason(Box::pin(super::inner_trace::scope(
-                compile_id.clone(),
-                handle_compile_ephemeral(
-                    &self.state,
-                    std::process::id(),
-                    &request.cwd,
-                    &request.compiler,
-                    &request.args,
-                    &request.cwd,
-                    request.env,
-                    request.stdin,
-                ),
-            )))
+        let ((mut response, attributed_miss_reason, context_key, child_memory), recorded_admission) =
+            super::test_harness_admission::scope(
+                request.test_harness_admission,
+                Box::pin(capture_miss_reason(Box::pin(super::inner_trace::scope(
+                    compile_id.clone(),
+                    handle_compile_ephemeral(
+                        &self.state,
+                        std::process::id(),
+                        &request.cwd,
+                        &request.compiler,
+                        &request.args,
+                        &request.cwd,
+                        request.env,
+                        request.stdin,
+                    ),
+                )))),
+            )
             .await;
+        let admission = recorded_admission.decision_or_default(attributed_miss_reason);
         crate::compile_trace::record(
             "embedded_daemon_compile",
             total.elapsed().as_micros() as u64,
@@ -348,6 +352,8 @@ impl EmbeddedDaemon {
                     stderr,
                     cached,
                     child_memory,
+                    admission,
+                    logical_artifact_bytes: recorded_admission.logical_artifact_bytes,
                 })
             }
             Response::Error { message } => {
