@@ -182,6 +182,7 @@ fn rebuilt_entry(sizes: Vec<u64>, stored_at: SystemTime) -> ArtifactIndex {
             .unwrap_or_default()
             .as_secs(),
         rustc_verdicts: Default::default(),
+        output_modes: Vec::new(),
     }
 }
 

@@ -8,6 +8,12 @@ For how cache keys are computed see [overview.md](overview.md) (section 2.8). Fo
 
 ## Immutable staged-output rollout
 
+Link index rows retain native output modes before file outputs become byte
+payloads. Hits restore each output's original permissions, including execute
+bits and non-executable sidecar modes, for resident and persisted payloads.
+Legacy link rows without modes trigger a fresh link. Index loading migrates
+pre-mode snapshots without discarding their compiler artifacts or Rust verdicts.
+
 The default-on Rust staged-artifact lane makes the daemon's v2 generations
 the authoritative source for Rust compiler misses. C/C++ compiler-output
 staging is an explicit `ZCCACHE_STAGED_ARTIFACTS=c-cpp` or `all` opt-in. The compiler is

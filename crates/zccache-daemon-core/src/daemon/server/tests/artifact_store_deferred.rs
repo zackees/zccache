@@ -177,5 +177,6 @@ fn synthetic_index_entry(total_size: u64) -> crate::artifact::ArtifactIndex {
         total_size,
         stored_at_secs: 0,
         rustc_verdicts: Default::default(),
+        output_modes: Vec::new(),
     }
 }

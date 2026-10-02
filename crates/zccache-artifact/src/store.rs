@@ -76,6 +76,38 @@ pub struct ArtifactIndex {
     /// an empty map, which makes those old rows safely miss under the rustc
     /// context-key domain introduced alongside this field.
     pub rustc_verdicts: BTreeMap<String, ArtifactVerdict>,
+    /// Native output modes captured before link payloads become bytes.
+    /// Empty for producers that do not capture modes or legacy index rows.
+    pub output_modes: Vec<u32>,
+}
+
+/// Index shape before linker output modes were retained.
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacyVerdictArtifactIndex {
+    output_names: Arc<[String]>,
+    output_sizes: Vec<u64>,
+    stdout: Arc<Vec<u8>>,
+    stderr: Arc<Vec<u8>>,
+    exit_code: i32,
+    total_size: u64,
+    stored_at_secs: u64,
+    rustc_verdicts: BTreeMap<String, ArtifactVerdict>,
+}
+
+impl From<LegacyVerdictArtifactIndex> for ArtifactIndex {
+    fn from(legacy: LegacyVerdictArtifactIndex) -> Self {
+        Self {
+            output_names: legacy.output_names,
+            output_sizes: legacy.output_sizes,
+            stdout: legacy.stdout,
+            stderr: legacy.stderr,
+            exit_code: legacy.exit_code,
+            total_size: legacy.total_size,
+            stored_at_secs: legacy.stored_at_secs,
+            rustc_verdicts: legacy.rustc_verdicts,
+            output_modes: Vec::new(),
+        }
+    }
 }
 
 /// Artifact-index row written before verdicts became a second cache layer.
@@ -104,6 +136,7 @@ impl From<LegacyArtifactIndex> for ArtifactIndex {
             total_size: legacy.total_size,
             stored_at_secs: legacy.stored_at_secs,
             rustc_verdicts: BTreeMap::new(),
+            output_modes: Vec::new(),
         }
     }
 }
@@ -112,6 +145,17 @@ fn decode_index_rows(bytes: &[u8]) -> bincode::Result<Vec<(String, ArtifactIndex
     match bincode::deserialize(bytes) {
         Ok(rows) => Ok(rows),
         Err(current_error) => {
+            let legacy_options = bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .reject_trailing_bytes();
+            if let Ok(rows) =
+                legacy_options.deserialize::<Vec<(String, LegacyVerdictArtifactIndex)>>(bytes)
+            {
+                return Ok(rows
+                    .into_iter()
+                    .map(|(key, meta)| (key, meta.into()))
+                    .collect());
+            }
             let legacy_options = bincode::DefaultOptions::new()
                 .with_fixint_encoding()
                 .reject_trailing_bytes();
@@ -149,6 +193,7 @@ impl ArtifactIndex {
             total_size,
             stored_at_secs,
             rustc_verdicts: BTreeMap::new(),
+            output_modes: Vec::new(),
         }
     }
 }
@@ -534,6 +579,10 @@ fn write_atomic_durable(tmp: &Path, target: &Path, bytes: &[u8]) -> std::io::Res
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "store_modes_tests.rs"]
+mod mode_tests;
 
 #[cfg(test)]
 mod tests {

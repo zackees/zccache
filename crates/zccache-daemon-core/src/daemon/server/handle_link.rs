@@ -24,6 +24,11 @@ fn materialize_link_cache_hit(
     let Some(entry) = lookup_artifact_with_disk_fallback(state, key_hex) else {
         return LinkCacheHitOutcome::Miss;
     };
+    // Legacy link rows lost permissions when outputs became byte payloads.
+    // Re-link instead of guessing which primary or side outputs are executable.
+    if !is_directory && entry.meta.output_modes.len() != entry.meta.output_names.len() {
+        return LinkCacheHitOutcome::Miss;
+    }
     let Ok(payloads) = ensure_payloads_for_materialization_for_state(state, &entry, key_hex)
         .map_err(|failure| {
             report_materialization_failure(&state.cache_dir, key_hex, "link-hit", &failure);
@@ -98,7 +103,8 @@ fn materialize_link_cache_hit(
     });
     let materialize_started = std::time::Instant::now();
     payloads.record_staged_pre_materialization(&state.profiler.staged);
-    let observed = write_payloads_par_observed(&targets, &payloads, mode);
+    let observed =
+        write_payloads_par_with_modes(&targets, &payloads, mode, &entry.meta.output_modes);
     payloads.record_staged_lock_timings(&state.profiler.staged);
     drop(payloads);
     if let Err(failure) = &observed {
@@ -847,7 +853,7 @@ pub(super) async fn handle_link_ephemeral(
 
         // Read all output files in cache-index order.
         let output_read_started = profile_enabled.then(std::time::Instant::now);
-        let reads: std::io::Result<Vec<ArtifactOutput>> = read_targets
+        let reads: std::io::Result<Vec<(ArtifactOutput, u32)>> = read_targets
             .iter()
             .map(|(name, path, expected_hash)| {
                 let data = std::fs::read(path)?;
@@ -859,10 +865,14 @@ pub(super) async fn handle_link_ephemeral(
                         )));
                     }
                 }
-                Ok(ArtifactOutput {
-                    name: name.clone(),
-                    payload: ArtifactPayload::Bytes(Arc::new(data)),
-                })
+                let output_mode = crate::platform::fs::permissions::mode(&std::fs::metadata(path)?);
+                Ok((
+                    ArtifactOutput {
+                        name: name.clone(),
+                        payload: ArtifactPayload::Bytes(Arc::new(data)),
+                    },
+                    output_mode,
+                ))
             })
             .collect();
         output_read_ns = output_read_started
@@ -886,6 +896,7 @@ pub(super) async fn handle_link_ephemeral(
 
         // A successful link with unreadable outputs remains uncacheable.
         if let Some(outputs) = outputs {
+            let (outputs, output_modes): (Vec<_>, Vec<_>) = outputs.into_iter().unzip();
             // Log side-effect captures (preserves prior tracing).
             let side_effect_start = 1 + parsed_tool.secondary_outputs.len();
             for o in outputs.iter().skip(side_effect_start) {
@@ -900,7 +911,7 @@ pub(super) async fn handle_link_ephemeral(
             };
 
             // Build CachedArtifact once (no deep copies — all Arc clones).
-            let cached = CachedArtifact::from_artifact_data(&artifact);
+            let cached = CachedArtifact::from_artifact_data_with_modes(&artifact, output_modes);
 
             // Persist source paths in the background via hardlink/copy (#296),
             // retaining resident bytes for immediate warm hits.

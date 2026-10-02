@@ -169,7 +169,14 @@ impl CachedArtifact {
     /// 1:1 between the protocol `ArtifactPayload` enum and the internal
     /// `CachedPayload` enum.
     pub(super) fn from_artifact_data(artifact: &ArtifactData) -> Self {
-        let meta = ArtifactIndex::new(
+        Self::from_artifact_data_with_modes(artifact, Vec::new())
+    }
+
+    pub(super) fn from_artifact_data_with_modes(
+        artifact: &ArtifactData,
+        output_modes: Vec<u32>,
+    ) -> Self {
+        let mut meta = ArtifactIndex::new(
             artifact.outputs.iter().map(|o| o.name.clone()).collect(),
             artifact
                 .outputs
@@ -180,6 +187,7 @@ impl CachedArtifact {
             Arc::clone(&artifact.stderr),
             artifact.exit_code,
         );
+        meta.output_modes = output_modes;
         Self::with_payloads(
             meta,
             Arc::from(
