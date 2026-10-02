@@ -1,0 +1,39 @@
+name: Publish isolated build cache
+description: >
+  Replace setup-soldr's build-cache store with the isolated SOLDR_CACHE_DIR
+  store the job compiled into, so setup-soldr's post step saves it (#1867).
+
+inputs:
+  isolated-soldr-cache-dir:
+    description: >
+      The isolated SOLDR_CACHE_DIR the job compiled under (the value passed to
+      setup-soldr's `seed-isolated-build-cache`). Its daemon must already be
+      stopped, so the store's index is flushed.
+    required: true
+  build-cache-path:
+    description: setup-soldr's `build-cache-path` output. Empty means build-cache is off.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Publish the isolated store into the build-cache path
+      shell: bash
+      env:
+        ISOLATED_SOLDR_CACHE_DIR: ${{ inputs.isolated-soldr-cache-dir }}
+        BUILD_CACHE_PATH: ${{ inputs.build-cache-path }}
+      run: |
+        src="$ISOLATED_SOLDR_CACHE_DIR/cache/zccache"
+        dst="$BUILD_CACHE_PATH"
+        if [ -z "$dst" ] || [ ! -d "$src" ]; then
+          echo "publish-isolated-build-cache: nothing to publish (build-cache-path='$dst', store='$src')"
+          exit 0
+        fi
+        # The isolated store was seeded from this path and then grew, so it is
+        # a superset: replace rather than merge, keeping one consistent index.
+        # Hardlinks are safe (content-addressed, immutable entries) and free.
+        rm -rf "$dst"
+        mkdir -p "$(dirname "$dst")"
+        cp -al "$src" "$dst" 2>/dev/null || { rm -rf "$dst"; cp -a "$src" "$dst"; }
+        files=$(find "$dst" -type f | wc -l | tr -d ' ')
+        echo "publish-isolated-build-cache: published ${files} file(s) from $src to $dst"

@@ -85,9 +85,15 @@ jobs:
         if: startsWith(inputs.os, 'ubuntu')
         shell: bash
         run: echo "PYO3_PYTHON=python3" >> "$GITHUB_ENV"
-      - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
+      - id: soldr
+        uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
+          # #1867: Linux x64 keeps its own build-cache key. The suffix-free key
+          # is shared by ~10 jobs and saved by whichever finishes first (a perf
+          # job), so it never held this job's test-profile compiles: 0 of 47
+          # hit. The publish step at the end saves the isolated store here.
+          cache-key-suffix: ${{ inputs.os == 'ubuntu-latest' && 'test' || '' }}
           save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false') }}
           zccache-seed-strict: true
           toolchain: 1.95.0
@@ -223,3 +229,12 @@ jobs:
         run: |
           unset ZCCACHE_CACHE_DIR
           soldr cache shutdown --archive-logs "$SOLDR_CACHE_DIR/cache/zccache/logs/archive" || true
+      # #1867: setup-soldr's post step saves only its own store; the isolated
+      # store this job compiled into is otherwise discarded, so every warm run
+      # missed. Linux x64 only: its key is the one with a budget.
+      - name: Publish isolated test cache for the build-cache save
+        if: always() && inputs.os == 'ubuntu-latest'
+        uses: ./.github/actions/publish-isolated-build-cache
+        with:
+          isolated-soldr-cache-dir: ${{ runner.temp }}/zccache-self-tests/test-${{ inputs.os }}
+          build-cache-path: ${{ steps.soldr.outputs.build-cache-path }}
