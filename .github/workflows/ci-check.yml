@@ -169,6 +169,12 @@ jobs:
           SOLDR_BROKER_FIRST_RESPONSE_MS: "30000"
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          # #1550: admit this step's `--test` harness links, request-scoped
+          # (zccache forwards the variable per compile; the Test step below
+          # does not set it). Linux x64 only: its isolated store is the one
+          # published for reuse. Takes effect once soldr embeds zccache with
+          # #1550; an earlier zccache ignores a request-env value.
+          ZCCACHE_CACHE_TEST_BINS: ${{ inputs.os == 'ubuntu-latest' && '1' || '0' }}
         run: |
           unset ZCCACHE_CACHE_DIR
           soldr cargo test --workspace --lib --bins --no-fail-fast --no-run
