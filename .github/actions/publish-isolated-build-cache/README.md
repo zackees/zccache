@@ -8,8 +8,8 @@ away at job end, and the next run's compiles all miss (#1867).
 
 This action replaces setup-soldr's build-cache store with the isolated one, so
 the post step saves it under the job's key. Session logs are copied too, so
-setup-soldr's save gate and its `final zccache session stats` line see the
-isolated session; the build-cache save profile trims them from the archive.
+setup-soldr's new-compile save gate sees the isolated sessions; the
+build-cache save profile trims them from the archive.
 
 ## Inputs
 

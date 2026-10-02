@@ -153,7 +153,7 @@ def test_publish_replaces_the_build_cache_with_the_isolated_store(tmp_path: Path
     assert (published / "artifacts" / "ab" / "abcd").read_text() == "rlib"
     assert (published / "index.bin").read_text() == "index-after-build"
     assert not (published / "artifacts" / "zz" / "stale").exists()
-    # Session logs travel too: setup-soldr's save gate and stats report read
+    # Session logs travel too: setup-soldr's new-compile save gate reads
     # them from the build-cache path; its save profile trims them.
     assert (build_cache / "logs" / "archive" / "s1" / "last-session-stats.json").exists()
     # The isolated store is left intact for anything that still reads it.
