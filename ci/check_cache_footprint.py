@@ -66,6 +66,11 @@ JUSTIFIED_SUFFIXES: dict[str, str] = {
     "(dylint-cache) and disables the cargo-registry cache",
     "check-<label>": "cross-target check: its closure is built for "
     "`cross-targets`, not the host",
+    # #1867: ci-check.yml's Linux x64 Test compiles into an isolated store and
+    # publishes it back (publish-isolated-build-cache). A shared key is saved
+    # by whichever job finishes first and never holds the test profile.
+    "${{ inputs.os == 'ubuntu-latest' && 'test' || '' }}": "Linux x64 Test "
+    "saves its isolated test-profile store; workspace-only ~36 MB compressed",
 }
 
 # setup-soldr refs whose main action honors `save-cache: auto|true|false`
