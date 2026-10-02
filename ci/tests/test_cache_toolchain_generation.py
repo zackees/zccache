@@ -148,11 +148,15 @@ def test_previous_generation_retires_once_its_family_is_reseeded() -> None:
         _bc(2, "b" * 16, "2026-10-02T20:57:00Z"),
         # Previous generation whose producer has not re-seeded yet: kept.
         _bc(3, "c" * 16, "2026-09-30T14:00:00Z", "x"),
+        # Registries share one family per lock; old digests go once a
+        # current-generation registry exists, even with no build cache left
+        # for their digest (GitHub's LRU eviction can take that first).
         _registry(4, "a" * 16, "2026-09-30T14:00:00Z"),
-        _registry(5, "c" * 16, "2026-09-30T14:00:00Z"),
-        _registry(6, "b" * 16, "2026-09-30T14:00:00Z"),
+        _registry(5, "e" * 16, "2026-09-30T14:00:00Z"),
+        _registry(6, "b" * 16, "2026-10-02T20:58:00Z"),
+        _row(7, f"setup-soldr-cargoregistry-v1-macos-arm64-{LOCK}-{'a' * 16}", "2026-09-30T14:00:00Z"),
     ]
-    assert _pre_prune(caches)["retireFirstIds"] == [1, 4, 90]
+    assert _pre_prune(caches)["retireFirstIds"] == [1, 4, 5, 90]
 
 
 def test_no_soldr_mini_means_no_generation_rule() -> None:

@@ -404,9 +404,9 @@ function soldrGenerationEpoch(mainRows) {
 // saved in the current generation, i.e. once its replacement exists. Families
 // whose producer has not re-seeded yet keep their entry, and concurrent job
 // shapes are all saved in the current generation, so neither is touched.
-// Registry entries restore across digests (lock-only prefix): one is retired
-// when every build cache of its digest is. Cook bases compare their explicit
-// (rustc, soldr) versions instead.
+// Registry entries restore across digests (lock-only prefix) and hold the
+// same sources for one lock, so their family is (format, os, arch, lock).
+// Cook bases compare their explicit (rustc, soldr) versions instead.
 function supersededToolchainGenerationIds(caches) {
   const mainRows = caches.filter(
     (cache) => cache.ref === "refs/heads/main" && typeof cache.key === "string",
@@ -416,7 +416,6 @@ function supersededToolchainGenerationIds(caches) {
   if (epoch === null) return superseded;
   const cutoff = epoch - GENERATION_EPOCH_SLACK_MS;
   const groups = new Map();
-  const buildDigests = new Map();
   const add = (family, cache) => {
     const group = groups.get(family) || [];
     group.push(cache);
@@ -426,9 +425,11 @@ function supersededToolchainGenerationIds(caches) {
     const build = setupSoldrBuildCacheKeyParts(cache.key);
     if (build) {
       add(`build\u0000${build.os}\u0000${build.arch}\u0000${build.suffix}\u0000${build.lockHash}`, cache);
-      const ids = buildDigests.get(build.digest) || [];
-      ids.push(cache.id);
-      buildDigests.set(build.digest, ids);
+      continue;
+    }
+    const registry = setupSoldrCargoRegistryKeyParts(cache.key);
+    if (registry) {
+      add(`registry\u0000${registry.format}\u0000${registry.os}\u0000${registry.arch}\u0000${registry.lockHash}`, cache);
       continue;
     }
     const output = dylintOutputKeyParts(cache.key);
@@ -443,11 +444,6 @@ function supersededToolchainGenerationIds(caches) {
   for (const group of groups.values()) {
     if (!group.some((cache) => !savedBefore(cache))) continue;
     for (const cache of group) if (savedBefore(cache)) superseded.add(cache.id);
-  }
-  for (const cache of mainRows) {
-    const registry = setupSoldrCargoRegistryKeyParts(cache.key);
-    const builds = registry && buildDigests.get(registry.digest);
-    if (builds && builds.every((id) => superseded.has(id))) superseded.add(cache.id);
   }
   return superseded;
 }
