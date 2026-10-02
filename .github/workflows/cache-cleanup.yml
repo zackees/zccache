@@ -117,11 +117,18 @@ jobs:
                 quietSince = 0;
               }
               const prePrune = await prePruneFor(expectedSha);
-              const prePruneReady = prePrune?.status === "completed" &&
-                prePrune.conclusion === "success";
-              if (prePrune?.status === "completed" && !prePruneReady) {
-                if (await branchHead() !== expectedSha) continue;
-                throw new Error(`current-main pre-prune ${prePrune.id} failed; refusing cleanup`);
+              // The barrier only orders cleanup after this SHA's pre-prune
+              // and producers. A pre-prune that failed closed released no
+              // producer, so it is settled too: refusing here deadlocked main
+              // whenever the inventory alone was over the forecast target
+              // (#1875; #1758/#1842/#1850/#1854), because this cleanup is the
+              // run that shrinks it.
+              const prePruneReady = prePrune?.status === "completed";
+              if (prePruneReady && prePrune.conclusion !== "success") {
+                core.warning(
+                  `current-main pre-prune ${prePrune.id} concluded ${prePrune.conclusion}; ` +
+                  "cleaning up anyway so the next pre-prune can pass",
+                );
               }
               const runs = await github.paginate(
                 github.rest.actions.listWorkflowRunsForRepo,

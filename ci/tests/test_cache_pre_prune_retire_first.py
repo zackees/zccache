@@ -168,7 +168,7 @@ def test_genuinely_over_budget_generation_still_fails_closed_after_retire_first(
     assert len(plan["retireFirstIds"]) >= 3  # dead generations still retirable
 
 
-def test_current_generation_cook_bases_are_never_retire_first() -> None:
+def test_superseded_soldr_cook_bases_retire_first_even_on_the_current_lock() -> None:
     def cook(cache_id: int, lock: str, soldr: str) -> dict[str, object]:
         return {
             "id": cache_id,
@@ -178,9 +178,11 @@ def test_current_generation_cook_bases_are_never_retire_first() -> None:
             "created_at": "2026-09-30T00:00:00Z",
         }
 
-    # Current-lock 0.9.25 next to a current-lock 0.9.26: not stale, so it is
-    # neither retire-first nor deleted (producers may still pin it).
+    # #1875: a current-lock 0.9.25 next to a current-lock 0.9.26 is a dead
+    # generation too. Every workflow resolves one soldr version
+    # (check_cache_footprint.py), so no producer restores or re-seeds it, and
+    # keeping it is what deadlocked the 0.9.25 -> 0.9.27 transition.
     plan = _run_transition([cook(1, NEW_LOCK, "0.9.25"), cook(2, NEW_LOCK, "0.9.26"), cook(3, OLD_LOCK, "0.9.25")])
     assert plan["ok"] is True
-    assert plan["retireFirstIds"] == [3]
-    assert plan["deleteIds"] == [3]
+    assert plan["retireFirstIds"] == [1, 3]
+    assert 2 not in plan["deleteIds"]

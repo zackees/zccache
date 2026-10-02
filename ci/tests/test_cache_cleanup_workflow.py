@@ -49,6 +49,10 @@ def test_producer_completion_cleanup_follows_trailing_main_head_and_waits_for_qu
     assert "listWorkflowRunsForRepo" in script
     assert 'workflow_id: "cache-pre-prune.yml"' in script
     assert "prePruneReady" in script
+    # #1875: a pre-prune that failed closed settles the barrier; refusing
+    # here deadlocked main because this cleanup is what shrinks the inventory.
+    assert 'const prePruneReady = prePrune?.status === "completed";' in script
+    assert "failed; refusing cleanup" not in script
     assert "MAIN_CACHE_WRITER_WORKFLOW_NAMES" in script
     assert 'run.head_branch === "main"' in script
     assert "run.head_sha === expectedSha" in script
