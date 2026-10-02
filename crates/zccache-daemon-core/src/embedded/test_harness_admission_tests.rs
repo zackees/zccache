@@ -80,11 +80,10 @@ impl Workspace {
             compiler: self.rustc.clone(),
             args,
             cwd: self.temp.path().into(),
-            // rustc finds its linker on the request's PATH.
-            env: std::env::var("PATH")
-                .ok()
-                .map(|path| ("PATH".to_string(), path))
-                .into_iter()
+            // rustc's linker needs the host environment (PATH; LIB on
+            // MSVC); the admission variable is the test's to set.
+            env: std::env::vars()
+                .filter(|(key, _)| key != crate::core::config::CACHE_TEST_BINS_ENV)
                 .chain(
                     env.iter()
                         .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
