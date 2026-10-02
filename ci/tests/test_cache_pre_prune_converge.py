@@ -152,4 +152,7 @@ def test_listing_that_never_settles_still_fails_closed_before_transition_deletes
     """Mid-flight inventory must not drive the forecast-dependent deletes."""
     out = _run(usageLagPolls=10_000, alwaysChanging=True)
     assert out["error"] is not None and "did not converge" in out["error"]
-    assert len(out["deleted"]) == 8  # the retire-first set only
+    # The retire-first set only (16 since #1875 added the previous soldr
+    # generation's registries to it).
+    assert sorted(out["deleted"]) == sorted(live._plan(live._caches())["retireFirstIds"])
+    assert len(out["deleted"]) == 16

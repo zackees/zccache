@@ -109,9 +109,16 @@ def test_live_9490_inventory_fits_after_retiring_superseded_generations() -> Non
     assert plan["projectedPeakBytes"] <= TARGET
     keys = {c["id"]: c["key"] for c in caches}
     retired = sorted(keys[i] for i in plan["retireFirstIds"])
-    # Older soldr-mini versions and older prepare-v3 signatures only.
+    # Older soldr-mini versions, older prepare-v3 signatures, and (#1875)
+    # registries saved before the 0.9.26 generation whose family already holds
+    # a 0.9.26-generation registry.
+    previous_registry_digests = (
+        "85229e05b0612895", "27deaf711481c4fc", "6fef49df0527cdf1", "f87c9084b4c91b6a",
+        "4962042243664ed1", "9de1f1526ac8e278",
+    )
     assert retired and all(
         k.startswith("soldr-mini-v2-") or "-prepare-v3-" in k or "f6cafa616" in k
+        or (k.startswith("setup-soldr-cargoregistry-") and k.endswith(previous_registry_digests))
         for k in retired
     ), retired
     assert any("-v0.9.25" in k for k in retired)

@@ -364,6 +364,90 @@ function supersededGenerationIds(caches) {
   return superseded;
 }
 
+// Entries saved up to this long before the first current-soldr `soldr-mini`
+// still count as current: a quick job can save its build cache before the
+// slowest job of the same run saves `soldr-mini`.
+const GENERATION_EPOCH_SLACK_MS = 10 * 60 * 1000;
+
+// `setup-soldr-dylint-v2-<os>-<arch>-<triple>-<digest16>[-<suffix>]`: the
+// digest is the tool/toolchain/driver identity; the rest is the restore shape.
+function dylintFoundationKeyParts(key) {
+  const match =
+    /^(setup-soldr-dylint-v2-(?:linux|macos|windows)-(?:x64|arm64)-[a-z0-9_]+(?:-[a-z0-9_]+)+?)-([0-9a-f]{16})((?:-[a-z0-9._-]+)?)$/i.exec(
+      key,
+    );
+  return match ? { shape: `${match[1]}\u0000${match[3]}`, digest: match[2].toLowerCase() } : null;
+}
+
+// When the newest soldr release started saving on main: the earliest main
+// `soldr-mini-v2-*` entry of the highest soldr version, or null.
+function soldrGenerationEpoch(mainRows) {
+  let best = null;
+  for (const cache of mainRows) {
+    const mini = /^soldr-mini-v2-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+-v([0-9.]+)$/i.exec(cache.key);
+    const created = Date.parse(cache.created_at);
+    if (!mini || !Number.isFinite(created)) continue;
+    const cmp = best ? compareDotted(mini[1], best.version) : 1;
+    if (cmp > 0 || (cmp === 0 && created < best.created)) best = { version: mini[1], created };
+  }
+  return best && best.created;
+}
+
+// #1875: same-lock soldr generations. A soldr release (0.9.25 -> 0.9.27 on
+// 2026-10-02 left 12.41 GB live and failed every pre-prune closed) moves
+// setup-soldr's toolchain-signature digest (build cache, registry), the dylint
+// identities and the cook-base `soldr` component while `Cargo.lock` stays put,
+// so the old-lock rules never fire. Every digest in a restore prefix includes
+// the soldr version, so an entry saved before the current soldr generation
+// (see `soldrGenerationEpoch`) is unrestorable by current producers. It is
+// retired once its restore family (os, arch, suffix, lock) holds a sibling
+// saved in the current generation, i.e. once its replacement exists. Families
+// whose producer has not re-seeded yet keep their entry, and concurrent job
+// shapes are all saved in the current generation, so neither is touched.
+// Registry entries restore across digests (lock-only prefix) and hold the
+// same sources for one lock, so their family is (format, os, arch, lock).
+// Cook bases compare their explicit (rustc, soldr) versions instead.
+function supersededToolchainGenerationIds(caches) {
+  const mainRows = caches.filter(
+    (cache) => cache.ref === "refs/heads/main" && typeof cache.key === "string",
+  );
+  const superseded = new Set(supersededCookBaseIds(mainRows));
+  const epoch = soldrGenerationEpoch(mainRows);
+  if (epoch === null) return superseded;
+  const cutoff = epoch - GENERATION_EPOCH_SLACK_MS;
+  const groups = new Map();
+  const add = (family, cache) => {
+    const group = groups.get(family) || [];
+    group.push(cache);
+    groups.set(family, group);
+  };
+  for (const cache of mainRows) {
+    const build = setupSoldrBuildCacheKeyParts(cache.key);
+    if (build) {
+      add(`build\u0000${build.os}\u0000${build.arch}\u0000${build.suffix}\u0000${build.lockHash}`, cache);
+      continue;
+    }
+    const registry = setupSoldrCargoRegistryKeyParts(cache.key);
+    if (registry) {
+      add(`registry\u0000${registry.format}\u0000${registry.os}\u0000${registry.arch}\u0000${registry.lockHash}`, cache);
+      continue;
+    }
+    const output = dylintOutputKeyParts(cache.key);
+    if (output) {
+      add(`dylint-output\u0000${output.os}\u0000${output.arch}\u0000${output.lockHash}`, cache);
+      continue;
+    }
+    const foundation = dylintFoundationKeyParts(cache.key);
+    if (foundation) add(`dylint\u0000${foundation.shape}`, cache);
+  }
+  const savedBefore = (cache) => Date.parse(cache.created_at) < cutoff;
+  for (const group of groups.values()) {
+    if (!group.some((cache) => !savedBefore(cache))) continue;
+    for (const cache of group) if (savedBefore(cache)) superseded.add(cache.id);
+  }
+  return superseded;
+}
+
 // #1858: lock-keyed families that re-seed on a Cargo.lock change but were never
 // forecast. Each parser is strict; unknown formats in an owned namespace fail
 // the forecast closed (see `unknownOwnedCacheKey`).
@@ -583,6 +667,7 @@ function planLockTransitionPrePrune(
     .filter(Boolean);
   const reseeds = planLockKeyedReseeds(reseedRows, currentHashes);
   const retireFirstIds = [...new Set([
+    ...supersededToolchainGenerationIds(mainRows),
     ...reseeds.retireFirst.map((cache) => cache.id),
     ...staleCooks
       .filter((cache) => supersededCooks.has(cache.id) || isRetiredMainKey(cache.key))
@@ -737,6 +822,8 @@ function planCountPrune(caches, keepPerShape = 1, currentRootLockHashes = null) 
   stale.push(...[...supersededBuildCacheIds(caches, currentRootLockHashes)]
     .map((id) => caches.find((cache) => cache.id === id))
     .filter(Boolean));
+  const toolchainSuperseded = supersededToolchainGenerationIds(caches);
+  stale.push(...caches.filter((cache) => toolchainSuperseded.has(cache.id)));
   for (const cache of caches) {
     if (!cache.key || !isEligible(cache.key)) continue;
     if (cache.ref === "refs/heads/main" && isRetiredMainKey(cache.key)) {
@@ -842,5 +929,6 @@ module.exports = {
   supersededBuildCacheIds,
   supersededCookBaseIds,
   supersededGenerationIds,
+  supersededToolchainGenerationIds,
   unknownOwnedCacheKey,
 };
