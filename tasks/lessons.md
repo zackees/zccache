@@ -1,5 +1,12 @@
 # Lessons
 
+## Link payloads include permissions (2026-10-02)
+
+Reading a linked executable into a byte buffer drops execute bits. Retain
+native output modes beside cached bytes, restore each sidecar's own mode,
+and cover execution after a hit and daemon restart. Legacy metadata without
+modes must trigger a fresh link instead of inferring permissions from names.
+
 ## macOS CI is queue-bound, not compute-bound — cut job *count*, not job duration (2026-07-28)
 
 Measured on macOS run `30378201671`: four jobs queued 16/32/49/59 min and ran

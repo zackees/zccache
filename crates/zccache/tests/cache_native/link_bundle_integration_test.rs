@@ -165,6 +165,8 @@ async fn real_dsymutil_bundle_miss_delete_hit() {
 #[tokio::test]
 #[ignore] // Real clang + LLD; run through `test --full`.
 async fn real_lld_semantic_outputs_miss_delete_hit() {
+    use std::os::unix::fs::PermissionsExt;
+
     let Some(clang) = zccache::test_support::find_on_path("clang") else {
         eprintln!("skipping: clang not found");
         return;
@@ -208,6 +210,12 @@ async fn real_lld_semantic_outputs_miss_delete_hit() {
         link_request(&mut client, &clang, &args, temp.path()).await,
         false,
     );
+    let output_modes = [&executable, &map, &dependency]
+        .map(|path| std::fs::metadata(path).unwrap().permissions().mode());
+    assert!(std::process::Command::new(&executable)
+        .status()
+        .unwrap()
+        .success());
     let expected = [
         std::fs::read(&executable).unwrap(),
         std::fs::read(&map).unwrap(),
@@ -220,9 +228,22 @@ async fn real_lld_semantic_outputs_miss_delete_hit() {
         link_request(&mut client, &clang, &args, temp.path()).await,
         true,
     );
-    assert_eq!(std::fs::read(executable).unwrap(), expected[0]);
-    assert_eq!(std::fs::read(map).unwrap(), expected[1]);
-    assert_eq!(std::fs::read(dependency).unwrap(), expected[2]);
+    assert_eq!(std::fs::read(&executable).unwrap(), expected[0]);
+    assert_eq!(std::fs::read(&map).unwrap(), expected[1]);
+    assert_eq!(std::fs::read(&dependency).unwrap(), expected[2]);
+    for (path, expected_mode) in [&executable, &map, &dependency]
+        .into_iter()
+        .zip(output_modes)
+    {
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode(),
+            expected_mode
+        );
+    }
+    assert!(std::process::Command::new(&executable)
+        .status()
+        .unwrap()
+        .success());
     shutdown.notify_one();
     handle.await.unwrap();
 }

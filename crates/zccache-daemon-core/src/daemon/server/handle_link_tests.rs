@@ -3,6 +3,166 @@
 use super::*;
 
 #[cfg(unix)]
+#[tokio::test]
+async fn link_hits_preserve_executable_and_sidecar_modes() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir: NormalizedPath = temp.path().join("cache").into();
+    let _cache_env = crate::daemon::server::tests::CacheDirEnvGuard::set(&cache_dir);
+    let server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir).unwrap();
+    let tool = temp.path().join("clang");
+    std::fs::write(
+        &tool,
+        r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then shift; output="$1"; fi
+    shift
+done
+printf '#!/bin/sh\nexit 0\n' > "$output"
+chmod 751 "$output"
+printf 'debug symbols\n' > "$output.debug"
+chmod 640 "$output.debug"
+"#,
+    )
+    .unwrap();
+    crate::platform::fs::permissions::make_executable(&tool).unwrap();
+    let input = temp.path().join("main.o");
+    std::fs::write(&input, b"object payload").unwrap();
+    let output = temp.path().join("app");
+    let sidecar = temp.path().join("app.debug");
+    let args = vec![
+        "-o".to_string(),
+        output.to_string_lossy().into_owned(),
+        input.to_string_lossy().into_owned(),
+    ];
+    let first = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &tool,
+        &args,
+        temp.path(),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        first,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: false,
+            ..
+        }
+    ));
+
+    for mode in MaterializationMode::ALL {
+        for path in [&output, &sidecar] {
+            std::fs::remove_file(path).unwrap();
+        }
+        let env = Some(vec![("ZCCACHE_MODE".to_string(), mode.to_string())]);
+        let hit = handle_link_ephemeral(
+            &server.state,
+            std::process::id(),
+            &tool,
+            &args,
+            temp.path(),
+            env,
+        )
+        .await;
+        assert!(matches!(
+            hit,
+            Response::LinkResult {
+                exit_code: 0,
+                cached: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            crate::platform::fs::permissions::mode(&std::fs::metadata(&output).unwrap()) & 0o777,
+            0o751,
+            "{mode}"
+        );
+        assert_eq!(
+            crate::platform::fs::permissions::mode(&std::fs::metadata(&sidecar).unwrap()) & 0o777,
+            0o640,
+            "{mode}"
+        );
+        assert!(std::process::Command::new(&output)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    // Drain publication and flush the index before testing a restart hit.
+    let publication = server.state.artifact_publication.write().await;
+    for entry in server.state.artifacts.iter() {
+        server.state.artifact_store.insert(entry.key(), &entry.meta);
+    }
+    server.state.artifact_store.flush().unwrap();
+    drop(publication);
+    drop(server);
+    std::fs::remove_file(&output).unwrap();
+    std::fs::remove_file(&sidecar).unwrap();
+    let server =
+        DaemonServer::bind_with_cache_dir(&crate::ipc::unique_test_endpoint(), &cache_dir).unwrap();
+    let hit = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &tool,
+        &args,
+        temp.path(),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        hit,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        crate::platform::fs::permissions::mode(&std::fs::metadata(&output).unwrap()) & 0o777,
+        0o751
+    );
+    assert_eq!(
+        crate::platform::fs::permissions::mode(&std::fs::metadata(&sidecar).unwrap()) & 0o777,
+        0o640
+    );
+    assert!(std::process::Command::new(&output)
+        .status()
+        .unwrap()
+        .success());
+
+    // Old metadata cannot distinguish an executable from a non-executable.
+    let entry = server.state.artifacts.iter().next().unwrap();
+    let key = entry.key().clone();
+    let mut legacy = entry.meta.clone();
+    drop(entry);
+    legacy.output_modes.clear();
+    server
+        .state
+        .artifacts
+        .insert(key, CachedArtifact::from_index(legacy));
+    let fresh = handle_link_ephemeral(
+        &server.state,
+        std::process::id(),
+        &tool,
+        &args,
+        temp.path(),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        fresh,
+        Response::LinkResult {
+            exit_code: 0,
+            cached: false,
+            ..
+        }
+    ));
+}
+
+#[cfg(unix)]
 fn write_counting_archiver(dir: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
