@@ -392,7 +392,10 @@ jobs:
           binary_ext: ${{ matrix.binary_ext }}
           cache_key: release-${{ matrix.target }}
           use_soldr: "true"
-          save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          # Release builds save no Actions cache: their cross-target prepare
+          # archives (3.41 GB on 1.15.1) are restorable only by the next
+          # release, and their build caches came out empty.
+          save_cache: "false"
           cross_compile: "true"
           prebuild_deps: ${{ matrix.prebuild_deps || 'soldr-cook' }}
           clear_target_after_setup: ${{ matrix.clear_target_after_setup || 'false' }}
