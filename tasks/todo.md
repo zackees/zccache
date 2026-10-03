@@ -1312,5 +1312,8 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Confirm #1867/#1868 already provide the publisher and a measured Linux Test precedent.
 - [x] Add a failing Integration wiring regression; retain guarded remote saves and job-status gating.
 - [x] Give Integration its own profile key and publish after shutdown plus audit without changing suite coverage.
-- [ ] Measure actual archive footprint and cold/warm cacheable hits under published Bosn; stay within the existing 2.9 GB build-cache cap.
+- [x] Measure the naive isolated publisher: cold 913 s passed; build 1,056,628,741 bytes, cook 3,533,586,676 bytes. Reject the added cook archive.
+- [x] Preserve warm failure: 495 s, prebuild 285→140 s, 3477/3478 passed; durability flush 786 ms exceeds unchanged 500 ms limit. Failed-job save gate refused publication.
+- [x] Remove Integration setup cook; restore dependencies through the isolated unit store. Reserve 1.2 GB for it within the build family, keeping total 9.5 GB unchanged; explicit ci-tests protects forbidden products.
+- [ ] Measure the revised committed tree and confirm coverage plus cache decisions; do not treat the failed warm run as an attestation.
 - [ ] Run focused checks, primary review and the full committed-tree local gate before pushing; verify the first remote head.

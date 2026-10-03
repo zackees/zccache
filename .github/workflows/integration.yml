@@ -123,8 +123,13 @@ jobs:
           toolchain: 1.95.0
           cache: true
           linker: fast
-          prebuild-deps: soldr-cook
-          prebuild-deps-flags: ""
+          # #1885: the isolated unit store reuses dependencies and workspace
+          # units. A setup cook here runs under a different cache root and
+          # saved a 3.53 GB post-build archive in the measured cold replay.
+          # Keep that duplicate target archive out of the cook family.
+          prebuild-deps: none
+          cargo-registry-cache: true
+          ci-tests: true # linked test products stay outside every cache layer
           # #240: seed the isolated integration SOLDR_CACHE_DIR from the
           # restored build-cache so the daemon-isolated test phase starts warm.
           seed-isolated-build-cache: ${{ runner.temp }}/zccache-self-tests/integration
