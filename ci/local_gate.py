@@ -278,6 +278,14 @@ def _run_plain(check: Check) -> Result:
     return Result(check, proc.returncode, time.monotonic() - start, proc.output)
 
 
+def _save_log(result: Result) -> Path:
+    logs = ROOT / "target" / "local-gate-logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    path = logs / (re.sub(r"[^A-Za-z0-9_.-]+", "-", result.check.name).strip("-") + ".log")
+    path.write_text(result.output, encoding="utf-8")
+    return path
+
+
 def _report(result: Result) -> None:
     status = "ok  " if result.code == 0 else "FAIL"
     print(f"{status} {result.seconds:6.1f}s  {result.check.name}", flush=True)
@@ -317,6 +325,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n===== FAIL: {result.check.name} (exit {result.code}) =====")
         print(f"$ {' '.join(result.check.argv)}")
         print(result.output.rstrip()[-20000:])
+        # The tail can miss the cause (nextest prints a failing test's output
+        # where it fails, not at the end), so keep the whole log.
+        print(f"full output: {_save_log(result)}")
     total = time.monotonic() - start
     print(f"\nlocal gate ({args.lane}): {len(results) - len(failed)}/{len(results)} passed in {total:.0f}s")
     return 1 if failed else 0
