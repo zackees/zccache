@@ -52,9 +52,10 @@ jobs:
         with:
           job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          # Local act runs (bosn; pull_request events) save fully; GitHub keeps
-          # the #1677 main-push-only rule. See SAVE_CACHE_POLICY in ci/check_cache_footprint.py.
-          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false') }}
+          # Global auto keeps local saves warm; the remote permission preserves
+          # the #1677 current-main pre-prune guard (setup-soldr#565).
+          save-cache: auto
+          save-cache-remote: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}
           zccache-seed-strict: true
           cache: false
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
@@ -89,7 +90,8 @@ jobs:
         with:
           job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false') }}
+          save-cache: auto
+          save-cache-remote: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}
           zccache-seed-strict: true
           cache: false
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
@@ -166,7 +168,8 @@ jobs:
         with:
           job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false') }}
+          save-cache: auto
+          save-cache-remote: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}
           zccache-seed-strict: true
           cache: false
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.

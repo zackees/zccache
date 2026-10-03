@@ -4,6 +4,8 @@ Python scripts for development tooling. Rust commands go through `soldr <tool>` 
 
 ## Top-Level Scripts
 
+- **`ci/check_cache_footprint.py`** — Guards measured cache families and the published setup-soldr save contract: global `auto`, current-main pre-prune permission in `save-cache-remote`, and explicit global `false` for read-only consumers. Rejects ACT-only overrides and unsupported remote-permission refs.
+
 - **`uv run --no-project python ci/incremental_build.py --samples 5 --output incremental-build.json`** - Measures warm rebuilds after touching compile, link, exec, connection, and shared-state surfaces. Records timing distributions, rebuilt packages, and aggregate process-tree RSS.
 - **`uv run --no-project python ci/compile_boundary.py`** - Reports compile-handler references to server-private symbols and rejects new glob imports. Pass `--deny-all-globs` after the remaining legacy imports are removed.
 - **`ci/save_cache_policy.py`** - Resolves the zccache Action's `save-cache: auto|true|false` (default `auto`) once per job: skip on GitHub-hosted `pull_request`, always save on local runners (act/bosn). See `action/README.md` (#1783)

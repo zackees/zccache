@@ -1,4 +1,5 @@
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -161,7 +162,9 @@ def test_windows_fs_matrix_cache_profile_is_guarded_red_green(tmp_path: Path) ->
         content.replace("prebuild-deps: none", "prebuild-deps: soldr-cook", 1)
     )
     errors = guard.check(tmp_path)
-    assert any("Windows setup must keep prebuild-deps='none'" in error for error in errors)
+    assert any(
+        "Windows setup must keep prebuild-deps='none'" in error for error in errors
+    )
 
 
 def test_rejects_distinct_suffixes_for_same_shape(tmp_path: Path) -> None:
@@ -181,7 +184,9 @@ def test_allows_justified_suffix_and_different_shapes(tmp_path: Path) -> None:
         _job("test")
         + _job("dylint", **{"cache-key-suffix": "dylint"})
         + _job("e2e", **{"cache-key-suffix": "e2e", "prebuild-deps-flags": "--release"})
-        + _job("mac", os="macos-15", **{"cache-key-suffix": "mac", "prebuild-deps": "none"}),
+        + _job(
+            "mac", os="macos-15", **{"cache-key-suffix": "mac", "prebuild-deps": "none"}
+        ),
     )
     assert guard.check(tmp_path) == []
 
@@ -318,7 +323,9 @@ def test_non_linux_cook_producer_is_red_green(tmp_path: Path) -> None:
     errors = guard.check(tmp_path)
     assert any("cook bases are Linux-only" in error for error in errors)
 
-    _workflow(tmp_path, "mac.yml", _job("mac", os="macos-15", **{"prebuild-deps": "none"}))
+    _workflow(
+        tmp_path, "mac.yml", _job("mac", os="macos-15", **{"prebuild-deps": "none"})
+    )
     assert not any("cook bases are Linux-only" in e for e in guard.check(tmp_path))
 
 
@@ -334,28 +341,33 @@ def test_linux_only_cook_expression_passes_on_a_mixed_matrix(tmp_path: Path) -> 
     assert not any("cook bases are Linux-only" in e for e in guard.check(tmp_path))
 
 
-def test_save_cache_policy_is_main_push_only_on_github_and_full_under_act() -> None:
-    """GitHub pull_request runs never save; local act (bosn#309) saves fully."""
-    policy = guard.SAVE_CACHE_POLICY
+@dataclass(frozen=True)
+class WriterEvent:
+    event: str
+    ref: str
+    expected: str
 
-    def evaluate(event_name: str, ref: str, act: str = "") -> str:
-        return guard.evaluate_save_policy(policy, event_name=event_name, ref=ref, act=act)
 
-    assert evaluate("pull_request", "refs/pull/7/merge") == "false"
-    assert evaluate("pull_request_target", "refs/heads/main") == "false"
-    assert evaluate("push", "refs/heads/feature") == "false"
-    assert evaluate("schedule", "refs/heads/main") == "false"
-    assert evaluate("push", "refs/heads/main") == "auto"
-    assert evaluate("pull_request", "refs/pull/7/merge", act="true") == "true"
-    # On GitHub the act prefix is inert: identical to the bare #1677 rule.
-    for event_name, ref in (
-        ("pull_request", "refs/pull/7/merge"),
-        ("push", "refs/heads/main"),
-        ("push", "refs/heads/feature"),
-    ):
-        assert evaluate(event_name, ref) == guard.evaluate_save_policy(
-            guard.MAIN_PUSH_ONLY_SAVE, event_name=event_name, ref=ref
-        )
+def test_remote_permission_is_main_push_only_and_independent_of_runner() -> None:
+    assert guard.SAVE_CACHE_POLICY == "auto"
+    cases = (
+        WriterEvent("pull_request", "refs/pull/7/merge", "false"),
+        WriterEvent("pull_request_target", "refs/heads/main", "false"),
+        WriterEvent("push", "refs/heads/feature", "false"),
+        WriterEvent("schedule", "refs/heads/main", "false"),
+        WriterEvent("push", "refs/heads/main", "auto"),
+    )
+    for case in cases:
+        for act in ("", "true"):
+            assert (
+                guard.evaluate_save_policy(
+                    guard.REMOTE_SAVE_CACHE_POLICY,
+                    event_name=case.event,
+                    ref=case.ref,
+                    act=act,
+                )
+                == case.expected
+            )
     assert guard._save_policy_errors() == []
 
 
@@ -372,7 +384,13 @@ def test_save_cache_policy_is_accepted(tmp_path: Path) -> None:
     _workflow(
         tmp_path,
         "a.yml",
-        _job("a", **{"save-cache": guard.SAVE_CACHE_POLICY}),
+        _job(
+            "a",
+            **{
+                "save-cache": guard.SAVE_CACHE_POLICY,
+                "save-cache-remote": guard.REMOTE_SAVE_CACHE_POLICY,
+            },
+        ),
     )
     assert guard.check(tmp_path) == []
 
@@ -391,7 +409,7 @@ def test_bare_main_push_only_expression_is_rejected(tmp_path: Path) -> None:
     ), errors
 
 
-def test_repository_setup_soldr_steps_use_the_act_policy() -> None:
+def test_repository_setup_soldr_steps_use_the_published_policy() -> None:
     steps = [s for s in guard.collect(guard.ROOT) if s.main_action]
     savers = [
         s for s in steps if str(s.inputs.get("save-cache", "")).strip() != "false"
@@ -404,19 +422,25 @@ def test_repository_setup_soldr_steps_use_the_act_policy() -> None:
             else guard.SAVE_CACHE_POLICY
         )
         assert step.inputs.get("save-cache") == expected, step.where
+        if not step.where.startswith("actions/"):
+            assert (
+                step.inputs.get("save-cache-remote") == guard.REMOTE_SAVE_CACHE_POLICY
+            ), step.where
 
 
-def test_composite_without_act_prefix_is_rejected(tmp_path: Path) -> None:
+def test_composite_forwards_global_policy_without_runner_override(
+    tmp_path: Path,
+) -> None:
     action = tmp_path / ".github" / "actions" / "build-target" / "action.yml"
     action.parent.mkdir(parents=True)
     action.write_text(
         "runs:\n  using: composite\n  steps:\n"
         f"    - uses: zackees/setup-soldr@{CURRENT}\n      with:\n"
         "        cook-delta: false\n        solo-toolchain-cache: false\n"
-        "        save-cache: ${{ inputs.save_cache }}\n",
+        "        prebuild-deps: none\n        save-cache: ${{ inputs.save_cache }}\n",
         encoding="utf-8",
     )
-    assert any("COMPOSITE_SAVE_CACHE_POLICY" in e for e in guard.check(tmp_path))
+    assert guard.check(tmp_path) == []
 
 
 def _cook_workflow(root: Path, body: str) -> None:
@@ -432,6 +456,7 @@ def _cook_step(**overrides: str) -> str:
         "if": guard.COOK_SUBACTION_LINUX_ONLY_IF,
         "cook-delta": "false",
         "save-cache": guard.SAVE_CACHE_POLICY,
+        "save-cache-remote": guard.REMOTE_SAVE_CACHE_POLICY,
     }
     fields.update(overrides)
     when = fields.pop("if")
@@ -457,7 +482,9 @@ def test_unbudgeted_cook_subaction_family_is_rejected(tmp_path: Path) -> None:
     assert any("no budget" in e for e in errors), errors
 
 
-def test_cook_subaction_must_be_linux_only_delta_free_and_main_saved(tmp_path: Path) -> None:
+def test_cook_subaction_must_be_linux_only_delta_free_and_main_saved(
+    tmp_path: Path,
+) -> None:
     _cook_workflow(tmp_path, _cook_step(**{"if": "always()", "cook-delta": "true"}))
     errors = guard._cook_subaction_errors(tmp_path)
     assert any("Linux-only" in e for e in errors), errors
@@ -468,13 +495,17 @@ def test_cook_subaction_must_be_linux_only_delta_free_and_main_saved(tmp_path: P
 
 def test_cook_subaction_budgets_cannot_exceed_the_family_total(monkeypatch) -> None:
     monkeypatch.setattr(
-        guard, "COOK_SUBACTION_BUDGETS", {"a.yml:x": 400_000_000, "b.yml:y": 400_000_000}
+        guard,
+        "COOK_SUBACTION_BUDGETS",
+        {"a.yml:x": 400_000_000, "b.yml:y": 400_000_000},
     )
     errors = guard._cook_subaction_errors(guard.ROOT)
     assert any("COOK_SUBACTION_TOTAL_BUDGET_BYTES" in e for e in errors), errors
 
 
-def _dylint_workflow(root: Path, name: str, runs_on: str = "ubuntu-latest", **inputs: str) -> None:
+def _dylint_workflow(
+    root: Path, name: str, runs_on: str = "ubuntu-latest", **inputs: str
+) -> None:
     fields = {"dylint": "true", **inputs}
     lines = "".join(f'          {k}: "{v}"\n' for k, v in fields.items())
     _workflow(
@@ -517,7 +548,8 @@ def test_dylint_output_budgets_cannot_exceed_the_family_total(monkeypatch) -> No
 def test_a_refused_pre_prune_barrier_makes_main_push_restore_only() -> None:
     """The barrier exports ZCCACHE_CACHE_WRITES instead of failing the job;
     a main push saves only when it says 'true'."""
-    for policy in (guard.SAVE_CACHE_POLICY, guard.MAIN_PUSH_ONLY_SAVE):
+    for policy in (guard.REMOTE_SAVE_CACHE_POLICY, guard.MAIN_PUSH_ONLY_SAVE):
+
         def evaluate(writes: str, policy: str = policy) -> str:
             return guard.evaluate_save_policy(
                 policy, event_name="push", ref="refs/heads/main", cache_writes=writes
