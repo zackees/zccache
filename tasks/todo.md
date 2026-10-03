@@ -1286,3 +1286,13 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Validate a complete run before publication; preserve legacy Markdown consumers and historical schema compatibility.
 - [x] Render warm-only and methodologically distinct rows honestly, retain per-mode cache sizes, and prove legible final-resolution images.
 - [ ] Run targeted and broad tests, review, rebase onto origin/main, push a PR, wait for CI, merge, and remove this worktree/branch leftovers.
+
+
+# #1885 Bosn Actions isolated test gate
+
+- [x] Measure unchanged Integration and MSRV workflows using published Bosn 0.1.12 / act2.3 (499.122 s and 147.414 s, both passed).
+- [x] Add failing source-proof regressions before replacing the legacy task.
+- [x] Replay MSRV in check and Integration in tests; require clean source plus successful executed steps.
+- [x] Update gate/drift/docs contracts; retain native, ignored/stress and other workflow coverage.
+- [ ] Run focused tests, cache-footprint guard, review and the complete committed-tree local gate before push.
+- [ ] Separately migrate the ACT-specific cache writer overrides through the published remote-permission contract.

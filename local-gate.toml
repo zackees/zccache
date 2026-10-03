@@ -3,7 +3,7 @@
 #
 # Before every push, from a clean, committed tree:
 #
-#   uvx --from git+https://github.com/zackees/ci.yml@7edeb8dc318c1530ee3bf770029cb2e8b639e6f5 ci-lint local-gate run
+#   uvx --from git+https://github.com/zackees/ci.yml@365508627edb8130e2c5615338b00bf02a069fa7 ci-lint local-gate run
 #
 # runs `run` below and, on success, stamps HEAD with a tree-bound
 # `Local-Gate:` trailer and one `Ci-Attestation:` trailer per gate of each
@@ -29,15 +29,15 @@ mode = "shadow"
 # zackees/ci.yml#168 (GATE-005): zccache's tests start zccache daemons and
 # touch zccache state roots, and zccache is the live compiler cache of every
 # soldr build on a developer host. The nextest run-wrapper refuses unless
-# CI=true or the marker is set; the bosn gate image sets the marker; the
-# gate's `tests` lane runs the suite there.
+# CI=true or the marker is set; act sets CI=true inside its isolated jobs.
+# Both check and tests lanes replay their actual Actions workflows.
 [gate.isolation]
 marker = "ZCCACHE_TEST_ISOLATED"
-runner = ["bosn", "run", "--task", "gate-test"]
+runner = ["bosn", "ci", "run"]
 guard = "ci/nextest_isolation_guard.sh"
-# zackees/ci.yml#196 (GATE-009): the gate writes .gate-nonce and the bosn
-# task echoes it from /work, so a container bound to another worktree fails
-# instead of attesting someone else's tree.
+# zackees/ci.yml#196 (GATE-009): the Bosn run receipt must match this
+# workspace and HEAD with dirty=null; actual
+# expected job steps must have completed. No ignored nonce is relied on.
 proves-tree = true
 
 # zackees/ci.yml#177 (GATE-007): lanes are cached on their own inputs (the
@@ -56,10 +56,10 @@ tools = ["soldr", "uv"]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "py-tests"]
 tools = ["uv"]
 
-# `soldr cargo check --workspace` on the pinned (= MSRV) toolchain.
+# Replay MSRV (workspace check plus the nested Dylint test) through Bosn Actions.
 [gate.lanes.check]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "check"]
-tools = ["soldr"]
+tools = ["bosn"]
 
 # rustdoc, warnings denied.
 [gate.lanes.docs]
