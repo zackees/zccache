@@ -39,9 +39,10 @@ jobs:
         with:
           job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          # Local act runs (bosn; pull_request events) save fully; GitHub keeps
-          # the #1677 main-push-only rule. See SAVE_CACHE_POLICY in ci/check_cache_footprint.py.
-          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false') }}
+          # Global auto keeps local saves warm; the remote permission preserves
+          # the #1677 current-main pre-prune guard (setup-soldr#565).
+          save-cache: auto
+          save-cache-remote: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -96,7 +97,8 @@ jobs:
           # job), so it never held this job's test-profile compiles: 0 of 47
           # hit. The publish step at the end saves the isolated store here.
           cache-key-suffix: ${{ inputs.os == 'ubuntu-latest' && 'test' || '' }}
-          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false') }}
+          save-cache: auto
+          save-cache-remote: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}
           zccache-seed-strict: true
           toolchain: 1.95.0
           cache: true
@@ -149,7 +151,8 @@ jobs:
         with:
           flags: --workspace -- --tests
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
-          save-cache: ${{ env.ACT && 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false') }}
+          save-cache: auto
+          save-cache-remote: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}
       # Platform Test runs unit tests in libraries and binaries only — it
       # intentionally does NOT compile the integration test binaries under
       # `crates/*/tests/`. Most of those binaries' tests are #[ignore]'d, but

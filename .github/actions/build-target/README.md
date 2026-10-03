@@ -11,6 +11,9 @@ rather than each workflow rolling its own packaging steps.
 - `cache_key` (required) — cache key suffix passed to setup-soldr.
 - `binary_ext` — executable suffix, e.g. `.exe`.
 - `use_soldr` — use setup-soldr for setup and caching (default `true`).
+- `save_cache` — global save policy, forwarded unchanged (default `false`).
+  Explicit `false` keeps release/build callers read-only on every runner;
+  `auto` delegates local automatic saves to setup-soldr.
 - `cross_compile` — build from a Linux x86 host. When true, setup-soldr is
   given `cross-targets: <target>` and owns the whole toolchain lifecycle:
   Rust std, compiler, linker, SDK/sysroot, and target-scoped environment.

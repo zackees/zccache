@@ -17,7 +17,7 @@ inputs:
     required: false
     default: "true"
   save_cache:
-    description: setup-soldr cache-save policy (usually main push only).
+    description: Global setup-soldr save policy; false remains read-only everywhere.
     required: false
     default: "false"
   cross_compile:
@@ -183,9 +183,9 @@ runs:
       with:
         job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
         cook-delta: false # per-commit delta layer off (setup-soldr#528)
-        # Local act runs (bosn; pull_request events) save fully; GitHub keeps
-        # the #1677 main-push-only rule. See SAVE_CACHE_POLICY in ci/check_cache_footprint.py.
-        save-cache: ${{ env.ACT && 'true' || inputs.save_cache }}
+        # Forward the caller's explicit global policy unchanged. Release
+        # callers remain read-only on every runner; auto is action-owned.
+        save-cache: ${{ inputs.save_cache }}
         toolchain: 1.95.0
         cross-targets: ${{ inputs.cross_compile == 'true' && inputs.target || '' }}
         cache: true

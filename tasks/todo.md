@@ -1294,5 +1294,14 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Add failing source-proof regressions before replacing the legacy task.
 - [x] Replay MSRV in check and Integration in tests; require clean source plus successful executed steps.
 - [x] Update gate/drift/docs contracts; retain native, ignored/stress and other workflow coverage.
-- [ ] Run focused tests, cache-footprint guard, review and the complete committed-tree local gate before push.
+- [x] Run focused tests, cache-footprint guard, review and the complete committed-tree local gate before push (#1886; 637 s; all nine remote workflows passed first push).
 - [ ] Separately migrate the ACT-specific cache writer overrides through the published remote-permission contract.
+
+
+## #1885 remote cache permission slice
+
+- [x] Add RED regressions for remote PR-write overrides, unsupported action refs, ACT-only inputs and explicit global disables (6 RED; 82 targeted tests GREEN).
+- [x] Use published setup-soldr global auto / guarded remote inputs in all 23 existing workflow writers; preserve explicit read-only consumers and measured family budgets.
+- [x] Update the footprint guard, delegated build action, tests and documentation without adding workflow files; split writer-barrier coverage below the source-file size ceiling.
+- [ ] Run targeted tests, footprint guard, primary review and the complete committed-tree gate; verify real local/remote save decisions before merge.
+- [ ] Follow up isolated compiled-output publication / assertion-only failure reuse from measured evidence; preserve CACHE-007/008 payload and failure constraints.

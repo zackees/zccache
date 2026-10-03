@@ -15,12 +15,11 @@ Fails when:
   other ref only ``save-cache: false`` or an expression that is false on
   ``pull_request`` counts.  ``save-cache: true`` must be justified in
   ``JUSTIFIED_PR_SAVES`` (keyed ``workflow.yml:job``);
-* a setup-soldr step still writes the bare main-push-only rule
-  (``MAIN_PUSH_ONLY_SAVE``) instead of ``SAVE_CACHE_POLICY``.  The only
-  exception to the main-push-only rule is nektos/act: local bosn runs are
-  ``pull_request`` events with ``ACT=true`` and save fully so they stay warm
-  (zackees/bosn#309); on GitHub ``env.ACT`` is empty and the policy reduces
-  to main-push-only, which ``check`` re-proves by evaluating it;
+* a setup-soldr step carries an ACT-only save override, or a remote writer
+  permission is passed to an action ref that cannot honor it. Normal writers
+  use ``save-cache: auto`` and ``save-cache-remote: REMOTE_SAVE_CACHE_POLICY``;
+  the published action keeps local automatic saves warm while GitHub permits
+  only current-main pushes accepted by the pre-prune barrier;
 * this repository's first-party action (``uses: ./``) cannot save durable
   caches from pull-request workflows; allow only explicit no-save or a
   main-ref-only save expression;
@@ -38,7 +37,7 @@ Fails when:
 * a standalone ``setup-soldr/cook`` sub-action step is not listed in
   ``COOK_SUBACTION_BUDGETS`` (a new cache family needs a measured budget before
   it lands, #1850), can run off Linux, keeps the cook-delta layer, saves outside
-  ``SAVE_CACHE_POLICY``, or the listed budgets exceed
+  ``REMOTE_SAVE_CACHE_POLICY`` with global ``auto``, or the listed budgets exceed
   ``COOK_SUBACTION_TOTAL_BUDGET_BYTES``.
 
 The repository-wide cache total is checked separately, online, by
@@ -53,6 +52,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 import yaml
 
@@ -109,22 +109,111 @@ MAIN_PUSH_ONLY_SAVE = (
     "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
     "&& env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}"
 )
-# The save-cache value every setup-soldr step that saves on main must use.
-# nektos/act sets ACT=true, so local bosn runs (deliberately pull_request
-# events) save fully and stay warm (zackees/bosn#309).  On GitHub `env.ACT`
-# is empty, so this reduces to MAIN_PUSH_ONLY_SAVE and a pull_request run
-# never saves; `check` proves that with `evaluate_save_policy`.  Revisit when
-# setup-soldr's runner-aware `auto` (zackees/setup-soldr#537) ships.
-SAVE_CACHE_POLICY = (
-    "${{ env.ACT && 'true' || (github.event_name == 'push' "
-    "&& github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' "
-    "&& 'auto' || 'false') }}"
+# Global auto delegates local warmth to the action (setup-soldr#537/#565).
+# The pre-prune permission controls remote writes only; false is never a
+# local cache disable. Explicit global false remains read-only everywhere.
+SAVE_CACHE_POLICY = "auto"
+REMOTE_SAVE_CACHE_POLICY = MAIN_PUSH_ONLY_SAVE
+COMPOSITE_SAVE_CACHE_POLICY = "${{ inputs.save_cache }}"
+REMOTE_SAVE_CACHE_REFS: dict[str, str] = {
+    "v0": "gated setup-soldr v0 promotion with #565 remote permission",
+    "d17a58eb2cea17a89af0824fb7c6b24ee68f5083": "published setup-soldr #565",
+}
+YamlValue: TypeAlias = (
+    str | int | float | bool | list["YamlValue"] | dict[str, "YamlValue"] | None
 )
-# The composite build-target action forwards its caller's GitHub policy and
-# adds the act prefix once, so callers keep MAIN_PUSH_ONLY_SAVE or "false".
-COMPOSITE_SAVE_CACHE_POLICY = "${{ env.ACT && 'true' || inputs.save_cache }}"
+
+
+@dataclass(frozen=True)
+class ParsedExpression:
+    value: str
+    cursor: int
+
+
+@dataclass(frozen=True)
+class RemoteWriterCase:
+    event: str
+    ref: str
+    writes: str
+    expected: str
+
 
 _EXPR_TOKEN = re.compile(r"\s*('[^']*'|&&|\|\||==|!=|\(|\)|[A-Za-z_][\w.]*)")
+
+
+@dataclass(frozen=True)
+class SaveExpressionParser:
+    expression: str
+    tokens: tuple[str, ...]
+    event: str
+    ref: str
+    act: str
+    writes: str
+
+    def primary(self, cursor: int) -> ParsedExpression:
+        token = self.tokens[cursor] if cursor < len(self.tokens) else ""
+        if token == "(":
+            parsed = self.either(cursor + 1)
+            if parsed.cursor >= len(self.tokens) or self.tokens[parsed.cursor] != ")":
+                raise ValueError(f"unbalanced parentheses in {self.expression!r}")
+            return ParsedExpression(parsed.value, parsed.cursor + 1)
+        if token.startswith("'"):
+            return ParsedExpression(token[1:-1], cursor + 1)
+        names = {
+            "env.ACT": self.act,
+            "env.ZCCACHE_CACHE_WRITES": self.writes,
+            "github.event_name": self.event,
+            "github.ref": self.ref,
+        }
+        if token in names:
+            return ParsedExpression(names[token], cursor + 1)
+        raise ValueError(f"unsupported token {token!r} in {self.expression!r}")
+
+    def compare(self, cursor: int) -> ParsedExpression:
+        parsed = self.primary(cursor)
+        while parsed.cursor < len(self.tokens) and self.tokens[parsed.cursor] in {
+            "==",
+            "!=",
+        }:
+            op = self.tokens[parsed.cursor]
+            right = self.primary(parsed.cursor + 1)
+            equal = parsed.value.lower() == right.value.lower()
+            parsed = ParsedExpression(
+                "true" if equal == (op == "==") else "", right.cursor
+            )
+        return parsed
+
+    def both(self, cursor: int) -> ParsedExpression:
+        parsed = self.compare(cursor)
+        while parsed.cursor < len(self.tokens) and self.tokens[parsed.cursor] == "&&":
+            right = self.compare(parsed.cursor + 1)
+            parsed = ParsedExpression(
+                right.value if parsed.value else parsed.value, right.cursor
+            )
+        return parsed
+
+    def either(self, cursor: int) -> ParsedExpression:
+        parsed = self.both(cursor)
+        while parsed.cursor < len(self.tokens) and self.tokens[parsed.cursor] == "||":
+            right = self.both(parsed.cursor + 1)
+            parsed = ParsedExpression(
+                parsed.value if parsed.value else right.value, right.cursor
+            )
+        return parsed
+
+
+def _expression_tokens(body: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    cursor = 0
+    while cursor < len(body):
+        match = _EXPR_TOKEN.match(body, cursor)
+        if not match:
+            raise ValueError(f"unsupported syntax at {body[cursor:]!r}")
+        tokens.append(match.group(1))
+        cursor = match.end()
+        while cursor < len(body) and body[cursor].isspace():
+            cursor += 1
+    return tuple(tokens)
 
 
 def evaluate_save_policy(
@@ -135,104 +224,50 @@ def evaluate_save_policy(
     act: str = "",
     cache_writes: str = "true",
 ) -> str:
-    """Evaluate a ``save-cache`` expression the way Actions would.
-
-    Supports the subset the save policies use: single-quoted strings,
-    ``env.ACT``, ``env.ZCCACHE_CACHE_WRITES``, ``github.event_name``, ``github.ref``, ``==``/``!=``,
-    ``&&``/``||`` (value-returning, empty string is falsy) and parentheses.
-    Anything else raises ``ValueError`` so an unprovable policy fails closed.
-    """
+    """Evaluate the documented Actions expression subset; reject unknown syntax."""
     body = expression.strip()
     if not (body.startswith("${{") and body.endswith("}}")):
         raise ValueError(f"not an expression: {expression!r}")
-    body = body[3:-2].strip()
-    tokens: list[str] = []
-    pos = 0
-    while pos < len(body):
-        match = _EXPR_TOKEN.match(body, pos)
-        if not match:
-            raise ValueError(f"unsupported syntax at {body[pos:]!r}")
-        tokens.append(match.group(1))
-        pos = match.end()
-        while pos < len(body) and body[pos].isspace():
-            pos += 1
-    names = {
-        "env.ACT": act,
-        "env.ZCCACHE_CACHE_WRITES": cache_writes,
-        "github.event_name": event_name,
-        "github.ref": ref,
-    }
-
-    def primary(i: int) -> tuple[str, int]:
-        token = tokens[i] if i < len(tokens) else ""
-        if token == "(":
-            value, i = either(i + 1)
-            if i >= len(tokens) or tokens[i] != ")":
-                raise ValueError(f"unbalanced parentheses in {expression!r}")
-            return value, i + 1
-        if token.startswith("'"):
-            return token[1:-1], i + 1
-        if token in names:
-            return names[token], i + 1
-        raise ValueError(f"unsupported token {token!r} in {expression!r}")
-
-    def compare(i: int) -> tuple[str, int]:
-        left, i = primary(i)
-        while i < len(tokens) and tokens[i] in {"==", "!="}:
-            op = tokens[i]
-            right, i = primary(i + 1)
-            equal = left.lower() == right.lower()
-            left = "true" if equal == (op == "==") else ""
-        return left, i
-
-    def both(i: int) -> tuple[str, int]:
-        left, i = compare(i)
-        while i < len(tokens) and tokens[i] == "&&":
-            right, i = compare(i + 1)
-            left = right if left else left
-        return left, i
-
-    def either(i: int) -> tuple[str, int]:
-        left, i = both(i)
-        while i < len(tokens) and tokens[i] == "||":
-            right, i = both(i + 1)
-            left = left if left else right
-        return left, i
-
-    value, end = either(0)
-    if end != len(tokens):
+    parser = SaveExpressionParser(
+        expression,
+        _expression_tokens(body[3:-2].strip()),
+        event_name,
+        ref,
+        act,
+        cache_writes,
+    )
+    parsed = parser.either(0)
+    if parsed.cursor != len(parser.tokens):
         raise ValueError(f"trailing tokens in {expression!r}")
-    return value
+    return parsed.value
 
 
 def _save_policy_errors() -> list[str]:
-    """Prove SAVE_CACHE_POLICY is main-push-only on GitHub and full under act."""
+    """Prove the remote permission admits only accepted current-main pushes."""
     cases = (
-        ("pull_request", "refs/pull/1/merge", "", "", "false"),
-        ("push", "refs/heads/feature", "", "true", "false"),
-        ("schedule", "refs/heads/main", "", "true", "false"),
-        ("push", "refs/heads/main", "", "true", "auto"),
-        # A refused (or skipped) pre-prune barrier: restore-only, never red.
-        ("push", "refs/heads/main", "", "false", "false"),
-        ("push", "refs/heads/main", "", "", "false"),
-        ("pull_request", "refs/pull/1/merge", "true", "", "true"),
+        RemoteWriterCase("pull_request", "refs/pull/1/merge", "", "false"),
+        RemoteWriterCase("pull_request_target", "refs/heads/main", "true", "false"),
+        RemoteWriterCase("push", "refs/heads/feature", "true", "false"),
+        RemoteWriterCase("schedule", "refs/heads/main", "true", "false"),
+        RemoteWriterCase("push", "refs/heads/main", "true", "auto"),
+        RemoteWriterCase("push", "refs/heads/main", "false", "false"),
+        RemoteWriterCase("push", "refs/heads/main", "", "false"),
     )
     errors: list[str] = []
-    for event_name, ref, act, writes, expected in cases:
+    for case in cases:
         actual = evaluate_save_policy(
-            SAVE_CACHE_POLICY,
-            event_name=event_name,
-            ref=ref,
-            act=act,
-            cache_writes=writes,
+            REMOTE_SAVE_CACHE_POLICY,
+            event_name=case.event,
+            ref=case.ref,
+            cache_writes=case.writes,
         )
-        if actual != expected:
+        if actual != case.expected:
             errors.append(
-                f"SAVE_CACHE_POLICY evaluates to {actual!r} for {event_name} "
-                f"{ref} (ACT={act!r}, ZCCACHE_CACHE_WRITES={writes!r}); "
-                f"expected {expected!r}"
+                f"REMOTE_SAVE_CACHE_POLICY evaluates to {actual!r} for {case.event} "
+                f"{case.ref} (ZCCACHE_CACHE_WRITES={case.writes!r}); expected {case.expected!r}"
             )
     return errors
+
 
 # #1677 budget policy: retire low-return archives identified by exact hosted
 # probes. #1758: cook bases are Linux-only (zackees/ci.yml#5 RUST-010); keep
@@ -298,7 +333,7 @@ ANY_OS = "*"
 class Step:
     where: str
     ref: str
-    inputs: dict
+    inputs: dict[str, YamlValue]
     oses: frozenset[str]
     pr_reachable: bool
     main_action: bool = True
@@ -386,19 +421,23 @@ def _shape(step: Step) -> tuple[str, ...]:
 
 
 def _cannot_save_on_pr(step: Step) -> bool:
-    value = str(step.inputs.get("save-cache", "")).strip().replace(" ", "")
-    main_push_only = _normal_expression(MAIN_PUSH_ONLY_SAVE)
-    main_push_boolean = (
-        "${{github.event_name=='push'&&github.ref=='refs/heads/main'"
-        "&&env.ZCCACHE_CACHE_WRITES=='true'}}"
-    )
-    if step.ref in SAVE_CACHE_REFS and value.lower() in {"", "auto"}:
+    value = _normal_expression(step.inputs.get("save-cache", ""))
+    if value == "false":
         return True
-    # SAVE_CACHE_POLICY is main-push-only on GitHub (env.ACT is empty there);
-    # _save_policy_errors re-proves that on every check.
-    if value == _normal_expression(SAVE_CACHE_POLICY):
+    remote = _normal_expression(step.inputs.get("save-cache-remote", ""))
+    if remote and step.ref not in REMOTE_SAVE_CACHE_REFS:
+        return False
+    if remote not in {"", "auto"}:
+        value = remote
+    elif step.ref in SAVE_CACHE_REFS and value in {"", "auto"}:
         return True
-    return value.lower() == "false" or value in {main_push_only, main_push_boolean} or value in {
+    return value in {
+        "false",
+        _normal_expression(MAIN_PUSH_ONLY_SAVE),
+        (
+            "${{github.event_name=='push'&&github.ref=='refs/heads/main'"
+            "&&env.ZCCACHE_CACHE_WRITES=='true'}}"
+        ),
         "${{github.event_name!='pull_request'}}",
         "${{github.event_name=='push'}}",
         "${{github.ref=='refs/heads/main'}}",
@@ -446,12 +485,14 @@ def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
     workflow = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     steps = (workflow.get("jobs") or {}).get("matrix", {}).get("steps") or []
     setup = [
-        step
-        for step in steps
-        if str(step.get("uses", "")).startswith(f"{ACTION}@")
+        step for step in steps if str(step.get("uses", "")).startswith(f"{ACTION}@")
     ]
-    windows = [step for step in setup if step.get("if") == "matrix.os == 'windows-latest'"]
-    other = [step for step in setup if step.get("if") == "matrix.os != 'windows-latest'"]
+    windows = [
+        step for step in setup if step.get("if") == "matrix.os == 'windows-latest'"
+    ]
+    other = [
+        step for step in setup if step.get("if") == "matrix.os != 'windows-latest'"
+    ]
     if len(setup) != 2 or len(windows) != 1 or len(other) != 1:
         return [
             (
@@ -462,7 +503,7 @@ def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
 
     errors: list[str] = []
     windows_with = windows[0].get("with") or {}
-    expected_save = SAVE_CACHE_POLICY
+    expected_save = REMOTE_SAVE_CACHE_POLICY
     expected_windows = {
         "build-cache": False,
         "cargo-registry-cache": True,
@@ -474,10 +515,13 @@ def _fs_matrix_windows_profile_errors(root: Path) -> list[str]:
                 f"fs-matrix.yml:matrix Windows setup must keep {key}={expected!r}; "
                 "cook bases are Linux-only (#1758) and this lane saves no build-cache"
             )
-    if windows_with.get("save-cache") != expected_save:
+    if (
+        windows_with.get("save-cache") != SAVE_CACHE_POLICY
+        or windows_with.get("save-cache-remote") != expected_save
+    ):
         errors.append(
             "fs-matrix.yml:matrix Windows setup must retain the main-push-only "
-            "save-cache policy (SAVE_CACHE_POLICY)"
+            "remote policy (REMOTE_SAVE_CACHE_POLICY) with global auto"
         )
 
     other_with = other[0].get("with") or {}
@@ -521,25 +565,54 @@ def _non_linux_cook_errors(steps: list[Step]) -> list[str]:
     return errors
 
 
-def _act_save_policy_errors(steps: list[Step]) -> list[str]:
-    """Main-push-only savers must use SAVE_CACHE_POLICY (act saves fully)."""
-    bare = _normal_expression(MAIN_PUSH_ONLY_SAVE)
-    inputs_only = _normal_expression("${{ inputs.save_cache }}")
+def _remote_save_policy_errors(steps: list[Step]) -> list[str]:
+    """No runner-specific input overrides; remote permission needs #565."""
     errors: list[str] = []
     for step in steps:
         if not step.main_action:
             continue
         value = _normal_expression(step.inputs.get("save-cache", ""))
-        if value == bare:
+        remote = _normal_expression(step.inputs.get("save-cache-remote", ""))
+        if "env.act" in (value + remote).lower():
+            errors.append(
+                f"{step.where} has an ACT-only cache input; delegate local saves to setup-soldr auto"
+            )
+        if value == _normal_expression(MAIN_PUSH_ONLY_SAVE):
             errors.append(
                 f"{step.where} uses the bare main-push-only save-cache rule; use "
-                "SAVE_CACHE_POLICY so local act runs save fully (zackees/bosn#309)"
+                "SAVE_CACHE_POLICY=auto and move the permission to save-cache-remote"
             )
-        elif step.where.startswith("actions/") and value == inputs_only:
+        if value != "false" and remote and step.ref not in REMOTE_SAVE_CACHE_REFS:
             errors.append(
-                f"{step.where} forwards inputs.save_cache without the act prefix; "
-                "use COMPOSITE_SAVE_CACHE_POLICY"
+                f"{step.where} ref {step.ref} does not honor save-cache-remote (#565)"
             )
+        # Independent writers can remain enabled with the cache umbrella off.
+        if (
+            remote not in ("", "auto")
+            and step.pr_reachable
+            and not _cannot_save_on_pr(step)
+        ):
+            errors.append(
+                f"{step.where} save-cache-remote can permit writes on pull_request"
+            )
+    return errors
+
+
+def _cook_remote_policy_errors(
+    inputs: dict[str, YamlValue], uses: str, where: str
+) -> list[str]:
+    errors: list[str] = []
+    if str(
+        inputs.get("save-cache", "")
+    ).lower() != SAVE_CACHE_POLICY or _normal_expression(
+        inputs.get("save-cache-remote", "")
+    ) != _normal_expression(REMOTE_SAVE_CACHE_POLICY):
+        errors.append(
+            f"{where} must use SAVE_CACHE_POLICY=auto and REMOTE_SAVE_CACHE_POLICY for save-cache-remote"
+        )
+    ref = uses.partition("@")[2]
+    if ref not in REMOTE_SAVE_CACHE_REFS:
+        errors.append(f"{where} ref {ref} does not honor save-cache-remote (#565)")
     return errors
 
 
@@ -547,7 +620,6 @@ def _cook_subaction_errors(root: Path) -> list[str]:
     """#1850: every standalone cook step is budgeted, Linux-only and main-saved."""
     errors: list[str] = []
     seen: set[str] = set()
-    save_policy = _normal_expression(SAVE_CACHE_POLICY)
     for path in sorted((root / ".github" / "workflows").glob("*.y*ml")):
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for job_name, job in (doc.get("jobs") or {}).items():
@@ -571,13 +643,16 @@ def _cook_subaction_errors(root: Path) -> list[str]:
                 inputs = raw.get("with") or {}
                 if str(inputs.get("cook-delta", "")).strip().lower() != "false":
                     errors.append(f"{where}#{index} must set cook-delta: false")
-                if _normal_expression(inputs.get("save-cache", "")) != save_policy:
-                    errors.append(
-                        f"{where}#{index} must use SAVE_CACHE_POLICY for save-cache"
+                errors.extend(
+                    _cook_remote_policy_errors(
+                        inputs, str(raw.get("uses", "")), f"{where}#{index}"
                     )
+                )
     if root.resolve() == ROOT:
         for where in sorted(set(COOK_SUBACTION_BUDGETS) - seen):
-            errors.append(f"{where} lists a cook budget but has no setup-soldr/cook step")
+            errors.append(
+                f"{where} lists a cook budget but has no setup-soldr/cook step"
+            )
     total = sum(COOK_SUBACTION_BUDGETS.values())
     if total > COOK_SUBACTION_TOTAL_BUDGET_BYTES:
         errors.append(
@@ -601,7 +676,10 @@ def _dylint_output_errors(root: Path) -> list[str]:
                 inputs = raw.get("with") or {}
                 if str(inputs.get("dylint", "")).strip().lower() != "true":
                     continue
-                if str(inputs.get("dylint-output-cache", "")).strip().lower() == "false":
+                if (
+                    str(inputs.get("dylint-output-cache", "")).strip().lower()
+                    == "false"
+                ):
                     continue
                 where = f"{path.name}:{job_name}"
                 seen.add(where)
@@ -618,7 +696,9 @@ def _dylint_output_errors(root: Path) -> list[str]:
                     )
     if root.resolve() == ROOT:
         for where in sorted(set(DYLINT_OUTPUT_BUDGETS) - seen):
-            errors.append(f"{where} lists a dylint-output budget but has no dylint step")
+            errors.append(
+                f"{where} lists a dylint-output budget but has no dylint step"
+            )
     total = sum(DYLINT_OUTPUT_BUDGETS.values())
     if total > DYLINT_OUTPUT_TOTAL_BUDGET_BYTES:
         errors.append(
@@ -635,7 +715,7 @@ def check(root: Path = ROOT) -> list[str]:
     errors.extend(_fs_matrix_windows_profile_errors(root))
     steps = collect(root)
     errors.extend(_non_linux_cook_errors(steps))
-    errors.extend(_act_save_policy_errors(steps))
+    errors.extend(_remote_save_policy_errors(steps))
     errors.extend(_cook_subaction_errors(root))
     errors.extend(_dylint_output_errors(root))
 
