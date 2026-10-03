@@ -16,6 +16,10 @@ cd "$(dirname "$0")/../../.."
 # the lane unless this line echoes it back.
 echo "gate-nonce: $(cat .gate-nonce 2>/dev/null || echo missing)"
 
+# Leave no soldr broker or daemon running in the warm container once the
+# lane ends; a later run starts its own.
+trap 'soldr daemon stop >/dev/null 2>&1 || true; soldr broker stop >/dev/null 2>&1 || true' EXIT
+
 export CARGO_TARGET_DIR=/target
 export CARGO_TERM_COLOR=always
 # integration.yml / ci.yml workflow env.
