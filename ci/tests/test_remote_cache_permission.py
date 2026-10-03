@@ -16,6 +16,12 @@ class UnsafePermission:
     ref: str = "v0"
 
 
+@dataclass(frozen=True)
+class IndependentWriterCase:
+    permission: UnsafePermission
+    rejected: bool
+
+
 def write_workflow(root: Path, case: UnsafePermission) -> None:
     path = root / ".github" / "workflows" / "sample.yml"
     path.parent.mkdir(parents=True)
@@ -61,24 +67,26 @@ def test_global_false_remains_read_only_even_with_remote_true(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    "case, rejected",
+    "case",
     (
-        (UnsafePermission("auto", "'true'"), True),
-        (UnsafePermission("auto", guard.MAIN_PUSH_ONLY_SAVE), False),
-        (UnsafePermission("false", "'true'"), False),
+        IndependentWriterCase(UnsafePermission("auto", "'true'"), True),
+        IndependentWriterCase(
+            UnsafePermission("auto", guard.MAIN_PUSH_ONLY_SAVE), False
+        ),
+        IndependentWriterCase(UnsafePermission("false", "'true'"), False),
     ),
 )
 def test_independent_build_writer_obeys_remote_permission(
-    tmp_path: Path, case: UnsafePermission, rejected: bool
+    tmp_path: Path, case: IndependentWriterCase
 ) -> None:
-    write_workflow(tmp_path, case)
+    write_workflow(tmp_path, case.permission)
     path = tmp_path / ".github/workflows/sample.yml"
     path.write_text(
         path.read_text(encoding="utf-8")
         + "          cache: false\n          build-cache: true\n",
         encoding="utf-8",
     )
-    assert bool(guard.check(tmp_path)) is rejected
+    assert bool(guard.check(tmp_path)) is case.rejected
 
 
 def test_global_auto_with_guarded_remote_permission_is_supported(
