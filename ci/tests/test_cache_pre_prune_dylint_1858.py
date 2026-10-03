@@ -119,7 +119,7 @@ def test_old_lock_dylint_output_next_to_a_current_generation_is_orphaned_and_unc
     assert plan["ok"] is True, plan.get("reason")
     assert plan["retireFirstIds"] == [1]
     assert plan["deleteIds"] == [1]  # the current generation is never deleted
-    assert plan["estimatedNewBytes"] == 0
+    assert plan["estimatedNewBytes"] == 1_200_000_000  # Integration bootstrap
 
 
 def test_older_dylint_output_shape_is_retire_first_when_no_generation_is_current() -> None:
@@ -130,7 +130,7 @@ def test_older_dylint_output_shape_is_retire_first_when_no_generation_is_current
     ]
     plan = _plan(caches)
     assert plan["retireFirstIds"] == [1]
-    assert plan["estimatedNewBytes"] == DYLINT_BYTES  # one re-seed, not two
+    assert plan["estimatedNewBytes"] == DYLINT_BYTES + 1_200_000_000  # one dylint re-seed + Integration
 
 
 def test_bench_target_old_lock_is_dead_weight_and_reseed_is_charged() -> None:
@@ -142,7 +142,7 @@ def test_bench_target_old_lock_is_dead_weight_and_reseed_is_charged() -> None:
     assert set(plan["deleteIds"]) == {1, 2}
     # The target restore key embeds the lock, so an old-lock target is never restorable.
     assert 1 in plan["retireFirstIds"]
-    assert plan["estimatedNewBytes"] == BENCH_TARGET_BYTES + BENCH_REGISTRY_BYTES
+    assert plan["estimatedNewBytes"] == BENCH_TARGET_BYTES + BENCH_REGISTRY_BYTES + 1_200_000_000
 
 
 def test_genuinely_over_budget_dylint_reseed_still_fails_closed() -> None:

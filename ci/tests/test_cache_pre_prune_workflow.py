@@ -170,7 +170,7 @@ def test_debug_cook_producers_use_fnone_and_native_python_keeps_release_profile(
 
 def test_lock_transition_forecast_selects_only_measured_buildcache_fallbacks() -> None:
     caches = [
-        {"id": 1, "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l1111111111111111-soldrv0.9.23", "ref": "refs/heads/main", "size_in_bytes": 3_000_000_000, "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 1, "key": "cook-base-v2-linux-x64-glibc-rustc1.95.0-fnone-l1111111111111111-soldrv0.9.23", "ref": "refs/heads/main", "size_in_bytes": 1_700_000_000, "created_at": "2026-01-01T00:00:00Z"},
         {"id": 2, "key": "setup-soldr-cargoregistry-v1-linux-x64-1111111111111111-aaaaaaaaaaaaaaaa", "ref": "refs/heads/main", "size_in_bytes": 1_000_000_000, "created_at": "2026-01-01T00:00:00Z"},
         {"id": 3, "key": "setup-soldr-buildcache-v2-linux-x64-6d40444a3fc5e4d0-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 695_272_185, "created_at": "2026-01-01T00:00:00Z"},
         {"id": 4, "key": "setup-soldr-buildcache-v2-windows-x64-0a12db972fd789a0-1111111111111111", "ref": "refs/heads/main", "size_in_bytes": 563_360_821, "created_at": "2026-01-01T00:00:00Z"},
@@ -185,7 +185,7 @@ def test_lock_transition_forecast_selects_only_measured_buildcache_fallbacks() -
         "const fs=require('node:fs');"
         "const {planLockTransitionPrePrune}=require(process.argv[1]);"
         "const {caches}=JSON.parse(fs.readFileSync(0,'utf8'));"
-        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(caches,{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},7_509_058_050,7_509_058_050)));"
+        "process.stdout.write(JSON.stringify(planLockTransitionPrePrune(caches,{linux:'2222222222222222',macos:'2222222222222222',windows:['3333333333333333']},6_209_058_050,6_209_058_050)));"
     )
     result = subprocess.run(
         ["node", "-e", script, str(ROOT / "ci/cache_cleanup_plan.js")],
@@ -200,7 +200,7 @@ def test_lock_transition_forecast_selects_only_measured_buildcache_fallbacks() -
     assert set(plan["deleteIds"]) == {1, 2, 3, 4, 5, 9, 10}
     assert plan["selectedBuildCacheIds"] == [3, 4, 5, 9, 10]
     assert plan["projectedPeakBytes"] <= 9_200_000_000
-    assert plan["projectedPeakBytes"] == 8_733_248_839
+    assert plan["projectedPeakBytes"] == 8_633_248_839
 
 
 def test_transition_forecast_ignores_required_profiles_that_no_cache_carries() -> None:
@@ -219,8 +219,8 @@ def test_transition_forecast_ignores_required_profiles_that_no_cache_carries() -
     )
     plan = json.loads(result.stdout)
     assert plan["ok"] is True
-    # Only the native-Python reserve remains.
-    assert plan["estimatedNewBytes"] == 1_120_000_000
+    # Only native-Python and active Integration bootstrap reserves remain.
+    assert plan["estimatedNewBytes"] == 1_120_000_000 + 1_200_000_000
 
 
 def test_no_lock_change_deletes_orphaned_old_lock_build_caches() -> None:
@@ -252,8 +252,8 @@ def test_no_lock_change_deletes_orphaned_old_lock_build_caches() -> None:
     plan = json.loads(result.stdout)
     assert plan["ok"] is True
     assert plan["deleteIds"] == [1, 3]
-    # Survivors, plus id 5's re-seed and the native-Python reserve.
-    assert plan["projectedPeakBytes"] == 205_000_000 + 229_000_000 + 50 + 50 + 1_120_000_000
+    # Survivors, id 5's re-seed, and native-Python/Integration reserves.
+    assert plan["projectedPeakBytes"] == 205_000_000 + 229_000_000 + 50 + 50 + 1_120_000_000 + 1_200_000_000
 
 
 def test_transition_forecast_does_not_double_reserve_existing_native_python_f9() -> None:
@@ -376,9 +376,10 @@ def test_transition_forecast_keeps_case_sensitive_cook_suffix_profiles_distinct(
     plan = json.loads(result.stdout)
     assert plan["ok"] is True
     assert plan["staleCookIds"] == [1]
-    # 100 B cook re-seed + native-Python reserve. No build-profile minimums:
+    # 100 B cook re-seed + native-Python/Integration bootstrap reserves.
+    # No digest-pinned build-profile minimums:
     # none of their shapes is listed, so none will be re-seeded.
-    assert plan["estimatedNewBytes"] == 1_120_000_100
+    assert plan["estimatedNewBytes"] == 1_120_000_100 + 1_200_000_000
 
 
 def test_windows_lf_cache_is_stale_when_main_writers_normalize_to_crlf() -> None:
@@ -646,13 +647,13 @@ def _row(cache_id: int, key: str, size: int) -> dict[str, object]:
 
 
 def test_writer_barrier_is_skipped_when_no_deletes_and_reserve_fits() -> None:
-    """#1822: 7.05 GB + the 1.6 GB per-SHA reserve is under the 9.2 GB target."""
+    """5.8 GB + Integration's 1.2 GB + 1.6 GB in-flight fits the 9.2 GB target."""
     caches = [
         _row(1, _CURRENT_COOK, 3_000_000_000),
         _row(2, f"zccache-Linux-X64-test-x86_64-unknown-linux-gnu-{_SHA}", 1_600_000_000),
         _row(3, _F9_COOK, 1_090_000_000),
     ]
-    out = _barrier_skip(caches, 7_050_000_000)
+    out = _barrier_skip(caches, 5_800_000_000)
     assert out["plan"]["ok"] is True and out["plan"]["deleteIds"] == []
     assert out["decision"]["skip"] is True
     assert out["decision"]["reserveBytes"] == 1_600_000_000
@@ -788,10 +789,11 @@ def test_lock_transition_forecast_accepts_live_inventory_with_sub_action_cook_ke
         {"caches": caches, "hashes": _CURRENT_LOCKS},
     )
     assert plan["ok"] is True, plan.get("reason")
-    # Every generation is on the current lock: nothing is deleted or re-seeded.
+    # Existing generations are current: no deletes; reserve the missing
+    # Integration producer before its first archive exists.
     assert plan["deleteIds"] == []
     assert plan["staleCookIds"] == []
-    assert plan["estimatedNewBytes"] == 0
+    assert plan["estimatedNewBytes"] == 1_200_000_000  # missing Integration producer
 
 
 def test_sub_action_cook_key_is_retired_by_lock_hash_and_kept_when_current() -> None:
@@ -809,12 +811,12 @@ def test_v_and_non_v_soldr_spellings_share_one_reseed_profile() -> None:
         _row(2, "cook-base-v2-linux-x64-glibc-rustc1.95.0-f6cafa616-l1111111111111111-soldrv0.9.25", 500),
     ]
     plan = _node_json(
-        "m.planLockTransitionPrePrune(d.caches,d.hashes,1_000,1_000,2_000_000_000)",
+        "m.planLockTransitionPrePrune(d.caches,d.hashes,1_000,1_000,3_000_000_000)",
         {"caches": caches, "hashes": _CURRENT_LOCKS},
     )
     assert plan["ok"] is True, plan.get("reason")
     assert plan["staleCookIds"] == [1, 2]
-    assert plan["estimatedNewBytes"] == 500 + 1_120_000_000
+    assert plan["estimatedNewBytes"] == 500 + 1_120_000_000 + 1_200_000_000
 
 
 def test_barrier_never_fails_a_job_and_exports_its_cache_write_decision() -> None:

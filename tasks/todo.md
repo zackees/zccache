@@ -1317,3 +1317,7 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Remove Integration setup cook; restore dependencies through the isolated unit store. Reserve 1.2 GB for it within the build family, keeping total 9.5 GB unchanged; explicit ci-tests protects forbidden products.
 - [ ] Measure the revised committed tree and confirm coverage plus cache decisions; do not treat the failed warm run as an attestation.
 - [ ] Run focused checks, primary review and the full committed-tree local gate before pushing; verify the first remote head.
+
+- [x] Validate committed no-cook candidate e3b4520: full gate passed in 954 s, stamped e587de8e; all 3478 tests passed. Explicit ci-tests default serialized nextest, so restore num-cpus parallelism in the final slice.
+- [x] Add RED old-lock retention/bootstrap checks; retire measured Test and Integration generations, reserve the initial 1.2 GB without double-counting, and replay the captured 7.90 GB inventory at a 9.10 GB forecast below the unchanged 9.20 GB target.
+- [ ] Review and validate the final committed planner/parallelism slice before push.

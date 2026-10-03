@@ -33,6 +33,9 @@ const LOCK_TRANSITION_TARGET_BYTES = 9_200_000_000;
 // Reserve 1,120,000,000 B so small payload growth does not make the forecast
 // depend on that one archive being exactly repeatable.
 const NATIVE_PYTHON_F9_RESERVE_BYTES = 1_120_000_000;
+// #1885: the Integration unit store measured 1,056,628,741 B at local
+// zstd -1. Reserve its first writer even before an archive is listed.
+const INTEGRATION_BUILD_CACHE_RESERVE_BYTES = 1_200_000_000;
 // #1822: floor for what still-running older main writers can add before they
 // finish. Per-commit `zccache-<OS>-test-*-<sha>` action entries dominate at
 // about 1.6 GB per generation; the floor applies when the live inventory
@@ -45,13 +48,14 @@ const IN_FLIGHT_WRITER_MIN_RESERVE_BYTES = 1_600_000_000;
 // inert (nothing selected, 1.65 GB of old-lock builds kept next to their
 // re-seeds). The main (no suffix) and `dylint` profiles of these platforms are
 // retired; cross-target `check-*` profiles are the 100%-hit musl caches and
-// other suffixes are unmeasured, so both stay.
+// `test` and `integration` are measured Linux x64 isolated stores; retire
+// their old-lock generations too. Other suffixes remain unmeasured.
 const TRANSITION_BUILD_CACHE_FALLBACKS = [
   { os: "linux", arch: "x64" },
   { os: "windows", arch: "x64" },
   { os: "linux", arch: "arm64" },
 ];
-const RETIRED_BUILD_CACHE_SUFFIXES = new Set(["", "dylint"]);
+const RETIRED_BUILD_CACHE_SUFFIXES = new Set(["", "dylint", "test", "integration"]);
 const TRANSITION_BUILD_CACHE_PROFILES = [
   { os: "linux", arch: "x64", digest: "6d40444a3fc5e4d0", suffix: "", minimumBytes: 695_272_185 },
   { os: "windows", arch: "x64", digest: "0a12db972fd789a0", suffix: "", minimumBytes: 563_360_821 },
@@ -695,8 +699,10 @@ function planLockTransitionPrePrune(
     currentHashes,
     (parts) => `${parts.format}\u0000${parts.os}\u0000${parts.arch}\u0000${parts.digest}`,
   );
+  const forecastBuildRows = buildRows
+    .filter((cache) => !isRetiredMainKey(cache.key) && !orphanedBuildIds.has(cache.id));
   const buildEstimate = profileBytes(
-    buildRows.filter((cache) => !isRetiredMainKey(cache.key) && !orphanedBuildIds.has(cache.id)),
+    forecastBuildRows,
     setupSoldrBuildCacheKeyParts,
     currentHashes,
     buildCacheShape,
@@ -719,6 +725,22 @@ function planLockTransitionPrePrune(
   const nativePythonReserve = hasCurrentNativePythonF9
     ? 0
     : Math.max(0, NATIVE_PYTHON_F9_RESERVE_BYTES - nativePythonObservedBytes);
+  const integrationRows = forecastBuildRows.filter((cache) => {
+    const parts = setupSoldrBuildCacheKeyParts(cache.key);
+    return parts && parts.os === "linux" && parts.arch === "x64" &&
+      parts.suffix === "integration";
+  });
+  const hasCurrentIntegration = integrationRows.some((cache) =>
+    currentHashes.get("linux").has(setupSoldrBuildCacheKeyParts(cache.key).lockHash),
+  );
+  const integrationObservedBytes = Math.max(
+    0, ...integrationRows.map((cache) => Number(cache.size_in_bytes) || 0),
+  );
+  // buildEstimate already charges observed old generations. Add only the
+  // missing part of the measured floor, never a second replacement charge.
+  const integrationReserve = hasCurrentIntegration
+    ? 0
+    : Math.max(0, INTEGRATION_BUILD_CACHE_RESERVE_BYTES - integrationObservedBytes);
   const deletedCaches = [...new Map([
     ...staleCooks, ...staleRegistries, ...selectedBuilds, ...retiredBuilds, ...orphanedBuilds,
     ...supersededOtherRows, ...reseeds.stale,
@@ -726,7 +748,7 @@ function planLockTransitionPrePrune(
   const deletedBytes = deletedCaches
     .reduce((sum, cache) => sum + (Number(cache.size_in_bytes) || 0), 0);
   const newBytes = cookEstimate + registryEstimate + buildEstimate + nativePythonReserve +
-    reseeds.chargeBytes;
+    reseeds.chargeBytes + integrationReserve;
   const projectedPeakBytes = currentBytes - deletedBytes + newBytes;
   if (projectedPeakBytes > targetBytes) {
     return {

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from ci.local_gate import run_captured
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -50,3 +52,23 @@ def test_integration_publishes_its_own_store_after_all_consumers() -> None:
         for position in consumers
     )
     assert steps[index - 1]["name"] == "Audit isolated integration cache"
+
+
+def test_integration_nextest_keeps_parallel_execution() -> None:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/integration.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["integration"]["steps"]
+    test = next(step for step in steps if step.get("name") == "Test (full workspace)")
+    assert test["env"]["NEXTEST_TEST_THREADS"] == "num-cpus"
+
+
+def test_integration_cache_planner_retires_and_reserves_generations() -> None:
+    result = run_captured(
+        [
+            "node",
+            str(ROOT / "ci/tests/integration_cache_plan.js"),
+            str(ROOT / "ci/cache_cleanup_plan.js"),
+        ]
+    )
+    assert result.returncode == 0, result.output

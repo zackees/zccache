@@ -102,11 +102,14 @@ def _plan(caches: list[dict[str, object]], extra: int = LIVE_EXTRA_BYTES) -> dic
     return json.loads(result.stdout)
 
 
-def test_live_9490_inventory_fits_after_retiring_superseded_generations() -> None:
+def test_live_9490_inventory_cannot_also_bootstrap_integration() -> None:
     caches = _caches()
     plan = _plan(caches)
-    assert plan["ok"] is True, plan.get("reason")
-    assert plan["projectedPeakBytes"] <= TARGET
+    # The historical inventory fitted before Integration existed. Its new
+    # 1.2 GB producer reservation must now refuse writes, not raise the target.
+    assert plan["ok"] is False
+    assert plan["projectedPeakBytes"] > TARGET
+    assert plan["deleteIds"] == []
     keys = {c["id"]: c["key"] for c in caches}
     retired = sorted(keys[i] for i in plan["retireFirstIds"])
     # Older soldr-mini versions, older prepare-v3 signatures, and (#1875)
