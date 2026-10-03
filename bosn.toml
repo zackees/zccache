@@ -90,7 +90,12 @@ workdir = "/work"
 
 [stack.gate.volumes]
 gate-target = { scope = "stack", destination = "/target" }
-gate-user-soldr-home = { scope = "machine", destination = "/home/gate/.soldr" }
+# Per worktree, not per machine: bosn keeps each worktree's container warm,
+# and a soldr broker left in one container holds the soldr root, so a
+# second worktree's container sharing it failed every compile ("daemon
+# exited mid-request"; on the host the same race reads "soldr root
+# ownership is busy").
+gate-soldr-home = { scope = "stack", destination = "/home/gate/.soldr" }
 
 [stack.gate.mounts]
 repo = { source = ".", destination = "/work" }
