@@ -64,3 +64,4 @@ local-notes.md
 # Dependent-repo checkouts managed via clud-extern-repos workflow
 .extern-repos/
 .clud/
+.gate-nonce

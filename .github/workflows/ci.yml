@@ -48,6 +48,42 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # zackees/ci.yml#166/#190/#198 (GATE-002/003/008/010): decides, from the
+  # PR base's local-gate.toml and ci-attestations.yml, whether this PR head
+  # carries a valid local-gate attestation for every gate of a skippable
+  # job. `skip_<job>` is 'true' only for an attested, in-policy PR head;
+  # never on push/dispatch/schedule, so main always runs every job (the
+  # post-merge catch). [gate] mode = "shadow": an unattested head is
+  # reported here, not failed. The ref is ci/local_gate.py's CI_LINT_REF
+  # (ci/tests/test_local_gate.py keeps the two in step).
+  ci-mode:
+    name: CI mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      trusted: ${{ steps.gate.outputs.trusted }}
+      skip_fmt: ${{ steps.gate.outputs.skip_fmt }}
+      skip_docs: ${{ steps.gate.outputs.skip_docs }}
+      skip_msrv: ${{ steps.gate.outputs.skip_msrv }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          # Full history: GATE-008 reads the base commit's local-gate.toml
+          # and diffs the PR from its merge base.
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          repository: zackees/ci.yml
+          ref: 7edeb8dc318c1530ee3bf770029cb2e8b639e6f5
+          path: .ci-lint
+          persist-credentials: false
+          sparse-checkout: ci_lint
+      - name: Local gate attestation
+        id: gate
+        run: PYTHONPATH=.ci-lint python3 -m ci_lint local-gate verify --repo . --trust --github-output
+
   cache-pre-prune:
     name: Cache pre-prune barrier
     uses: ./.github/workflows/wait-cache-pre-prune.yml
@@ -55,9 +91,13 @@ jobs:
       actions: read
       contents: read
 
+  # GATE-001 mirror: runs exactly the local gate's `lint` lane and nothing
+  # else, so every check here is one `ci-lint local-gate run` already ran.
+  # Add a check to ci/local_gate.py's `lint` lane, never as a step here.
   fmt:
     name: Formatting
-    needs: cache-pre-prune
+    needs: [cache-pre-prune, ci-mode]
+    if: ${{ needs.ci-mode.outputs.skip_fmt != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -81,25 +121,12 @@ jobs:
           # #1677: standalone toolchain snapshots retain too much data for
           # their measured 7-11s install-time saving; install normally.
           solo-toolchain-cache: false # #1677 retires the standalone toolchain archive.
-      - name: Check formatting
-        run: soldr cargo fmt --all -- --check
-      - name: Strict benchmark metric type check
-        run: uvx --from pyright==1.1.411 pyright
-      - name: Benchmark report contract tests
-        run: |
-          PYTHONPATH=. uv run --no-project --python 3.13 \
-            --with pytest --with pillow \
-            pytest -q ci/tests/test_benchmark_metrics.py ci/tests/test_benchmark_stats.py
-      - name: Check log-audit registry snapshot
-        run: uv run python ci/check_log_audit_registry.py
-      - name: Check setup-soldr cache footprint
-        run: uv run --no-project --with pyyaml python ci/check_cache_footprint.py
-      - name: Check kernal-api migration inventory
-        run: uv run --no-project python ci/check_kernal_api_baseline.py
+      - name: Local gate (lint lane)
+        run: uv run --no-project --python 3.13 python ci/local_gate.py --lane lint
 
   dylint:
     name: Dylint
-    needs: cache-pre-prune
+    needs: [cache-pre-prune, ci-mode]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -280,7 +307,9 @@ jobs:
 
   msrv:
     name: MSRV (1.95.0)
-    needs: cache-pre-prune
+    needs: [cache-pre-prune, ci-mode]
+    # GATE-008/010: skipped only for an attested PR head (see ci-mode).
+    if: ${{ needs.ci-mode.outputs.skip_msrv != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # setup-soldr#347: opt this job into post-step cache eviction.
@@ -323,14 +352,16 @@ jobs:
 
   reflink-e2e:
     name: Reflink e2e
-    needs: cache-pre-prune
+    needs: [cache-pre-prune, ci-mode]
     # ZCCACHE_MODE on a real btrfs volume: parent/child worktree hits per
     # mode, extent-sharing evidence, cross-device fallback (#1683).
     uses: ./.github/workflows/reflink-e2e.yml
 
   docs:
     name: Documentation
-    needs: cache-pre-prune
+    needs: [cache-pre-prune, ci-mode]
+    # GATE-008/010: skipped only for an attested PR head (see ci-mode).
+    if: ${{ needs.ci-mode.outputs.skip_docs != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -358,7 +389,7 @@ jobs:
 
   miss-overhead:
     name: Miss overhead budget
-    needs: cache-pre-prune
+    needs: [cache-pre-prune, ci-mode]
     # zccache#1670: gate per-TU cache-miss overhead (request wall time minus
     # the compiler child's run time). The test needs clang++, which the
     # hosted Ubuntu image provides; the same fixture backs the

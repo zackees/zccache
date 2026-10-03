@@ -54,6 +54,40 @@ env:
   ZCCACHE_INTEGRATION_FEATURES: "zccache/zccache-bin,zccache/daemon-bin,zccache/download-bin,zccache/download-daemon-bin,zccache/fingerprint-bin,zccache/stamp-bin,zccache/ci-bin,zccache/crash-tools,zccache/tokio-console,zccache/test-support,zccache/heap-profile"
 
 jobs:
+  # zackees/ci.yml#166/#190/#198 (GATE-002/003/008/010): decides, from the
+  # PR base's local-gate.toml and ci-attestations.yml, whether this PR head
+  # carries a valid local-gate attestation for every gate of a skippable
+  # job. `skip_<job>` is 'true' only for an attested, in-policy PR head;
+  # never on push/dispatch/schedule, so main always runs every job (the
+  # post-merge catch). [gate] mode = "shadow": an unattested head is
+  # reported here, not failed. The ref is ci/local_gate.py's CI_LINT_REF
+  # (ci/tests/test_local_gate.py keeps the two in step).
+  ci-mode:
+    name: CI mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      trusted: ${{ steps.gate.outputs.trusted }}
+      skip_integration: ${{ steps.gate.outputs.skip_integration }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          # Full history: GATE-008 reads the base commit's local-gate.toml
+          # and diffs the PR from its merge base.
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          repository: zackees/ci.yml
+          ref: 7edeb8dc318c1530ee3bf770029cb2e8b639e6f5
+          path: .ci-lint
+          persist-credentials: false
+          sparse-checkout: ci_lint
+      - name: Local gate attestation
+        id: gate
+        run: PYTHONPATH=.ci-lint python3 -m ci_lint local-gate verify --repo . --trust --github-output
+
   cache-pre-prune:
     name: Cache pre-prune barrier
     uses: ./.github/workflows/wait-cache-pre-prune.yml
@@ -62,7 +96,11 @@ jobs:
       contents: read
 
   integration:
-    needs: cache-pre-prune
+    needs: [cache-pre-prune, ci-mode]
+    # GATE-008/010: skipped only for a PR head attested by the local gate's
+    # isolated `tests` lane, which runs this job's test commands
+    # (ci/docker/gate/run_gate_tests.sh); main pushes always run it.
+    if: ${{ needs.ci-mode.outputs.skip_integration != 'true' }}
     name: Integration (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 35

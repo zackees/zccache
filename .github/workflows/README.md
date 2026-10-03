@@ -8,7 +8,7 @@ test. Keep docs-only checks reachable when editing CI path filters. Existing
 standalone PR workflows are legacy until the consolidation tracked in #1639;
 this rule applies to all new tests now.
 
-- **ci.yml** - Runs fmt, Dylint, MSRV, and doc builds on main and pull requests.
+- **ci.yml** - Runs fmt, Dylint, MSRV, and doc builds on main and pull requests. Its `ci-mode` job (and integration.yml's) runs `ci-lint local-gate verify --trust`: a PR head attested by the local gate (`local-gate.toml`) skips Formatting, Documentation, MSRV and Integration (Linux); pushes to main always run them.
 - **python-tests.yml** - Runs the fast `ci/tests/` pytest suite (CI helper modules plus the doc-link, README-coverage, crate-map, documented-command, and toolchain-consistency guards), plus a Linux-native job that builds/stages all three PyO3 extensions and runs every source Python suite against an isolated pre-started zccache daemon. Separate from `ci.yml` because that workflow ignores `**/*.md`, which would skip the Markdown guards on docs-only PRs.
 - **ci-check.yml** - Reusable check/test workflow used by the OS-specific CI workflows.
 - **integration.yml** - Runs the normal Linux workspace integration suite on pushes and PRs; weekly/manual runs additionally execute every ignored integration/stress test without gating pull requests.

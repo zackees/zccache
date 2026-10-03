@@ -77,3 +77,24 @@ docker-sock = { source = "/var/run/docker.sock", destination = "/var/run/docker.
 [task.act-test-action]
 stack = "act"
 cmd = "bash /work/ci/docker/act/run_act_test_action.sh"
+
+# The local gate's isolated `tests` lane (local-gate.toml; zackees/ci.yml#168
+# GATE-005, #196 GATE-009). zccache's tests start zccache daemons, so they
+# never run on the developer host, whose live zccache serves every soldr
+# build. The image sets ZCCACHE_TEST_ISOLATED=1, the marker the nextest
+# isolation guard (ci/nextest_isolation_guard.sh) accepts in place of CI=true.
+[stack.gate]
+dockerfile = "ci/docker/gate/Dockerfile"
+family = "zccache-gate"
+workdir = "/work"
+
+[stack.gate.volumes]
+gate-target = { scope = "stack", destination = "/target" }
+gate-user-soldr-home = { scope = "machine", destination = "/home/gate/.soldr" }
+
+[stack.gate.mounts]
+repo = { source = ".", destination = "/work" }
+
+[task.gate-test]
+stack = "gate"
+cmd = "bash ci/docker/gate/run_gate_tests.sh"

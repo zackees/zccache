@@ -105,7 +105,7 @@ jobs:
 
       - name: Ensure target stdlib
         shell: bash
-        run: rustup target add ${{ matrix.target }}
+        run: rustup target add ${{ matrix.target }}  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       # --- Test the action ---
       # The action keys its compilation cache by commit SHA, so every
@@ -144,7 +144,7 @@ jobs:
       # --- Cold build ---
       - name: Build (cold cache)
         shell: bash
-        run: cargo build -p zccache --target ${{ matrix.target }}
+        run: cargo build -p zccache --target ${{ matrix.target }}  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       - name: Record zccache stats after cold build
         shell: bash
@@ -173,11 +173,11 @@ jobs:
       # --- Warm build (clean target, rebuild from zccache) ---
       - name: Clean target directory
         shell: bash
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       - name: Build (warm cache — should hit zccache)
         shell: bash
-        run: cargo build -p zccache --target ${{ matrix.target }}
+        run: cargo build -p zccache --target ${{ matrix.target }}  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       - name: Verify zccache cache hits after warm build
         shell: bash
@@ -270,7 +270,7 @@ jobs:
           save-cache: "false"
 
       - name: Build something
-        run: cargo check -p zccache
+        run: cargo check -p zccache  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       - name: Cleanup (should skip save)
         if: always()
@@ -304,7 +304,7 @@ jobs:
 
       - name: Build zccache CLI
         shell: bash
-        run: cargo build -p zccache --features zccache-bin --bin zccache
+        run: cargo build -p zccache --features zccache-bin --bin zccache  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       # --- Test cargo-registry hash ---
       - name: "cargo-registry hash: produces 16-char hex"
@@ -342,7 +342,7 @@ jobs:
         shell: bash
         run: |
           # Ensure there's something in the cargo registry
-          cargo fetch
+          cargo fetch  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
           ./target/debug/zccache cargo-registry save --key test-roundtrip
           # Issue #761 / #762 Phase 0: every persistent subdir now lives
           # under `<cache>/v<VERSION>/`; ask the binary for the effective
@@ -414,12 +414,12 @@ jobs:
 
       - name: Build zccache CLI
         shell: bash
-        run: cargo build -p zccache --features zccache-bin --bin zccache
+        run: cargo build -p zccache --features zccache-bin --bin zccache  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       # --- Unit tests always run ---
       - name: "zccache unit tests"
         shell: bash
-        run: cargo test -p zccache --lib --bins --features zccache-bin,daemon-bin,download-bin,download-daemon-bin,fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support -- --test-threads=1
+        run: cargo test -p zccache --lib --bins --features zccache-bin,daemon-bin,download-bin,download-daemon-bin,fingerprint-bin,stamp-bin,ci-bin,crash-tools,tokio-console,test-support -- --test-threads=1  # ci-lint: allow RUST-001 exercises the zccache action, which owns RUSTC_WRAPPER (CLAUDE.md exception)
 
       # --- Test gha-cache status (works without cache API) ---
       - name: "gha-cache status: runs without error"

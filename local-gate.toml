@@ -1,0 +1,99 @@
+# zccache's local gate (zackees/ci.yml#166, #168, #177, #190, #196, #198;
+# GATE-001..010).
+#
+# Before every push, from a clean, committed tree:
+#
+#   uvx --from git+https://github.com/zackees/ci.yml@7edeb8dc318c1530ee3bf770029cb2e8b639e6f5 ci-lint local-gate run
+#
+# runs `run` below and, on success, stamps HEAD with a tree-bound
+# `Local-Gate:` trailer and one `Ci-Attestation:` trailer per gate of each
+# passed lane (ci-attestations.yml). CI's `ci-mode` jobs read them: an
+# attested, in-policy PR head skips the remote jobs the gate already ran.
+# Install the matching pre-push hook once per clone with
+# `... ci-lint local-gate install-hook`.
+[gate]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py"]
+# The remote Formatting job runs `ci/local_gate.py --lane lint` and nothing else.
+mirrors = ["ci.yml:fmt"]
+setup-steps = ["Wait for current-main cache pre-prune"]
+verify = "ci.yml:ci-mode"
+# The cache pre-prune barrier is main-push cache plumbing that every job
+# already waits on; it runs beside ci-mode rather than after it.
+verify-exempt = ["cache-pre-prune"]
+# Shadow: an unattested PR head is reported by ci-mode, not failed, so a
+# contributor who has not adopted the gate still gets the full remote run.
+# Promote to "enforce" once `ci-lint local-gate first-pass` shows attested
+# heads are the norm (GATE-004).
+mode = "shadow"
+
+# zackees/ci.yml#168 (GATE-005): zccache's tests start zccache daemons and
+# touch zccache state roots, and zccache is the live compiler cache of every
+# soldr build on a developer host. The nextest run-wrapper refuses unless
+# CI=true or the marker is set; the bosn gate image sets the marker; the
+# gate's `tests` lane runs the suite there.
+[gate.isolation]
+marker = "ZCCACHE_TEST_ISOLATED"
+runner = ["bosn", "run", "--task", "gate-test"]
+guard = "ci/nextest_isolation_guard.sh"
+# zackees/ci.yml#196 (GATE-009): the gate writes .gate-nonce and the bosn
+# task echoes it from /work, so a container bound to another worktree fails
+# instead of attesting someone else's tree.
+proves-tree = true
+
+# zackees/ci.yml#177 (GATE-007): lanes are cached on their own inputs (the
+# commit tree minus `exclude`, plus this file, ci/local_gate.py, Cargo.lock
+# and rust-toolchain.toml). Exclusions must be evidence-based (replay with
+# `ci-lint local-gate lanes --simulate N`); Rust tests read files under ci/,
+# docs/ and .github/, so the Rust lanes exclude nothing yet.
+
+# Everything the remote Formatting job runs (GATE-001 mirror).
+[gate.lanes.lint]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "lint"]
+tools = ["soldr", "uv"]
+
+# The ci/tests pytest suite (python-tests.yml `ci/tests`).
+[gate.lanes.py-tests]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "py-tests"]
+tools = ["uv"]
+
+# `soldr cargo check --workspace` on the pinned (= MSRV) toolchain.
+[gate.lanes.check]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "check"]
+tools = ["soldr"]
+
+# rustdoc, warnings denied.
+[gate.lanes.docs]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "docs"]
+tools = ["soldr"]
+
+# The test suite, in bosn: the Integration (Linux) job's test commands.
+[gate.lanes.tests]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "tests"]
+tools = ["bosn"]
+
+# zackees/ci.yml#190 (GATE-008) and #198 (GATE-010): an attested PR head
+# skips the remote jobs whose every gate (ci-attestations.yml) it attests.
+# CI decides with `ci-lint local-gate verify --trust`, from THIS file as
+# committed on the PR's base. It fails closed: a fork or non-writer author,
+# a `ci-full` label, a head not attested for its exact tree, a trailer
+# missing a lane, a change to any surface below (or to this file,
+# ci/local_gate.py, ci-attestations.yml, the skip workflows and the local
+# workflows/actions they use), or the 1-in-10 audit sample all run the jobs
+# as before. Pushes to main always run them (the post-merge catch); a
+# release ignores attestations.
+[gate.trust]
+mode = "enforce"
+skip = ["ci.yml:fmt", "ci.yml:docs", "ci.yml:msrv", "integration.yml:integration"]
+covered-by = { "ci.yml:docs" = ["docs"], "ci.yml:msrv" = ["check", "tests"], "integration.yml:integration" = ["tests"] }
+# What the isolated lane runs and how it is isolated, plus the scripts only
+# the skipped Integration job runs (its CI-only telemetry audit can only be
+# validated remotely).
+surfaces = [
+  "bosn.toml",
+  "ci/docker/gate/**",
+  "ci/nextest_isolation_guard.sh",
+  ".config/nextest.toml",
+  "ci/clear_runtime_telemetry.py",
+  "ci/log_audit_source_fixture.json",
+  "crates/zccache/src/bin/zccache-ci.rs",
+]
