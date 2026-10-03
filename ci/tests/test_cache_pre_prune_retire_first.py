@@ -90,15 +90,18 @@ def _run_transition(caches: list[dict[str, object]], extra: int = 0) -> dict:
     return json.loads(result.stdout)
 
 
-def test_live_1850_inventory_is_forecast_to_fit_after_retiring_dead_generations() -> None:
+def test_live_1850_inventory_cannot_also_bootstrap_integration() -> None:
     """RED before #1850: peak 11.5 GB > 9.2 GB because superseded soldr
     generations were charged a re-seed and the digest-pinned build-cache
     fallbacks selected nothing."""
     caches = _live_1850_caches()
     plan = _run_transition(caches, LIVE_1850_EXTRA_BYTES)
 
-    assert plan["ok"] is True, plan.get("reason")
-    assert plan["projectedPeakBytes"] <= TARGET
+    # Keep the historical evidence unchanged: the new Integration producer
+    # no longer fits this old footprint, even after known dead generations.
+    assert plan["ok"] is False
+    assert plan["projectedPeakBytes"] > TARGET
+    assert plan["deleteIds"] == []
     by_id = {c["id"]: c["key"] for c in caches}
     # The soldr 0.9.25 cook generations that a 0.9.26 sibling supersedes (#1852
     # adds superseded mini/prepare generations and the retired arm64 f6caf leg).
@@ -115,9 +118,9 @@ def test_live_1850_inventory_is_forecast_to_fit_after_retiring_dead_generations(
     assert not any(
         "f6cafa616" in by_id[i] and "linux-x64" in by_id[i] for i in plan["retireFirstIds"]
     )
-    # Retire-first is a subset of the transition deletes, never current keys.
-    assert set(plan["retireFirstIds"]) <= set(plan["deleteIds"])
-    assert all(OLD_LOCK in by_id[i] for i in plan["deleteIds"] if "cook-base" in by_id[i])
+    # Dead generations are still identified, but a failed forecast withholds
+    # all forecast-dependent deletes.
+    assert all(OLD_LOCK in by_id[i] for i in plan["retireFirstIds"] if "cook-base" in by_id[i])
 
 
 def test_live_1850_prune_then_forecast_is_stable_after_retire_first_deletes() -> None:
@@ -128,7 +131,8 @@ def test_live_1850_prune_then_forecast_is_stable_after_retire_first_deletes() ->
     survivors = [c for c in caches if c["id"] not in dead]
     freed = sum(int(c["size_in_bytes"]) for c in caches if c["id"] in dead)
     second = _run_transition(survivors, LIVE_1850_EXTRA_BYTES)
-    assert second["ok"] is True
+    assert second["ok"] is False  # Integration still cannot fit after dead-only deletes
+    assert second["deleteIds"] == []
     assert second["retireFirstIds"] == []
     assert second["currentBytes"] == first["currentBytes"] - freed
     assert second["projectedPeakBytes"] == first["projectedPeakBytes"]

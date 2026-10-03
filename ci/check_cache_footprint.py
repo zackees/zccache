@@ -62,6 +62,8 @@ ACTION = "zackees/setup-soldr"
 
 # Suffixes allowed to differ from the rest of their OS x cook shape, with why.
 JUSTIFIED_SUFFIXES: dict[str, str] = {
+    "integration": "full-workspace feature profile publishes its isolated compile store; "
+    "measured 1.06 GB compressed locally; 1.2 GB reserved within the 4.1 GB family cap",
     "dylint": "materializes the nightly dylint toolchain, driver and tools "
     "(dylint-cache) and disables the cargo-registry cache",
     "check-<label>": "cross-target check: its closure is built for "
@@ -70,7 +72,7 @@ JUSTIFIED_SUFFIXES: dict[str, str] = {
     # publishes it back (publish-isolated-build-cache). A shared key is saved
     # by whichever job finishes first and never holds the test profile.
     "${{ inputs.os == 'ubuntu-latest' && 'test' || '' }}": "Linux x64 Test "
-    "saves its isolated test-profile store; workspace-only ~36 MB compressed",
+    "saves its isolated test-profile store; current archive ~317 MB compressed (2026-10-03 inventory)",
 }
 
 # setup-soldr refs whose main action honors `save-cache: auto|true|false`

@@ -43,6 +43,9 @@ FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
 # #1875 retired 0.9.25) with ~10% headroom:
 #   cook-base       1.52 GB (f9e7e4902 0.83, fnone 0.41, f6cafa616 0.28)
 #   build-cache     1.71 GB, plus ~0.9 GB of #1550 debug test binaries
+#                   + 1.2 GB reserved for #1885 Integration unit-store reuse
+#                   (1,056,628,741 bytes at local zstd -1, 2026-10-03).
+#                   Integration disables setup cook: no new cook-base family.
 #   cargo-registry  0.90 GB (one entry per toolchain digest: 4 linux, 2 windows, 1 macos)
 #   dylint-output   0.86 GB (ci/check_cache_footprint.py caps it at 0.9 GB)
 #   dylint          0.55 GB
@@ -50,7 +53,7 @@ FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
 #   soldr-mini      0.04 GB (four platforms)
 FAMILY_BUDGETS: dict[str, int] = {
     "cook-base": 1_700_000_000,
-    "build-cache": 2_900_000_000,
+    "build-cache": 4_100_000_000,
     "cargo-registry": 1_000_000_000,
     "dylint-output": 900_000_000,
     "dylint": 600_000_000,
@@ -73,9 +76,11 @@ def evaluate(usage: dict, caches: list[dict], budget: int = BUDGET_BYTES) -> lis
     if total <= budget:
         return []
     errors = [
-        f"repository cache usage {_gb(total)} across at least "
-        f"{max(int(usage.get('active_caches_count', 0)), len(caches))} entries exceeds the "
-        f"{_gb(budget)} budget"
+        (
+            f"repository cache usage {_gb(total)} across at least "
+            f"{max(int(usage.get('active_caches_count', 0)), len(caches))} entries exceeds the "
+            f"{_gb(budget)} budget"
+        )
     ]
     largest = sorted(caches, key=lambda c: int(c.get("size_in_bytes", 0)), reverse=True)
     for entry in largest[:TOP]:
