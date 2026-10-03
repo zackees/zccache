@@ -109,9 +109,11 @@ jobs:
       - name: Wait for current-main cache pre-prune
         uses: ./.github/actions/wait-cache-pre-prune
       - uses: astral-sh/setup-uv@v6
-      - uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
+      - id: soldr
+        uses: zackees/setup-soldr@v0 # v0.9.82 or later (floating major)
         with:
           job-status: ${{ job.status }} # setup-soldr#559: a failed job saves no build outputs
+          cache-key-suffix: integration # isolated full-workspace profile (#1885/#1867)
           cook-delta: false # per-commit delta layer off (setup-soldr#528)
           # Global auto keeps local saves warm; the remote permission preserves
           # the #1677 current-main pre-prune guard (setup-soldr#565).
@@ -325,3 +327,9 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/zccache-self-tests/integration
         run: |
           target/debug/zccache-ci audit-logs "$SOLDR_CACHE_DIR/cache/zccache" --context integration
+      - name: Publish isolated integration build cache
+        if: always()
+        uses: ./.github/actions/publish-isolated-build-cache
+        with:
+          isolated-soldr-cache-dir: ${{ runner.temp }}/zccache-self-tests/integration
+          build-cache-path: ${{ steps.soldr.outputs.build-cache-path }}

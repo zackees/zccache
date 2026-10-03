@@ -62,6 +62,8 @@ ACTION = "zackees/setup-soldr"
 
 # Suffixes allowed to differ from the rest of their OS x cook shape, with why.
 JUSTIFIED_SUFFIXES: dict[str, str] = {
+    "integration": "full-workspace feature profile publishes its isolated compile store; "
+    "shares the existing 2.9 GB build-cache family cap (measure before landing)",
     "dylint": "materializes the nightly dylint toolchain, driver and tools "
     "(dylint-cache) and disables the cargo-registry cache",
     "check-<label>": "cross-target check: its closure is built for "

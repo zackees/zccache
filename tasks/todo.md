@@ -1305,3 +1305,12 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Update the footprint guard, delegated build action, tests and documentation without adding workflow files; split writer-barrier coverage below the source-file size ceiling.
 - [ ] Run targeted tests, footprint guard, primary review and the complete committed-tree gate; verify real local/remote save decisions before merge.
 - [ ] Follow up isolated compiled-output publication / assertion-only failure reuse from measured evidence; preserve CACHE-007/008 payload and failure constraints.
+
+
+## #1885 Integration isolated compile-store publication
+
+- [x] Confirm #1867/#1868 already provide the publisher and a measured Linux Test precedent.
+- [x] Add a failing Integration wiring regression; retain guarded remote saves and job-status gating.
+- [x] Give Integration its own profile key and publish after shutdown plus audit without changing suite coverage.
+- [ ] Measure actual archive footprint and cold/warm cacheable hits under published Bosn; stay within the existing 2.9 GB build-cache cap.
+- [ ] Run focused checks, primary review and the full committed-tree local gate before pushing; verify the first remote head.
