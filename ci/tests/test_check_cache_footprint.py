@@ -512,3 +512,17 @@ def test_dylint_output_budgets_cannot_exceed_the_family_total(monkeypatch) -> No
     )
     errors = guard._dylint_output_errors(guard.ROOT)
     assert any("DYLINT_OUTPUT_TOTAL_BUDGET_BYTES" in e for e in errors), errors
+
+
+def test_a_refused_pre_prune_barrier_makes_main_push_restore_only() -> None:
+    """The barrier exports ZCCACHE_CACHE_WRITES instead of failing the job;
+    a main push saves only when it says 'true'."""
+    for policy in (guard.SAVE_CACHE_POLICY, guard.MAIN_PUSH_ONLY_SAVE):
+        def evaluate(writes: str, policy: str = policy) -> str:
+            return guard.evaluate_save_policy(
+                policy, event_name="push", ref="refs/heads/main", cache_writes=writes
+            )
+
+        assert evaluate("true") == "auto"
+        assert evaluate("false") == "false"
+        assert evaluate("") == "false"

@@ -13,60 +13,81 @@ runs:
         retries: 5
         github-token: ${{ github.token }}
         script: |
-          const expectedSha = context.sha;
-          if (!expectedSha) throw new Error("missing pushed SHA; refusing cache writes");
+          // The barrier never fails the job (zccache main-push failures: ~93
+          // of 100 failed main runs died here, taking all ~13 workflows on
+          // the SHA red with them while every test passed). It decides
+          // whether this job may WRITE caches and exports the answer as
+          // ZCCACHE_CACHE_WRITES=true|false; every main-push save-cache
+          // expression requires 'true' (SAVE_CACHE_POLICY in
+          // ci/check_cache_footprint.py). A refusal is a warning: the job
+          // still builds and tests, restore-only. The cache-pre-prune
+          // workflow's own run stays red when its forecast fails closed.
+          const refuse = (reason) => {
+            core.warning(`cache writes disabled for this job: ${reason}`);
+            core.exportVariable("ZCCACHE_CACHE_WRITES", "false");
+          };
+          const decide = async () => {
+            const expectedSha = context.sha;
+            if (!expectedSha) throw new Error("missing pushed SHA; refusing cache writes");
 
-          const branchHead = async () => (await github.rest.repos.getBranch({
-            ...context.repo,
-            branch: "main",
-          })).data.commit.sha;
-          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-          // The pre-prune job allows 320 minutes for its producer barrier,
-          // then up to 20 minutes for inventory convergence. Keep this waiter
-          // bounded to 355 minutes, below the caller's 360-minute ceiling.
-          const maxAttempts = 1420;
-
-          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-            const currentHead = await branchHead();
-            if (currentHead !== expectedSha) {
-              throw new Error(
-                `main advanced to ${currentHead}; ${expectedSha} must not write caches`,
-              );
-            }
-
-            const response = await github.rest.actions.listWorkflowRuns({
+            const branchHead = async () => (await github.rest.repos.getBranch({
               ...context.repo,
-              workflow_id: "cache-pre-prune.yml",
               branch: "main",
-              head_sha: expectedSha,
-              per_page: 100,
-            });
-            const candidates = response.data.workflow_runs
-              .filter((run) => run.event === "push" && run.head_branch === "main")
-              .sort((a, b) =>
-                (b.run_attempt || 1) - (a.run_attempt || 1) ||
-                Date.parse(b.created_at) - Date.parse(a.created_at),
-              );
-            const prePrune = candidates[0];
+            })).data.commit.sha;
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            // The pre-prune job allows 320 minutes for its producer barrier,
+            // then up to 20 minutes for inventory convergence. Keep this waiter
+            // bounded to 355 minutes, below the caller's 360-minute ceiling.
+            const maxAttempts = 1420;
 
-            if (prePrune?.status === "completed") {
-              if (prePrune.conclusion !== "success") {
+            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+              const currentHead = await branchHead();
+              if (currentHead !== expectedSha) {
                 throw new Error(
-                  `cache pre-prune for ${expectedSha} concluded ${prePrune.conclusion}; refusing cache writes`,
+                  `main advanced to ${currentHead}; ${expectedSha} must not write caches`,
                 );
               }
-              if (await branchHead() !== expectedSha) {
-                throw new Error(`main advanced while waiting for pre-prune ${expectedSha}`);
-              }
-              core.info(`Cache pre-prune succeeded for current main SHA ${expectedSha}.`);
-              return;
-            }
 
-            if (attempt + 1 < maxAttempts) await sleep(15_000);
+              const response = await github.rest.actions.listWorkflowRuns({
+                ...context.repo,
+                workflow_id: "cache-pre-prune.yml",
+                branch: "main",
+                head_sha: expectedSha,
+                per_page: 100,
+              });
+              const candidates = response.data.workflow_runs
+                .filter((run) => run.event === "push" && run.head_branch === "main")
+                .sort((a, b) =>
+                  (b.run_attempt || 1) - (a.run_attempt || 1) ||
+                  Date.parse(b.created_at) - Date.parse(a.created_at),
+                );
+              const prePrune = candidates[0];
+
+              if (prePrune?.status === "completed") {
+                if (prePrune.conclusion !== "success") {
+                  throw new Error(
+                    `cache pre-prune for ${expectedSha} concluded ${prePrune.conclusion}; refusing cache writes`,
+                  );
+                }
+                if (await branchHead() !== expectedSha) {
+                  throw new Error(`main advanced while waiting for pre-prune ${expectedSha}`);
+                }
+                core.info(`Cache pre-prune succeeded for current main SHA ${expectedSha}.`);
+                return;
+              }
+
+              if (attempt + 1 < maxAttempts) await sleep(15_000);
+            }
+            throw new Error(
+              `no successful cache pre-prune for ${expectedSha} after ${maxAttempts} checks; refusing cache writes`,
+            );
+          };
+          try {
+            await decide();
+            core.exportVariable("ZCCACHE_CACHE_WRITES", "true");
+          } catch (error) {
+            refuse(error.message);
           }
-          throw new Error(
-            `no successful cache pre-prune for ${expectedSha} after ${maxAttempts} checks; refusing cache writes`,
-          );
     - name: Normalize Cargo.lock to the Windows cache identity
       if: runner.os == 'Windows' && github.event_name == 'push' && github.ref == 'refs/heads/main'
       shell: pwsh
