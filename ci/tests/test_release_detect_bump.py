@@ -126,6 +126,13 @@ def _run(
     github_output.write_text("", encoding="utf-8")
 
     env = dict(os.environ)
+    # A non-interactive bash sources $BASH_ENV (and sh sources $ENV) before
+    # the script runs. An agent or CI harness that uses it to re-prepend its
+    # own shim directory to PATH puts a real `git` ahead of the stub below,
+    # and detect-bump then reads this repository's actual manifest instead
+    # of OLD_MANIFEST. Run the script with neither, so the stubs always win.
+    env.pop("BASH_ENV", None)
+    env.pop("ENV", None)
     env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
     env.update(
         EVENT_NAME=event_name,
