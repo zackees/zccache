@@ -60,6 +60,27 @@ def test_global_false_remains_read_only_even_with_remote_true(tmp_path: Path) ->
     assert guard.check(tmp_path) == []
 
 
+@pytest.mark.parametrize(
+    "case, rejected",
+    (
+        (UnsafePermission("auto", "'true'"), True),
+        (UnsafePermission("auto", guard.MAIN_PUSH_ONLY_SAVE), False),
+        (UnsafePermission("false", "'true'"), False),
+    ),
+)
+def test_independent_build_writer_obeys_remote_permission(
+    tmp_path: Path, case: UnsafePermission, rejected: bool
+) -> None:
+    write_workflow(tmp_path, case)
+    path = tmp_path / ".github/workflows/sample.yml"
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "          cache: false\n          build-cache: true\n",
+        encoding="utf-8",
+    )
+    assert bool(guard.check(tmp_path)) is rejected
+
+
 def test_global_auto_with_guarded_remote_permission_is_supported(
     tmp_path: Path,
 ) -> None:

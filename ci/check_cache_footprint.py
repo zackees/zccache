@@ -586,6 +586,15 @@ def _remote_save_policy_errors(steps: list[Step]) -> list[str]:
             errors.append(
                 f"{step.where} ref {step.ref} does not honor save-cache-remote (#565)"
             )
+        # Independent writers can remain enabled with the cache umbrella off.
+        if (
+            remote not in ("", "auto")
+            and step.pr_reachable
+            and not _cannot_save_on_pr(step)
+        ):
+            errors.append(
+                f"{step.where} save-cache-remote can permit writes on pull_request"
+            )
     return errors
 
 
