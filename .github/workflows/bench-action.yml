@@ -53,9 +53,9 @@ jobs:
         id: cold
         shell: bash
         run: |
-          cargo clean 2>/dev/null || true
+          cargo clean 2>/dev/null || true  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -76,9 +76,9 @@ jobs:
         id: warm_clean
         shell: bash
         run: |
-          cargo clean
+          cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -119,9 +119,9 @@ jobs:
         id: cold
         shell: bash
         run: |
-          cargo clean 2>/dev/null || true
+          cargo clean 2>/dev/null || true  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -132,7 +132,7 @@ jobs:
         shell: bash
         run: |
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -142,9 +142,9 @@ jobs:
         id: warm_clean
         shell: bash
         run: |
-          cargo clean
+          cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -155,7 +155,7 @@ jobs:
         shell: bash
         run: |
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -188,9 +188,9 @@ jobs:
         id: cold
         shell: bash
         run: |
-          cargo clean 2>/dev/null || true
+          cargo clean 2>/dev/null || true  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -201,7 +201,7 @@ jobs:
         shell: bash
         run: |
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -211,9 +211,9 @@ jobs:
         id: warm_clean
         shell: bash
         run: |
-          cargo clean
+          cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -224,7 +224,7 @@ jobs:
         shell: bash
         run: |
           START=$(date +%s%N)
-          cargo build -p $BUILD_TARGET 2>&1
+          cargo build -p $BUILD_TARGET 2>&1  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -291,7 +291,7 @@ jobs:
           echo "RUSTC_WRAPPER=$RUSTC_WRAPPER"
           echo ""
           echo "=== rustc version + path ==="
-          which rustc && rustc --version
+          which rustc && rustc --version  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build with restored target + cargo fingerprint trace"
         id: restored
@@ -302,7 +302,7 @@ jobs:
 
           START=$(date +%s%N)
           CARGO_LOG="cargo::core::compiler::fingerprint=info" \
-            cargo build -p $BUILD_TARGET 2> /tmp/cargo-fingerprint.log
+            cargo build -p $BUILD_TARGET 2> /tmp/cargo-fingerprint.log  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "ms=$MS" >> "$GITHUB_OUTPUT"
@@ -380,7 +380,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Cold build**: First build, all caches empty." >> "$GITHUB_STEP_SUMMARY"
           echo "- **No-op**: Immediate rebuild, nothing changed. Measures cargo's fingerprint check speed." >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Warm (clean target)**: \`cargo clean\` then rebuild. Target dir is empty but compilation cache has artifacts. This is the worst case for CI (new runner, no target cache)." >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Warm (clean target)**: \`cargo clean\` then rebuild. Target dir is empty but compilation cache has artifacts. This is the worst case for CI (new runner, no target cache)." >> "$GITHUB_STEP_SUMMARY"  # ci-lint: allow RUST-001 false positive: "cargo" is text inside a quoted echo
           echo "- **Warm (target intact)**: Rebuild after the clean+rebuild. Target dir has fingerprints + artifacts. This is the best case — what happens when target metadata cache is restored." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "</details>" >> "$GITHUB_STEP_SUMMARY"

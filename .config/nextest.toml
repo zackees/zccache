@@ -1,3 +1,5 @@
+experimental = ["wrapper-scripts"]
+
 # cargo-nextest configuration (Integration CI runs the workspace under nextest).
 #
 # nextest runs tests in parallel, one process each. Tests that assert
@@ -7,3 +9,18 @@
 [[profile.default.overrides]]
 filter = 'test(/budget|overhead|latency|(^|::)perf_|_vs_bare|_vs_sccache|throughput/)'
 threads-required = "num-cpus"
+
+# zackees/ci.yml#168 (GATE-005): zccache's tests start zccache daemons and
+# touch zccache state roots, and zccache is the live compiler cache of every
+# soldr build on a developer host. Every Unix test process nextest launches
+# passes through this guard, which refuses unless CI=true (GitHub runners,
+# act) or ZCCACHE_TEST_ISOLATED=1 (set only by the bosn gate image). Run the
+# suite isolated with `bosn run --task gate-test`.
+[scripts.wrapper.isolation-guard]
+command = { command-line = "ci/nextest_isolation_guard.sh", relative-to = "workspace-root" }
+target-runner = "within-wrapper"
+
+[[profile.default.scripts]]
+filter = "all()"
+platform = { target = "cfg(unix)" }
+run-wrapper = "isolation-guard"

@@ -218,8 +218,8 @@ jobs:
             echo "could not read channel from rust-toolchain.toml" >&2
             exit 1
           fi
-          rustup default "$toolchain"
-          rustc --version
+          rustup default "$toolchain"  # ci-lint: allow RUST-001 pins rustup's default for toolchain-less perf fixture tempdirs (#596)
+          rustc --version  # ci-lint: allow RUST-001 pins rustup's default for toolchain-less perf fixture tempdirs (#596)
 
       # #1861/#1807: record runner hardware identity + contention baseline in
       # its own step, outside every timed benchmark command.

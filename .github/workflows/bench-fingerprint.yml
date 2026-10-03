@@ -30,18 +30,18 @@ jobs:
           toolchain: 1.95.0
 
       - name: "Build 1: cold"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: rebuild (no cache)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 3: no-op (should be instant)"
         run: |
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -67,18 +67,18 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: "Build 1: cold (populates sccache)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (sccache hits)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 3: no-op (should be instant)"
         run: |
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -103,13 +103,13 @@ jobs:
           shared-key: h1
 
       - name: "Build 1: cold"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (zccache hits via hardlink)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Snapshot: output file metadata after Build 2"
         run: |
@@ -127,7 +127,7 @@ jobs:
       - name: "Build 3: no-op (THE BUG — expect Compiling)"
         run: |
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -157,19 +157,19 @@ jobs:
           shared-key: h2
 
       - name: "Build 1: cold (with wrapper)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (with wrapper, cache hits)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 3: no-op WITHOUT wrapper"
         run: |
           unset RUSTC_WRAPPER
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -198,13 +198,13 @@ jobs:
           shared-key: h3
 
       - name: "Build 1: cold"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (cache hits)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Copy zccache binary to a new path (different mtime/inode)"
         run: |
@@ -218,7 +218,7 @@ jobs:
         run: |
           export RUSTC_WRAPPER=/tmp/zccache-copy
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -247,13 +247,13 @@ jobs:
           shared-key: h4
 
       - name: "Build 1: cold"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (cache hits)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Touch ALL files in target/ to current time"
         run: |
@@ -263,7 +263,7 @@ jobs:
       - name: "Build 3: no-op after touching everything"
         run: |
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -292,13 +292,13 @@ jobs:
           shared-key: h5
 
       - name: "Build 1: cold"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (cache hits)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Touch ONLY .rlib, .rmeta, .d files (not .fingerprint/)"
         run: |
@@ -310,7 +310,7 @@ jobs:
       - name: "Build 3: no-op"
         run: |
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -339,13 +339,13 @@ jobs:
           shared-key: h6
 
       - name: "Build 1: cold"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (cache hits via hardlink)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Break hardlinks: copy each file over itself"
         run: |
@@ -360,7 +360,7 @@ jobs:
       - name: "Build 3: no-op"
         run: |
           START=$(date +%s%N)
-          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)
+          OUTPUT=$(cargo build -p $BUILD_TARGET 2>&1)  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           END=$(date +%s%N)
           MS=$(( (END - START) / 1000000 ))
           echo "$OUTPUT"
@@ -389,18 +389,18 @@ jobs:
           shared-key: h7
 
       - name: "Build 1: cold"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Clean"
-        run: cargo clean
+        run: cargo clean  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 2: warm (cache hits)"
-        run: cargo build -p $BUILD_TARGET
+        run: cargo build -p $BUILD_TARGET  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
 
       - name: "Build 3: with CARGO_LOG=cargo::core::compiler::fingerprint=trace"
         run: |
           CARGO_LOG="cargo::core::compiler::fingerprint=trace" \
-            cargo build -p $BUILD_TARGET 2> /tmp/cargo-fingerprint-trace.log || true
+            cargo build -p $BUILD_TARGET 2> /tmp/cargo-fingerprint-trace.log || true  # ci-lint: allow RUST-001 deliberate bare-cargo control row; setup-soldr would invalidate it (CLAUDE.md)
           echo "::notice::H7: trace log captured"
 
       - name: "Parse trace: why is each crate dirty?"
@@ -450,4 +450,4 @@ jobs:
           echo "| H4 | touch all mtimes | Is mtime the root cause? |" >> "$GITHUB_STEP_SUMMARY"
           echo "| H5 | touch outputs only | Is it output mtime specifically? |" >> "$GITHUB_STEP_SUMMARY"
           echo "| H6 | break hardlinks | Is it inode sharing or link count? |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| H7 | cargo trace | What does cargo SAY is dirty? (check artifact) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| H7 | cargo trace | What does cargo SAY is dirty? (check artifact) |" >> "$GITHUB_STEP_SUMMARY"  # ci-lint: allow RUST-001 false positive: "cargo" is text inside a quoted echo
