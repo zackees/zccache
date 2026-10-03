@@ -59,7 +59,7 @@ soldr cargo bench -p zccache            # criterion benches live in crates/zccac
 uvx --from git+https://github.com/zackees/ci.yml@<CI_LINT_REF> ci-lint local-gate run   # pin: ci/local_gate.py CI_LINT_REF
 ```
 
-Runs `ci/local_gate.py` (lanes in `local-gate.toml`) on a clean committed tree and stamps HEAD with a tree-bound `Local-Gate:` trailer plus `Ci-Attestation:` trailers (`ci-attestations.yml`). The test suite runs only in bosn (`bosn run --task gate-test`), never on the host: the nextest guard refuses outside CI or `ZCCACHE_TEST_ISOLATED=1`. CI's `ci-mode` jobs then skip the Formatting, Documentation, MSRV and Integration (Linux) jobs for an attested, in-policy PR head; `main` pushes always run them. Add a Formatting check to the `lint` lane, never as a workflow step (GATE-001), and keep `ci/docker/gate/run_gate_tests.sh` in step with integration.yml (`ci/tests/test_local_gate.py`).
+Runs `ci/local_gate.py` (lanes in `local-gate.toml`) on a clean committed tree and stamps HEAD with a tree-bound `Local-Gate:` trailer plus `Ci-Attestation:` trailers (`ci-attestations.yml`). The test suite runs only through `bosn ci run` replaying Integration and MSRV, never on the host: the nextest guard refuses outside CI or `ZCCACHE_TEST_ISOLATED=1`. CI's `ci-mode` jobs then skip the Formatting, Documentation, MSRV and Integration (Linux) jobs for an attested, in-policy PR head; `main` pushes always run them. Add a Formatting check to the `lint` lane, never as a workflow step (GATE-001), and keep the recorded workflow selection and required step evidence in step with Integration/MSRV (`ci/tests/test_local_gate.py`).
 
 ## Temporary dependent subgit integration
 

@@ -41,7 +41,9 @@ def test_formatting_job_runs_only_the_lint_lane() -> None:
     """GATE-001: every check of the mirrored job lives in the gate."""
     block = _job_block("ci.yml", "fmt")
     runs = re.findall(r"^\s+run: (.+)$", block, re.MULTILINE)
-    assert runs == ["uv run --no-project --python 3.13 python ci/local_gate.py --lane lint"]
+    assert runs == [
+        "uv run --no-project --python 3.13 python ci/local_gate.py --lane lint"
+    ]
     assert {c.lane for c in local_gate.checks()} == set(local_gate.LANES)
 
 
@@ -57,24 +59,46 @@ def test_skippable_jobs_consume_their_ci_mode_decision() -> None:
         assert "ci-mode" in block.split("if:", 1)[0], (workflow, job)
 
 
-def test_isolated_lane_runs_every_integration_test_command() -> None:
+def test_legacy_harness_runs_every_integration_test_command() -> None:
     """Each `soldr cargo test|nextest` command of the Integration (Linux) job
     on pull requests, and the MSRV job's ignored test, runs in the lane."""
     lane = GATE_TESTS.read_text(encoding="utf-8").replace('"$FEATURES"', "FEATURES")
     integration = _job_block("integration.yml", "integration")
     # The ignored/stress suite runs only on schedule and dispatch.
-    integration = integration.split("- name: Test ignored integration and stress suite", 1)[0]
+    integration = integration.split(
+        "- name: Test ignored integration and stress suite", 1
+    )[0]
     msrv = _job_block("ci.yml", "msrv")
-    commands = re.findall(r"soldr cargo (?:test|nextest run)[^\n|]*", integration + msrv)
+    commands = re.findall(
+        r"soldr cargo (?:test|nextest run)[^\n|]*", integration + msrv
+    )
     assert len(commands) >= 5, commands
     for command in commands:
-        normalized = command.replace('"$ZCCACHE_INTEGRATION_FEATURES"', "FEATURES").strip()
+        normalized = command.replace(
+            '"$ZCCACHE_INTEGRATION_FEATURES"', "FEATURES"
+        ).strip()
         normalized = re.sub(r"\s*2>&1$", "", normalized).rstrip('"').strip()
         assert normalized in lane, normalized
 
 
-def test_isolated_lane_proves_its_tree_first() -> None:
-    """GATE-009: the nonce echo precedes every command."""
-    lines = [ln for ln in GATE_TESTS.read_text(encoding="utf-8").splitlines() if ln and not ln.startswith("#")]
-    first_command = next(ln for ln in lines if not ln.startswith(("set ", "cd ")))
-    assert first_command.startswith('echo "gate-nonce: ')
+def test_isolated_lanes_replay_both_real_workflows() -> None:
+    isolated = [check for check in local_gate.checks() if check.bosn_workflow]
+    assert len(isolated) == 2
+    assert [check.bosn_workflow for check in isolated] == [
+        ".github/workflows/ci.yml",
+        ".github/workflows/integration.yml",
+    ]
+    assert [check.bosn_job for check in isolated] == ["msrv", "integration"]
+    assert [check.lane for check in isolated] == ["check", "tests"]
+    assert all(check.argv[:3] == ("bosn", "ci", "run") for check in isolated)
+    assert all("--wait" in check.argv and "--json" in check.argv for check in isolated)
+    assert all(check.min_version == (0, 1, 12) for check in isolated)
+    assert isolated[0].selected_job == "msrv"
+    assert isolated[1].selected_job is None
+    assert "Verify nested Dylint cache contract" in isolated[0].required_steps
+    assert "Test (full workspace)" in isolated[1].required_steps
+    for check in isolated:
+        workflow = check.bosn_workflow.rsplit("/", 1)[-1]
+        block = _job_block(workflow, check.bosn_job)
+        for step in check.required_steps:
+            assert f"name: {step}" in block

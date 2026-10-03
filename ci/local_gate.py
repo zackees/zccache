@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """zccache's local gate (zackees/ci.yml#166, GATE-001..010).
 
 One command that is a superset of the remote Linux quick gate, so a PR passes
@@ -21,13 +20,12 @@ Lanes (GATE-007: each is cached on its own input set):
   job runs exactly `ci/local_gate.py --lane lint` and nothing else
   (GATE-001), so this list is the single source of truth for it.
 - `py-tests`: the `ci/tests` pytest suite (python-tests.yml `ci/tests`).
-- `check`: `soldr cargo check --workspace` on the pinned toolchain, which is
-  the MSRV (ci.yml `msrv`).
+- `check`: the MSRV job through Bosn Actions, including workspace check
+  and its nested Dylint cache contract.
 - `docs`: rustdoc with warnings denied (ci.yml `docs`).
-- `tests`: zccache's own test suite -- the Integration (Linux) job's
-  commands and the MSRV job's nested Dylint cache contract -- in bosn's
-  isolated container (`bosn run --task gate-test`), never on the host
-  (GATE-005): zccache is the live compiler cache of every soldr build here.
+- `tests`: the Integration (Linux) workflow replayed through `bosn ci run`,
+  never on the host (GATE-005). Every successful receipt must
+  prove this clean workspace/HEAD and completed required job steps (GATE-009).
 
 Remote-only (not attested): native macOS and Windows runs, the btrfs reflink
 e2e, the miss-overhead timing budget, Dylint, and every other workflow.
@@ -39,9 +37,10 @@ fails, then a timing table. Exit 1 when any check fails.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import platform
 import re
-import secrets
 import shutil
 import subprocess
 import sys
@@ -50,12 +49,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 ROOT = Path(__file__).resolve().parent.parent
 # The zackees/ci.yml commit whose ci_lint this repository uses. The `ci-mode`
 # jobs in ci.yml and integration.yml check out the same SHA;
 # ci/tests/test_local_gate.py keeps them in step.
-CI_LINT_REF = "7edeb8dc318c1530ee3bf770029cb2e8b639e6f5"
+CI_LINT_REF = "365508627edb8130e2c5615338b00bf02a069fa7"
 LANES = ("lint", "py-tests", "check", "docs", "tests")
 PY = ("uv", "run", "--no-project", "--python", "3.13")
 # ci.yml's and integration.yml's workflow-level env: warnings are errors. It
@@ -73,14 +73,21 @@ class Check:
     exclusive: bool = False
     # Oldest version of argv[0] that runs this check correctly.
     min_version: tuple[int, ...] | None = None
-    # zackees/ci.yml#196 (GATE-009): the isolated runner must prove it saw
-    # THIS worktree. A fresh nonce goes to NONCE_FILE; the runner echoes it.
-    tree_nonce: bool = False
+    # GATE-009: require a clean source-bound Bosn receipt and actual steps.
+    bosn_workflow: str = ""
+    bosn_job: str = ""
+    selected_job: str | None = None
+    required_steps: tuple[str, ...] = ()
 
 
 def checks() -> list[Check]:
     lint = [
-        Check("rustfmt", ("soldr", "cargo", "fmt", "--all", "--", "--check"), "lint", RUST_ENV),
+        Check(
+            "rustfmt",
+            ("soldr", "cargo", "fmt", "--all", "--", "--check"),
+            "lint",
+            RUST_ENV,
+        ),
         Check(
             "Strict benchmark metric type check (pyright)",
             ("uvx", "--from", "pyright==1.1.411", "pyright"),
@@ -109,7 +116,15 @@ def checks() -> list[Check]:
         ),
         Check(
             "setup-soldr cache footprint",
-            ("uv", "run", "--no-project", "--with", "pyyaml", "python", "ci/check_cache_footprint.py"),
+            (
+                "uv",
+                "run",
+                "--no-project",
+                "--with",
+                "pyyaml",
+                "python",
+                "ci/check_cache_footprint.py",
+            ),
             "lint",
         ),
         Check(
@@ -158,11 +173,29 @@ def checks() -> list[Check]:
     ]
     rust = [
         Check(
-            "cargo check (MSRV toolchain)",
-            ("soldr", "cargo", "check", "--workspace"),
+            "MSRV check and nested Dylint (isolated Bosn Actions)",
+            (
+                "bosn",
+                "ci",
+                "run",
+                "--workspace",
+                ".",
+                "--workflow",
+                ".github/workflows/ci.yml",
+                "--job",
+                "msrv",
+                "--trigger",
+                "pr",
+                "--wait",
+                "--json",
+            ),
             "check",
-            RUST_ENV,
             exclusive=True,
+            min_version=(0, 1, 12),
+            bosn_workflow=".github/workflows/ci.yml",
+            bosn_job="msrv",
+            selected_job="msrv",
+            required_steps=("Check MSRV", "Verify nested Dylint cache contract"),
         ),
         Check(
             "rustdoc",
@@ -172,20 +205,38 @@ def checks() -> list[Check]:
             exclusive=True,
         ),
     ]
-    # zackees/ci.yml#168 (GATE-005): never on the host. The nextest run
-    # wrapper refuses unless CI=true or ZCCACHE_TEST_ISOLATED=1; the bosn
-    # image sets the marker.
+    # GATE-005/009: act sets CI=true in its job containers; the nextest
+    # guard still refuses developer-host execution. Inspect the immutable
+    # run receipt before allowing either real workflow to prove this lane.
     tests = [
         Check(
-            "zccache tests (isolated, bosn)",
-            ("bosn", "run", "--task", "gate-test", "--deadline-ms", "7200000", "--output-limit", "67108864"),
+            "Integration (Linux, isolated Bosn Actions)",
+            (
+                "bosn",
+                "ci",
+                "run",
+                "--workspace",
+                ".",
+                "--workflow",
+                ".github/workflows/integration.yml",
+                "--trigger",
+                "pr",
+                "--wait",
+                "--json",
+            ),
             "tests",
             exclusive=True,
-            # bosn 0.1.7 binds a fresh setup container to this worktree
-            # instead of reusing one bound to another (zackees/bosn#314).
-            min_version=(0, 1, 7),
-            tree_nonce=True,
-        )
+            min_version=(0, 1, 12),
+            bosn_workflow=".github/workflows/integration.yml",
+            bosn_job="integration",
+            required_steps=(
+                "Build integration test binaries",
+                "Test (full workspace)",
+                "Wrapper daemon-unavailable contract (exit 125)",
+                "Strict artifact-layout validation",
+                "Audit isolated integration cache",
+            ),
+        ),
     ]
     return lint + py_tests + rust + tests
 
@@ -229,31 +280,209 @@ def tool_version(tool: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in match.groups()) if match else None
 
 
-NONCE_FILE = ".gate-nonce"
-NONCE_MARKER = "gate-nonce: "
+JsonValue: TypeAlias = (
+    str | int | float | bool | list["JsonValue"] | dict[str, "JsonValue"] | None
+)
+
+
+@dataclass(frozen=True)
+class BosnSection:
+    name: str
+    stage: str
+    status: str
+    conclusion: str | None
+
+
+@dataclass(frozen=True)
+class BosnJob:
+    job_id: str
+    status: str
+    conclusion: str | None
+    sections: tuple[BosnSection, ...]
+
+
+@dataclass(frozen=True)
+class BosnProof:
+    workspace: str
+    sha: str
+    state: str
+    conclusion: str
+    engine: str
+    event: str
+    workflow: str
+    selected_job: str | None
+    exit_code: int
+    jobs: tuple[BosnJob, ...]
+
+
+def _document(value: JsonValue) -> dict[str, JsonValue]:
+    """Validate an object at the external JSON boundary."""
+    if not isinstance(value, dict):
+        raise TypeError("expected a JSON object")
+    return value
+
+
+def _values(value: JsonValue) -> list[JsonValue]:
+    if not isinstance(value, list):
+        raise TypeError("expected a JSON array")
+    return value
+
+
+def _text(value: JsonValue) -> str:
+    if not isinstance(value, str):
+        raise TypeError("expected a JSON string")
+    return value
+
+
+def _optional_text(value: JsonValue) -> str | None:
+    return None if value is None else _text(value)
+
+
+def _proof_job(value: JsonValue) -> BosnJob:
+    job = _document(value)
+    sections: list[BosnSection] = []
+    for section_value in _values(job["sections"]):
+        section = _document(section_value)
+        sections.append(
+            BosnSection(
+                _text(section["name"]),
+                _text(section["stage"]),
+                _text(section["status"]),
+                _optional_text(section["conclusion"]),
+            )
+        )
+    return BosnJob(
+        _text(job["job_id"]),
+        _text(job["status"]),
+        _optional_text(job["conclusion"]),
+        tuple(sections),
+    )
+
+
+def _parse_bosn_proof(output: str) -> BosnProof:
+    documents: list[dict[str, JsonValue]] = []
+    for line in output.splitlines():
+        if line.startswith("{"):
+            documents.append(_document(json.loads(line)))
+    if len(documents) != 1:
+        raise ValueError("expected exactly one Bosn run receipt")
+    document = documents[0]
+    if document["dirty"] is not None:
+        raise ValueError("Bosn executed a dirty snapshot")
+    exit_code = document["exit_code"]
+    if type(exit_code) is not int:
+        raise ValueError("missing terminal exit code")
+    tree = _document(document["tree"])
+    jobs: list[BosnJob] = []
+    for value in _values(tree["groups"]):
+        group = _document(value)
+        jobs.extend(_proof_job(job) for job in _values(group["jobs"]))
+    return BosnProof(
+        _text(document["workspace"]),
+        _text(document["sha"]),
+        _text(document["state"]),
+        _text(document["conclusion"]),
+        _text(document["engine"]),
+        _text(document["event"]),
+        _text(document["workflow"]),
+        _optional_text(document["job"]),
+        exit_code,
+        tuple(jobs),
+    )
+
+
+def _job_proves_steps(job: BosnJob, required_steps: tuple[str, ...]) -> bool:
+    if job.status != "completed" or job.conclusion != "success":
+        return False
+    completed = {
+        section.name
+        for section in job.sections
+        if section.stage == "Main"
+        and section.status == "completed"
+        and section.conclusion == "success"
+    }
+    return set(required_steps).issubset(completed)
+
+
+def bosn_proof_error(
+    output: str,
+    *,
+    workspace: Path,
+    head_sha: str,
+    workflow: str,
+    expected_job: str,
+    selected_job: str | None,
+    required_steps: tuple[str, ...] = (),
+) -> str | None:
+    """Fail closed on wrong source, unknown evidence or unexecuted checks."""
+    if not required_steps:
+        return "no required Bosn job steps were declared"
+    try:
+        proof = _parse_bosn_proof(output)
+    except (KeyError, ValueError, TypeError) as error:
+        return f"invalid Bosn source proof: {error}"
+    if (
+        not Path(proof.workspace).is_absolute()
+        or Path(proof.workspace).resolve() != workspace.resolve()
+    ):
+        return "Bosn executed another workspace"
+    if proof.sha != head_sha:
+        return "Bosn executed another commit"
+    if proof.state != "done" or proof.conclusion != "success" or proof.exit_code != 0:
+        return "Bosn run did not finish successfully"
+    if proof.engine != "act" or proof.event != "pull_request":
+        return "Bosn used another engine or event"
+    if proof.workflow != workflow or proof.selected_job != selected_job:
+        return "Bosn executed another workflow selection"
+    jobs = [job for job in proof.jobs if job.job_id == expected_job]
+    if not jobs or not all(_job_proves_steps(job, required_steps) for job in jobs):
+        return "Bosn did not execute every required job step successfully"
+    return None
+
+
+def bosn_fidelity_error(host_arch: str, daemon: Captured) -> str | None:
+    """Only native x64 Linux containers can prove these Linux test lanes."""
+    if host_arch.lower() not in {"x86_64", "amd64"}:
+        return "Bosn Linux tests require a native x64 host CPU"
+    if daemon.returncode != 0:
+        return "cannot determine Docker daemon architecture"
+    if daemon.output.strip().lower() not in {"linux x86_64", "linux amd64"}:
+        return "Bosn Linux tests require a Linux x64 Docker daemon"
+    return None
 
 
 def _run(check: Check) -> Result:
-    if not check.tree_nonce:
-        return _run_plain(check)
-    nonce = secrets.token_hex(16)
-    path = ROOT / NONCE_FILE
-    path.write_text(nonce + "\n", encoding="utf-8")
-    try:
-        result = _run_plain(check)
-    finally:
-        path.unlink(missing_ok=True)
-    if f"{NONCE_MARKER}{nonce}" in result.output:
+    head = None
+    if check.bosn_workflow:
+        daemon = run_captured(
+            ["docker", "info", "--format", "{{.OSType}} {{.Architecture}}"]
+        )
+        error = bosn_fidelity_error(platform.machine(), daemon)
+        if error:
+            return Result(check, 1, 0.0, f"local gate: {error}\n")
+        head = run_captured(["git", "rev-parse", "HEAD"])
+        if head.returncode != 0:
+            return Result(check, 1, 0.0, "cannot determine this checkout's HEAD")
+    result = _run_plain(check)
+    if not check.bosn_workflow or result.code != 0:
         return result
-    seen = [ln for ln in result.output.splitlines() if ln.startswith(NONCE_MARKER)]
+    if head is None or head.returncode != 0:
+        error = "cannot determine this checkout's HEAD"
+    else:
+        error = bosn_proof_error(
+            result.output,
+            workspace=ROOT,
+            head_sha=head.output.strip(),
+            workflow=check.bosn_workflow,
+            expected_job=check.bosn_job,
+            selected_job=check.selected_job,
+            required_steps=check.required_steps,
+        )
     return Result(
         check,
-        result.code or 1,
+        1 if error else 0,
         result.seconds,
-        result.output + f"\nlocal gate: the isolated runner did not see this worktree "
-        f"(expected {NONCE_MARKER}{nonce}, saw {seen[-1] if seen else 'no nonce'}). "
-        "It ran another checkout's tree (zackees/bosn#314, zackees/ci.yml#196); "
-        "stop the bosn container bound to the other worktree, then rerun.",
+        result.output + (f"\nlocal gate: {error}\n" if error else ""),
     )
 
 
@@ -281,7 +510,9 @@ def _run_plain(check: Check) -> Result:
 def _save_log(result: Result) -> Path:
     logs = ROOT / "target" / "local-gate-logs"
     logs.mkdir(parents=True, exist_ok=True)
-    path = logs / (re.sub(r"[^A-Za-z0-9_.-]+", "-", result.check.name).strip("-") + ".log")
+    path = logs / (
+        re.sub(r"[^A-Za-z0-9_.-]+", "-", result.check.name).strip("-") + ".log"
+    )
     path.write_text(result.output, encoding="utf-8")
     return path
 
@@ -295,7 +526,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--lane", choices=("all", *LANES), default="all", help="one GATE-007 lane")
+    parser.add_argument(
+        "--lane", choices=("all", *LANES), default="all", help="one GATE-007 lane"
+    )
     parser.add_argument("--list", action="store_true", help="print the checks and exit")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 2))
     args = parser.parse_args(argv)
@@ -304,7 +537,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         for check in selected:
             env = " ".join(f"{k}={v!r}" for k, v in check.env)
-            print(f"[{check.lane}] {check.name}: {env + ' ' if env else ''}{' '.join(check.argv)}")
+            print(
+                f"[{check.lane}] {check.name}: {env + ' ' if env else ''}{' '.join(check.argv)}"
+            )
         return 0
 
     start = time.monotonic()
@@ -329,7 +564,9 @@ def main(argv: list[str] | None = None) -> int:
         # where it fails, not at the end), so keep the whole log.
         print(f"full output: {_save_log(result)}")
     total = time.monotonic() - start
-    print(f"\nlocal gate ({args.lane}): {len(results) - len(failed)}/{len(results)} passed in {total:.0f}s")
+    print(
+        f"\nlocal gate ({args.lane}): {len(results) - len(failed)}/{len(results)} passed in {total:.0f}s"
+    )
     return 1 if failed else 0
 
 

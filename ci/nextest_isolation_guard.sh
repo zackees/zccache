@@ -11,7 +11,7 @@
 # (ci/docker/gate/Dockerfile).
 if [ "${CI:-}" != "true" ] && [ "${ZCCACHE_TEST_ISOLATED:-}" != "1" ]; then
     echo "zccache tests refuse to run on a developer host (zackees/ci.yml#168, GATE-005)." >&2
-    echo "Run them isolated: bosn run --task gate-test" >&2
+    echo "Run them isolated: bosn ci run --workspace . --workflow .github/workflows/integration.yml --trigger pr --wait" >&2
     exit 97
 fi
 exec "$@"
