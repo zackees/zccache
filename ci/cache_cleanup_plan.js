@@ -21,6 +21,11 @@ const RETIRED_MAIN_PATTERNS = [
   /^cook-base-v2-linux-arm64-glibc-rustc[0-9.]+-f6cafa616-l[0-9a-f]{16}-soldrv?[0-9.]+$/i,
   /^cook-base-v2-windows-x64-msvc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23$/i,
   /^cook-base-v2-linux-x64-glibc-rustc1\.95\.0-f9e7e4902-l[0-9a-f]{16}-soldrv0\.9\.23-xdylint$/i,
+  // Auto-Release builds save nothing (2026-10-02: 3.41 GB of cross-target
+  // prepare archives plus eight empty build caches, restorable only by the
+  // next release). Retire what the 1.15.1 release push left behind.
+  /^setup-soldr-prepare-v3-.+-xbuild-release-[a-z0-9_.-]+$/i,
+  /^setup-soldr-buildcache-v2-(?:linux|macos|windows)-(?:x64|arm64)-[0-9a-f]{16}-build-release-[a-z0-9_.-]+-[0-9a-f]{16}$/i,
 ];
 
 const LOCK_TRANSITION_TARGET_BYTES = 9_200_000_000;
@@ -668,6 +673,8 @@ function planLockTransitionPrePrune(
   const reseeds = planLockKeyedReseeds(reseedRows, currentHashes);
   const retireFirstIds = [...new Set([
     ...supersededToolchainGenerationIds(mainRows),
+    // Retired producers are never re-seeded on any lock.
+    ...mainRows.filter((cache) => isRetiredMainKey(cache.key)).map((cache) => cache.id),
     ...reseeds.retireFirst.map((cache) => cache.id),
     ...staleCooks
       .filter((cache) => supersededCooks.has(cache.id) || isRetiredMainKey(cache.key))

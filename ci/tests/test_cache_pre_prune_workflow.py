@@ -669,8 +669,9 @@ def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> No
     release = yaml.safe_load((ROOT / ".github/workflows/release-auto.yml").read_text(encoding="utf-8"))
     release_steps = [step for job in release["jobs"].values() for step in job.get("steps", [])]
     release_target = next(step for step in release_steps if step.get("uses") == "./.github/actions/build-target")
-    # Callers pass the GitHub rule; the composite step adds the act prefix once.
-    assert release_target["with"]["save_cache"] == footprint.MAIN_PUSH_ONLY_SAVE
+    # Release builds save nothing (test_cache_release_saves.py); the composite
+    # step still adds the act prefix once.
+    assert release_target["with"]["save_cache"] == "false"
     release_job = next(job for job in release["jobs"].values() if any(
         step.get("uses") == "./.github/actions/build-target" for step in job.get("steps", [])
     ))
