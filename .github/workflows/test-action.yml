@@ -119,7 +119,7 @@ jobs:
         uses: ./
         with:
           shared-key: test-${{ matrix.target }}
-          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' }}
 
       - name: Setup zccache (action under test)
         if: matrix.target != 'x86_64-unknown-linux-gnu'

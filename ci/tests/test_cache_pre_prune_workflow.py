@@ -683,7 +683,7 @@ def test_writer_matrix_gates_main_push_and_disables_other_main_ref_saves() -> No
     test_action = (ROOT / ".github/workflows/test-action.yml").read_text(
         encoding="utf-8"
     )
-    assert "save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}" in test_action
+    assert "save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' }}" in test_action
     assert test_action.count("if: github.event_name == 'push' && github.ref == 'refs/heads/main'") >= 3
     assert "zccache gha-cache save" in test_action
     test_workflow = yaml.safe_load(test_action)
@@ -990,3 +990,28 @@ def test_v_and_non_v_soldr_spellings_share_one_reseed_profile() -> None:
     assert plan["ok"] is True, plan.get("reason")
     assert plan["staleCookIds"] == [1, 2]
     assert plan["estimatedNewBytes"] == 500 + 1_120_000_000
+
+
+def test_barrier_never_fails_a_job_and_exports_its_cache_write_decision() -> None:
+    """~93 of 100 failed main pushes died in this barrier while every test
+    passed: a refused pre-prune turned all ~13 workflows on the SHA red. The
+    barrier now only decides cache writes (ZCCACHE_CACHE_WRITES) and warns."""
+    action = yaml.safe_load(
+        (ROOT / ".github/actions/wait-cache-pre-prune/action.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    wait = next(
+        step for step in action["runs"]["steps"]
+        if step.get("name") == "Wait for the exact-SHA cache pre-prune run"
+    )
+    script = wait["with"]["script"]
+    assert "continue-on-error" not in wait
+    assert "try {\n  await decide();" in script
+    assert 'core.exportVariable("ZCCACHE_CACHE_WRITES", "true")' in script
+    assert 'core.exportVariable("ZCCACHE_CACHE_WRITES", "false")' in script
+    assert "core.warning(" in script
+    # The only throws left are inside decide(), which the try/catch owns.
+    tail = script.split("const decide = async () => {", 1)[1]
+    after_decide = tail.split("\n};\n", 1)[1]
+    assert "throw " not in after_decide

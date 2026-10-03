@@ -101,9 +101,13 @@ JUSTIFIED_COOK_DELTA: dict[str, str] = {}
 JUSTIFIED_PR_SAVES: dict[str, str] = {}
 
 # #1677 budget rule: on GitHub only a push to main saves durable caches.
+# The cache pre-prune barrier (.github/actions/wait-cache-pre-prune) never
+# fails a job; it exports ZCCACHE_CACHE_WRITES=true|false, and a main-push
+# save requires 'true', so a refused barrier makes the job restore-only
+# instead of red.
 MAIN_PUSH_ONLY_SAVE = (
     "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
-    "&& 'auto' || 'false' }}"
+    "&& env.ZCCACHE_CACHE_WRITES == 'true' && 'auto' || 'false' }}"
 )
 # The save-cache value every setup-soldr step that saves on main must use.
 # nektos/act sets ACT=true, so local bosn runs (deliberately pull_request
@@ -113,7 +117,8 @@ MAIN_PUSH_ONLY_SAVE = (
 # setup-soldr's runner-aware `auto` (zackees/setup-soldr#537) ships.
 SAVE_CACHE_POLICY = (
     "${{ env.ACT && 'true' || (github.event_name == 'push' "
-    "&& github.ref == 'refs/heads/main' && 'auto' || 'false') }}"
+    "&& github.ref == 'refs/heads/main' && env.ZCCACHE_CACHE_WRITES == 'true' "
+    "&& 'auto' || 'false') }}"
 )
 # The composite build-target action forwards its caller's GitHub policy and
 # adds the act prefix once, so callers keep MAIN_PUSH_ONLY_SAVE or "false".
@@ -123,12 +128,17 @@ _EXPR_TOKEN = re.compile(r"\s*('[^']*'|&&|\|\||==|!=|\(|\)|[A-Za-z_][\w.]*)")
 
 
 def evaluate_save_policy(
-    expression: str, *, event_name: str, ref: str, act: str = ""
+    expression: str,
+    *,
+    event_name: str,
+    ref: str,
+    act: str = "",
+    cache_writes: str = "true",
 ) -> str:
     """Evaluate a ``save-cache`` expression the way Actions would.
 
     Supports the subset the save policies use: single-quoted strings,
-    ``env.ACT``, ``github.event_name``, ``github.ref``, ``==``/``!=``,
+    ``env.ACT``, ``env.ZCCACHE_CACHE_WRITES``, ``github.event_name``, ``github.ref``, ``==``/``!=``,
     ``&&``/``||`` (value-returning, empty string is falsy) and parentheses.
     Anything else raises ``ValueError`` so an unprovable policy fails closed.
     """
@@ -146,7 +156,12 @@ def evaluate_save_policy(
         pos = match.end()
         while pos < len(body) and body[pos].isspace():
             pos += 1
-    names = {"env.ACT": act, "github.event_name": event_name, "github.ref": ref}
+    names = {
+        "env.ACT": act,
+        "env.ZCCACHE_CACHE_WRITES": cache_writes,
+        "github.event_name": event_name,
+        "github.ref": ref,
+    }
 
     def primary(i: int) -> tuple[str, int]:
         token = tokens[i] if i < len(tokens) else ""
@@ -193,21 +208,29 @@ def evaluate_save_policy(
 def _save_policy_errors() -> list[str]:
     """Prove SAVE_CACHE_POLICY is main-push-only on GitHub and full under act."""
     cases = (
-        ("pull_request", "refs/pull/1/merge", "", "false"),
-        ("push", "refs/heads/feature", "", "false"),
-        ("schedule", "refs/heads/main", "", "false"),
-        ("push", "refs/heads/main", "", "auto"),
-        ("pull_request", "refs/pull/1/merge", "true", "true"),
+        ("pull_request", "refs/pull/1/merge", "", "", "false"),
+        ("push", "refs/heads/feature", "", "true", "false"),
+        ("schedule", "refs/heads/main", "", "true", "false"),
+        ("push", "refs/heads/main", "", "true", "auto"),
+        # A refused (or skipped) pre-prune barrier: restore-only, never red.
+        ("push", "refs/heads/main", "", "false", "false"),
+        ("push", "refs/heads/main", "", "", "false"),
+        ("pull_request", "refs/pull/1/merge", "true", "", "true"),
     )
     errors: list[str] = []
-    for event_name, ref, act, expected in cases:
+    for event_name, ref, act, writes, expected in cases:
         actual = evaluate_save_policy(
-            SAVE_CACHE_POLICY, event_name=event_name, ref=ref, act=act
+            SAVE_CACHE_POLICY,
+            event_name=event_name,
+            ref=ref,
+            act=act,
+            cache_writes=writes,
         )
         if actual != expected:
             errors.append(
                 f"SAVE_CACHE_POLICY evaluates to {actual!r} for {event_name} "
-                f"{ref} (ACT={act!r}); expected {expected!r}"
+                f"{ref} (ACT={act!r}, ZCCACHE_CACHE_WRITES={writes!r}); "
+                f"expected {expected!r}"
             )
     return errors
 
@@ -365,7 +388,10 @@ def _shape(step: Step) -> tuple[str, ...]:
 def _cannot_save_on_pr(step: Step) -> bool:
     value = str(step.inputs.get("save-cache", "")).strip().replace(" ", "")
     main_push_only = _normal_expression(MAIN_PUSH_ONLY_SAVE)
-    main_push_boolean = "${{github.event_name=='push'&&github.ref=='refs/heads/main'}}"
+    main_push_boolean = (
+        "${{github.event_name=='push'&&github.ref=='refs/heads/main'"
+        "&&env.ZCCACHE_CACHE_WRITES=='true'}}"
+    )
     if step.ref in SAVE_CACHE_REFS and value.lower() in {"", "auto"}:
         return True
     # SAVE_CACHE_POLICY is main-push-only on GitHub (env.ACT is empty there);
