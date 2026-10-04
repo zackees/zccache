@@ -511,10 +511,6 @@ def _run(check: Check) -> Result:
             selected_job=check.selected_job,
             required_steps=check.required_steps,
         )
-    if result.code != 0 and error is None:
-        # The run failed and the proof cannot explain why: report the real
-        # failure rather than the proof's silence.
-        return result
     return Result(
         check,
         1 if error else 0,

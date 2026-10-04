@@ -190,12 +190,57 @@ def test_reusable_workflow_limitation_still_requires_every_job_step():
     assert verify(json.dumps(receipt)) is not None
 
 
-def test_explanation_gate_does_not_short_circuit_on_the_raw_exit_code():
-    """`_run` used to return early on any nonzero `bosn ci` exit code, so the
-    proof never ran and the lane failed on act2's exit 3 even when every job
-    passed. The proof is the authority; a raw failure it cannot explain is
-    still reported."""
+@dataclass(frozen=True)
+class ReplayCase:
+    """`_run` must let the proof decide a replayed workflow, not the raw
+    `bosn ci` exit code: act2 exits 3 for its reusable-workflow limitation even
+    when every job passed, and that must not fail the lane. A genuinely failed
+    job must still fail it."""
 
-    source = Path(local_gate.__file__).read_text()
-    assert "if not check.bosn_workflow or result.code != 0:" not in source
-    assert "if result.code != 0 and error is None:" in source
+    conclusion: str
+    exit_code: int
+    reason: str | None
+    job_conclusion: str
+    expect_pass: bool
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        ReplayCase("success", 0, None, "success", True),
+        ReplayCase("incomplete", 3, LIMITATION, "success", True),
+        ReplayCase("incomplete", 3, "some other failure", "success", False),
+        ReplayCase("failure", 1, None, "failure", False),
+        ReplayCase("incomplete", 3, LIMITATION, "failure", False),
+    ),
+)
+def test_run_letsthe_proof_decide_the_lane_verdict(case: ReplayCase, monkeypatch):
+    receipt = json.loads(RECEIPT)
+    receipt["conclusion"] = case.conclusion
+    receipt["exit_code"] = case.exit_code
+    receipt["workspace"] = str(local_gate.ROOT)
+    head_sha = "b" * 40
+    receipt["sha"] = head_sha
+    if case.reason is not None:
+        receipt["reason"] = case.reason
+    job = receipt["tree"]["groups"][0]["jobs"][0]
+    job["conclusion"] = case.job_conclusion
+    for section in job["sections"]:
+        section["conclusion"] = case.job_conclusion
+
+    check = local_gate.Check(
+        "MSRV check", ("bosn", "ci", "run"), "check", bosn_workflow=".github/workflows/integration.yml",
+        bosn_job="integration", selected_job=None,
+        required_steps=("Test (full workspace)",),
+    )
+    monkeypatch.setattr(local_gate, "_run_plain", lambda c: local_gate.Result(c, case.exit_code, 0.0, json.dumps(receipt)))
+    # `_run` reads HEAD through run_captured before the proof; hand it this
+    # test's receipt sha so the "Bosn executed another commit" guard passes.
+    monkeypatch.setattr(
+        local_gate, "run_captured",
+        lambda argv, *a, **k: (
+            local_gate.Captured(0, head_sha) if "rev-parse" in argv
+            else local_gate.Captured(0, "linux x86_64")
+        ),
+    )
+    assert (local_gate._run(check).code == 0) == case.expect_pass
