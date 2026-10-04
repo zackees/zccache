@@ -188,3 +188,14 @@ def test_reusable_workflow_limitation_still_requires_every_job_step():
     receipt = json.loads(_receipt(LIMITATION, "incomplete", 3))
     receipt["tree"]["groups"][0]["jobs"][0]["sections"] = []
     assert verify(json.dumps(receipt)) is not None
+
+
+def test_explanation_gate_does_not_short_circuit_on_the_raw_exit_code():
+    """`_run` used to return early on any nonzero `bosn ci` exit code, so the
+    proof never ran and the lane failed on act2's exit 3 even when every job
+    passed. The proof is the authority; a raw failure it cannot explain is
+    still reported."""
+
+    source = Path(local_gate.__file__).read_text()
+    assert "if not check.bosn_workflow or result.code != 0:" not in source
+    assert "if result.code != 0 and error is None:" in source

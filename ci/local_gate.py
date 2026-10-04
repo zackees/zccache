@@ -497,7 +497,7 @@ def _run(check: Check) -> Result:
         if head.returncode != 0:
             return Result(check, 1, 0.0, "cannot determine this checkout's HEAD")
     result = _run_plain(check)
-    if not check.bosn_workflow or result.code != 0:
+    if not check.bosn_workflow:
         return result
     if head is None or head.returncode != 0:
         error = "cannot determine this checkout's HEAD"
@@ -511,6 +511,10 @@ def _run(check: Check) -> Result:
             selected_job=check.selected_job,
             required_steps=check.required_steps,
         )
+    if result.code != 0 and error is None:
+        # The run failed and the proof cannot explain why: report the real
+        # failure rather than the proof's silence.
+        return result
     return Result(
         check,
         1 if error else 0,
