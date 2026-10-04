@@ -313,6 +313,8 @@ class BosnProof:
     selected_job: str | None
     exit_code: int
     jobs: tuple[BosnJob, ...]
+    # The run-level failure reason, when the receipt carries one.
+    reason: str | None = None
 
 
 def _document(value: JsonValue) -> dict[str, JsonValue]:
@@ -388,6 +390,7 @@ def _parse_bosn_proof(output: str) -> BosnProof:
         _optional_text(document["job"]),
         exit_code,
         tuple(jobs),
+        _optional_text(document.get("reason")),
     )
 
 
@@ -402,6 +405,36 @@ def _job_proves_steps(job: BosnJob, required_steps: tuple[str, ...]) -> bool:
         and section.conclusion == "success"
     }
     return set(required_steps).issubset(completed)
+
+
+# act2 cannot give a called reusable workflow a qualified execution identity,
+# so a run whose workflow calls one (`uses:` at job level) ends with
+# conclusion="incomplete" and a nonzero exit code even though act itself
+# exited 0 and every job completed successfully. Treating that as a gate
+# failure makes the gate permanently un-green on any repo with a reusable
+# workflow, which blocks the attestation and therefore every remote skip.
+#
+# The narrow exemption below is safe because the per-job evidence is still
+# required to stand on its own: every job this check selected must have
+# completed successfully AND run every required step (checked below). A
+# receipt is only exempted when it names exactly this reason -- any other
+# "incomplete", or a failed job, still fails closed.
+REUSABLE_WORKFLOW_LIMITATION = "reusable workflows require qualified execution identity"
+
+
+def _run_finished(proof: BosnProof) -> bool:
+    """Whether the run receipt may be trusted to carry job evidence.
+
+    A normal run must have finished successfully. A run that ended
+    "incomplete" solely because of act2's reusable-workflow limitation is
+    accepted only if the receipt says so and act itself exited 0.
+    """
+
+    if proof.state != "done":
+        return False
+    if proof.conclusion == "success" and proof.exit_code == 0:
+        return True
+    return proof.conclusion == "incomplete" and proof.reason == REUSABLE_WORKFLOW_LIMITATION and proof.exit_code == 3
 
 
 def bosn_proof_error(
@@ -428,7 +461,7 @@ def bosn_proof_error(
         return "Bosn executed another workspace"
     if proof.sha != head_sha:
         return "Bosn executed another commit"
-    if proof.state != "done" or proof.conclusion != "success" or proof.exit_code != 0:
+    if not _run_finished(proof):
         return "Bosn run did not finish successfully"
     if proof.engine != "act" or proof.event != "pull_request":
         return "Bosn used another engine or event"
