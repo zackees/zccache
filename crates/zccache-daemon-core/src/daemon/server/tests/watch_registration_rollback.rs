@@ -45,7 +45,7 @@ async fn a_failed_watch_registration_is_retried_on_the_next_call() {
 
     // No watcher: every registration in the batch fails.
     *state.watcher.lock().await = None;
-    watch_directories(&state, &[raw.clone()]).await;
+    watch_directories(&state, std::slice::from_ref(&raw)).await;
 
     assert!(
         !state.watched_dirs.lock().await.contains(&canonical),
@@ -63,7 +63,7 @@ async fn a_failed_watch_registration_is_retried_on_the_next_call() {
     let (watcher, _events) =
         NotifyWatcher::new(Arc::new(ignore)).expect("notify watcher must initialize");
     *state.watcher.lock().await = Some(watcher);
-    watch_directories(&state, &[raw.clone()]).await;
+    watch_directories(&state, std::slice::from_ref(&raw)).await;
 
     assert!(
         state.watched_dirs.lock().await.contains(&canonical),
@@ -87,7 +87,7 @@ async fn a_canonicalize_failure_still_marks_the_raw_path() {
     let state = server.test_state_arc();
 
     let missing: NormalizedPath = dir.path().join("does-not-exist").into();
-    watch_directories(&state, &[missing.clone()]).await;
+    watch_directories(&state, std::slice::from_ref(&missing)).await;
 
     assert!(
         state.watched_raw_dirs.contains_key(&missing),
