@@ -156,6 +156,15 @@ defaults it — omit it and no per-session journal is written at all. `close_ses
 therefore drops the handle and leaves the file exactly where the caller asked for
 it.
 
+`close_session` runs on every teardown path, including one that is easy to miss:
+the periodic session reaper. A session whose client crashed never sends
+`SessionEnd`, so the daemon's own maintenance pass is what eventually removes it,
+and it closes that session's journal handle on the way out (issue #1907). Without
+that, a reaped journalled session kept its writer — an open descriptor plus up to
+64 KiB of unflushed records — for the life of the daemon, and a build that churned
+sessions leaked one of each per reaped session. `sessions_reaped` events report how
+many handles a pass released in `journals_released`.
+
 This is by design, and the alternative was considered and rejected. A retention
 policy here would mean the daemon enumerating a directory *the client chose*
 (`/tmp`, a home directory, a build tree) and unlinking files by a filter it

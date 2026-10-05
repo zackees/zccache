@@ -2,6 +2,13 @@
 
 use super::*;
 
+// Link-count-aware eviction and retired sibling-store bytes (#1659, #1673,
+// #1687) live in `disk_maintenance_retired_stores.rs`, split out to keep this
+// file under the repo's LOC ceiling. `#[path]` because this file is wired in
+// as a `#[path]`-loaded `mod tests`, not as a `tests/mod.rs`.
+#[path = "disk_maintenance_retired_stores.rs"]
+mod retired_stores;
+
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn artifact(key: &str, bytes: u64, now: SystemTime, age: Duration) -> DiskArtifact {
@@ -942,6 +949,200 @@ async fn ended_session_tombstones_expire_on_their_ttl() {
     );
 }
 
+/// Poll a journal file until it holds at least `expected` lines.
+///
+/// Local to this file on purpose: the writer behind `CompileJournal::log` is a
+/// background `std::thread` (`compile_journal/journal_thread.rs`), so an entry
+/// is *not* on disk when `log` returns. Reusing the compile-journal tests'
+/// `wait_for_lines` would mean reaching into a sibling test module for a
+/// helper this file already has a use for; the polling contract is three lines
+/// and duplicating it keeps the two test suites independent.
+async fn wait_for_journal_lines(path: &Path, expected: usize) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            let lines: Vec<String> = contents.lines().map(str::to_string).collect();
+            if lines.len() >= expected {
+                return lines;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "journal {} never reached {expected} lines",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Poll a journal file until one of its lines contains `needle`, then return
+/// every line. The marker form of [`wait_for_journal_lines`]: counting lines
+/// cannot tell "a new file with the new entry" from "the old file with the new
+/// entry appended", which is exactly the distinction #1907 turns on.
+async fn wait_for_journal_line_containing(path: &Path, needle: &str) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            let lines: Vec<String> = contents.lines().map(str::to_string).collect();
+            if lines.iter().any(|line| line.contains(needle)) {
+                return lines;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "journal {} never gained a line containing {needle}",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// #1907: reaping dropped the `Session` — and therefore its `journal_path` —
+/// without a matching `journal.close_session`. `SessionEnd` and
+/// `handle_release_worktree_handles` both close; the reaper was the one
+/// teardown path that did not, so a client that crashed (never sending
+/// `SessionEnd`) left the writer thread holding an open `File` forever.
+///
+/// Observable without counting file descriptors: with the handle still open the
+/// writer keeps appending to the *unlinked* inode, so the next entry never
+/// reaches a fresh file at that path. On unix the path simply never comes back;
+/// on Windows the name stays readable while the delete is pending on the open
+/// handle, so the second entry lands there as line 2. The discriminator is
+/// therefore "the file at this path holds the second entry and nothing else" —
+/// the close-then-reopen contract `compile_journal`'s
+/// `test_close_session_then_reopen` already asserts.
+///
+/// The daemon is started with `automatic_maintenance == false` so the
+/// background disk-maintenance loop -- the only *other* caller of the reaper --
+/// cannot reap the session out from under the test mid-assertion.
+/// `EmbeddedDaemon::start` passes `true` and would make this racy.
+#[tokio::test]
+async fn reaping_a_dead_client_releases_its_journal_handle() {
+    let root = tempfile::tempdir().unwrap();
+    let sessions_dir = root.path().join("sessions");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+    let session_path = sessions_dir.join("reaped.jsonl");
+    let cache_dir: crate::core::NormalizedPath = root.path().join("cache").into();
+    let daemon = EmbeddedDaemon::start_with_maintenance(
+        crate::ipc::unique_test_endpoint(),
+        cache_dir,
+        None,
+        None,
+        bytes_policy(1),
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let reaped = daemon
+        .state
+        .sessions
+        .create(crate::depgraph::SessionConfig {
+            client_pid: DEAD_CLIENT_PID,
+            working_dir: root.path().into(),
+            log_file: None,
+            track_stats: true,
+            journal_path: Some(session_path.clone().into()),
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        });
+
+    let context = || crate::daemon::compile_journal::JournalContext {
+        compiler: "clang".into(),
+        args: vec![],
+        cwd: root.path().to_string_lossy().into_owned(),
+        env: None,
+        session_id: Some("reaped".into()),
+    };
+    // `latency_ns` doubles as the marker for which entry a line belongs to.
+    daemon.state.journal.log(
+        &crate::daemon::compile_journal::JournalEntry::new(context(), "hit", 0, 100, None),
+        Some(&session_path),
+    );
+    // Wait for the first line before unlinking: the writer opens the file lazily
+    // on its first `Entry`, so deleting a path that does not exist yet would
+    // prove nothing about the leaked handle.
+    wait_for_journal_lines(&session_path, 1).await;
+
+    // Unlink the file the still-open writer is holding. `open_append` adds
+    // `FILE_SHARE_DELETE` precisely so this succeeds on Windows too.
+    std::fs::remove_file(&session_path).unwrap();
+
+    // #1324: zero grace so this exercises reclamation itself, not the idle
+    // window that protects an in-use session from its exited starter.
+    reap_finished_sessions_with_grace(
+        &daemon.state,
+        only_dead_client_is_gone,
+        std::time::Duration::ZERO,
+    );
+    assert!(
+        daemon.state.sessions.context_count(&reaped).is_none(),
+        "the reaper must still drop the map entry it reclaimed"
+    );
+
+    daemon.state.journal.log(
+        &crate::daemon::compile_journal::JournalEntry::new(context(), "hit", 0, 200, None),
+        Some(&session_path),
+    );
+
+    // Wait for the *second* entry specifically, so a leaked handle fails on
+    // both platforms: on unix the marker never appears at this path at all
+    // (the poller hits its deadline), and on Windows it appears as line 2 of
+    // the still-pending original file, which the length assertion then rejects.
+    let lines = wait_for_journal_line_containing(&session_path, "\"latency_ns\":200").await;
+    assert_eq!(
+        lines.len(),
+        1,
+        "the journal writer must reopen the path after the reaper closed it, \
+         not keep appending to the file it was already holding: {lines:?}"
+    );
+}
+
+/// #1907: closing a reaped session's journal handle must not close a path a
+/// *surviving* session has already reopened. Two sessions may name the same
+/// journal file (`--journal` is caller-owned, #1165), so `CloseSession` keyed
+/// on path alone would shut the live session's writer out from under it.
+///
+/// Kept as a pure `#[test]` over the decision helper -- no daemon, no
+/// tempfiles -- because the interesting part is the *filter*, and a threaded
+/// journal would only test the same filter more slowly.
+#[test]
+fn journal_paths_to_release_skips_a_path_a_live_session_still_claims() {
+    // A neutral fs-inert fixture root. This test never touches the
+    // filesystem, so a real temp root would only buy a POSIX-only literal
+    // that `ban_tmp_literal` rightly rejects -- its own lint text asks
+    // fs-inert fixtures to use `/fixture/...`, and the repo's PathBuf ban
+    // keeps the values as `NormalizedPath` end to end.
+    let root = crate::core::NormalizedPath::new("/fixture/zccache-journal-paths");
+    let p_shared = root.join("shared.jsonl");
+    let p_only_reaped = root.join("reaped.jsonl");
+
+    let mut still_claimed = std::collections::HashSet::new();
+    still_claimed.insert(p_shared.clone());
+    // By value, not by reference: `&[&T; N]` iterates as `&&T`, which is not
+    // the `&NormalizedPath` the helper takes. `[&T; N]` is `Copy`, so both
+    // assertions below can share one binding.
+    let claimed = [&p_shared, &p_only_reaped, &p_shared];
+    assert_eq!(
+        super::journal_paths_to_release(claimed, &still_claimed),
+        vec![p_only_reaped.clone()],
+        "a path a live session still claims must not be closed, and a path \
+         named twice must be released once"
+    );
+
+    // Nothing claims the shared path any more, so both distinct paths come
+    // back -- once each. Sorted before comparing: the helper is free to
+    // return them in either order, and pinning an order here would
+    // constrain the implementation for no behavioural gain.
+    let mut all = super::journal_paths_to_release(claimed, &std::collections::HashSet::new());
+    all.sort();
+    let mut expected = vec![p_shared, p_only_reaped];
+    expected.sort();
+    assert_eq!(all, expected, "the duplicate must collapse to one entry");
+}
+
 #[tokio::test]
 async fn tombstone_reaping_is_a_noop_when_nothing_is_stale() {
     let root = tempfile::tempdir().unwrap();
@@ -1110,212 +1311,4 @@ async fn the_periodic_sweep_reclaims_a_dead_instances_depfile_dir() {
             .any(|event| event["event"] == crate::core::lifecycle::EVENT_STALE_DEPFILE_DIRS_SWEPT),
         "the sweep should record what it reclaimed"
     );
-}
-
-// ---------------------------------------------------------------------------
-// #1659 follow-ups -- link-count-aware eviction and retired-store bytes
-// ---------------------------------------------------------------------------
-
-/// Plan ordering: an older entry whose files are hard-linked elsewhere frees
-/// nothing, so a newer `nlink == 1` entry is selected first.
-#[test]
-fn issue_1659_pressure_prefers_entries_that_actually_free_space() {
-    let now = SystemTime::UNIX_EPOCH + 100 * DAY;
-    let mut shared = artifact("shared", 30, now, 2 * DAY);
-    shared.reclaimable_bytes = 0;
-    let entries = vec![shared, artifact("unshared", 80, now, DAY)];
-    let plan = plan_maintenance(
-        bytes_policy(100),
-        MaintenanceKind::Pressure,
-        now,
-        FilesystemSpace {
-            capacity_bytes: 1000 * GIB,
-            free_bytes: 500 * GIB,
-        },
-        &entries,
-        0,
-    );
-    assert_eq!(plan.pressure, MaintenancePressure::Hard);
-    assert_eq!(plan.selected, vec!["unshared"]);
-}
-
-/// Acceptance 5: retired sibling-store bytes push usage over budget; the pass
-/// reclaims the retired store and evicts no live entry.
-#[test]
-fn issue_1659_retired_store_bytes_are_reclaimed_before_live_entries() {
-    let root = tempfile::tempdir().unwrap();
-    let top_level = root.path().to_path_buf();
-    let current = crate::core::config::versioned_subdir();
-    let artifact_dir = top_level.join(&current).join("artifacts");
-    let retired = top_level.join("v0.0.1");
-    std::fs::create_dir_all(&artifact_dir).unwrap();
-    std::fs::create_dir_all(retired.join("artifacts")).unwrap();
-    let live = artifact_dir.join("key.meta");
-    std::fs::write(&live, vec![0_u8; 4096]).unwrap();
-    let old = kernal_api::platform::fs::FileTime::from_system_time(SystemTime::now() - 10 * DAY);
-    for i in 0..10 {
-        let path = retired.join("artifacts").join(format!("old-{i}.meta"));
-        std::fs::write(&path, vec![0_u8; 4096]).unwrap();
-        kernal_api::platform::fs::set_file_mtime(&path, old).unwrap();
-    }
-    assert!(retired_store_bytes(&top_level, &current) > 20_000);
-
-    let artifacts = DashMap::new();
-    let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
-    let dep_graph = DepGraph::new();
-    let report = maintain_disk_artifacts(MaintenancePass {
-        artifact_dir: &artifact_dir,
-        artifacts: &artifacts,
-        artifact_store: &store,
-        index_writer_tx: None,
-        dep_graph: &dep_graph,
-        pending_write_bytes: 0,
-        policy: bytes_policy(20_000),
-        kind: MaintenanceKind::Pressure,
-        environment: &FixedEnvironment {
-            now: SystemTime::now(),
-            space: FilesystemSpace {
-                capacity_bytes: 1000 * GIB,
-                free_bytes: 500 * GIB,
-            },
-        },
-        retired_top_level: Some((
-            crate::core::NormalizedPath::from(top_level.clone()),
-            current.clone(),
-        )),
-    })
-    .unwrap();
-
-    assert_eq!(report.artifacts_removed, 0, "no live entry may be evicted");
-    assert!(live.exists());
-    for i in 0..10 {
-        assert!(!retired
-            .join("artifacts")
-            .join(format!("old-{i}.meta"))
-            .exists());
-    }
-    // #1673: reclaimed bytes are credited only where the volume proves the
-    // blocks exclusive; a volume reporting unknown sharing credits none,
-    // though the files are still removed and no live entry is evicted.
-    if volume_proves_exclusive(root.path()) {
-        assert!(report.retired_bytes_reclaimed > 0);
-    }
-    assert!(report.bytes_reclaimed >= report.retired_bytes_reclaimed);
-    assert_eq!(retired_store_bytes(&top_level, &current), 0);
-}
-
-/// Whether a fresh file in `dir` is reported `Exclusive`, i.e. whether this
-/// volume can prove that removing an `nlink == 1` file frees its space.
-fn volume_proves_exclusive(dir: &std::path::Path) -> bool {
-    let probe = dir.join("exclusive-probe.bin");
-    std::fs::write(&probe, b"probe").unwrap();
-    let exclusive = matches!(
-        kernal_api::platform::fs::extent_sharing(&probe),
-        Ok(kernal_api::platform::fs::ExtentSharing::Exclusive)
-    );
-    std::fs::remove_file(&probe).unwrap();
-    exclusive
-}
-
-/// Acceptance 6: evicting an entry whose file is also hard-linked into a
-/// build tree frees nothing, so it is not reported as reclaimed, and the
-/// build tree's link survives.
-#[test]
-fn issue_1659_evicting_a_hard_linked_entry_reports_no_reclaimed_bytes() {
-    let root = tempfile::tempdir().unwrap();
-    let artifact_dir = root.path().join("artifacts");
-    let target = root.path().join("target");
-    std::fs::create_dir_all(&artifact_dir).unwrap();
-    std::fs::create_dir_all(&target).unwrap();
-    let cached = artifact_dir.join("key.meta");
-    std::fs::write(&cached, vec![0_u8; 4096]).unwrap();
-    std::fs::hard_link(&cached, target.join("out.o")).unwrap();
-
-    let artifacts = DashMap::new();
-    let store = ArtifactStore::open_empty(&root.path().join("index.bin"));
-    let dep_graph = DepGraph::new();
-    let report = maintain_disk_artifacts(MaintenancePass {
-        artifact_dir: &artifact_dir,
-        artifacts: &artifacts,
-        artifact_store: &store,
-        index_writer_tx: None,
-        dep_graph: &dep_graph,
-        pending_write_bytes: 0,
-        policy: bytes_policy(1),
-        kind: MaintenanceKind::Pressure,
-        environment: &FixedEnvironment {
-            now: SystemTime::UNIX_EPOCH + 100 * DAY,
-            space: FilesystemSpace {
-                capacity_bytes: 1000 * GIB,
-                free_bytes: 500 * GIB,
-            },
-        },
-        retired_top_level: None,
-    })
-    .unwrap();
-
-    assert_eq!(report.pressure, MaintenancePressure::Hard);
-    assert_eq!(report.artifacts_removed, 1);
-    assert_eq!(
-        report.bytes_reclaimed, 0,
-        "the target/ link still holds the blocks"
-    );
-    assert!(!cached.exists());
-    assert_eq!(std::fs::read(target.join("out.o")).unwrap().len(), 4096);
-}
-
-/// #1673: a *newer* sibling store belongs to a newer daemon and never counts
-/// as reclaimable; only older-version siblings do.
-#[test]
-fn issue_1673_retired_store_bytes_ignore_newer_sibling_stores() {
-    let root = tempfile::tempdir().unwrap();
-    let top_level = root.path().to_path_buf();
-    std::fs::create_dir_all(top_level.join("v1.0.0")).unwrap();
-    let newer = top_level.join("v2.0.0").join("artifacts");
-    std::fs::create_dir_all(&newer).unwrap();
-    std::fs::write(newer.join("new.meta"), vec![0_u8; 4096]).unwrap();
-    assert_eq!(retired_store_bytes(&top_level, "v1.0.0"), 0);
-
-    let older = top_level.join("v0.9.0").join("artifacts");
-    std::fs::create_dir_all(&older).unwrap();
-    std::fs::write(older.join("old.meta"), vec![0_u8; 4096]).unwrap();
-    assert!(retired_store_bytes(&top_level, "v1.0.0") > 0);
-}
-
-/// #1687: a cache file reflinked into a build tree keeps `nlink == 1` while
-/// sharing every block, so evicting it frees (almost) nothing. The live
-/// planner must not credit it as reclaimable; it still counts toward
-/// accounted usage (`allocated_bytes`). Runs wherever the temp volume can
-/// reflink and prove sharing (APFS on macOS CI, btrfs/XFS, ReFS); loud skip
-/// elsewhere.
-#[test]
-fn issue_1687_reflink_shared_cache_file_is_not_reclaimable() {
-    let root = tempfile::tempdir().unwrap();
-    let artifact_dir = root.path().join("owned");
-    let target = root.path().join("target");
-    std::fs::create_dir_all(&artifact_dir).unwrap();
-    std::fs::create_dir_all(&target).unwrap();
-    let cached = artifact_dir.join("key_0");
-    std::fs::write(&cached, vec![7_u8; 256 * 1024]).unwrap();
-    let restored = target.join("libkey.rlib");
-    if kernal_api::platform::fs::reflink_file(&cached, &restored).is_err()
-        || !matches!(
-            kernal_api::platform::fs::extent_sharing(&cached),
-            Ok(kernal_api::platform::fs::ExtentSharing::Shared)
-        )
-    {
-        eprintln!(
-            "SKIP issue_1687_reflink_shared_cache_file_is_not_reclaimable: {} cannot prove reflink extent sharing",
-            root.path().display()
-        );
-        return;
-    }
-    let scanned = scan_artifacts(&artifact_dir).unwrap();
-    assert_eq!(scanned.len(), 1);
-    assert!(scanned[0].allocated_bytes > 0);
-    assert_eq!(
-        scanned[0].reclaimable_bytes, 0,
-        "a reflink-shared cache file frees no space when evicted"
-    );
-    assert_eq!(std::fs::read(&restored).unwrap().len(), 256 * 1024);
 }
