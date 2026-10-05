@@ -22,6 +22,14 @@ unread env always does, and the linker's env splits the link key.
 
 `mod.rs` declares the per-domain submodules and owns the crate-wide canonical
 test guard for process-global cache-dir mutations (`CacheDirEnvGuard`).
+
+`disk_maintenance_unit.rs` is wired in as a `#[path]` module from
+`server/disk_maintenance.rs` (not from this `mod.rs`), because it must see that
+module's private maintenance vocabulary. It is itself over the 1,000-LOC warn
+threshold, so its `#1659`/`#1673`/`#1687` retired-store and reflink-eviction
+cases live in `disk_maintenance_retired_stores.rs`, declared there with an
+explicit `#[path]` (this directory's modules are resolved from `tests/mod.rs`,
+so a plain `mod` would look in the wrong place).
 `staged_env.rs` lets C/C++ staged-lane tests opt into
 `ZCCACHE_STAGED_ARTIFACTS=c-cpp` under that same lock, settle deferred
 publication, and detect native change markers (multi-source publication

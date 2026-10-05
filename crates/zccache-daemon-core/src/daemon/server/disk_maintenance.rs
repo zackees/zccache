@@ -8,6 +8,13 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 
+#[path = "disk_maintenance_journals.rs"]
+mod journals;
+use journals::release_reaped_session_journals;
+// #1907: re-exported so the `#[cfg(test)]` child module can unit-test the
+// pure path filter without a running daemon.
+#[cfg(test)]
+use journals::journal_paths_to_release;
 #[path = "disk_maintenance_retired.rs"]
 mod retired;
 use retired::{retired_store_bytes, versioned_top_level};
@@ -1081,13 +1088,18 @@ fn reap_finished_sessions_with_grace(
     is_alive: impl Fn(u32) -> bool,
     grace: std::time::Duration,
 ) {
-    let expired = state.sessions.cleanup_expired();
+    let mut expired = state.sessions.cleanup_expired();
     let dead = state.sessions.cleanup_dead_pids_idle_for(is_alive, grace);
+    let expired_count = expired.len();
+    let dead_count = dead.len();
+    expired.extend(dead);
     let tombstones = reap_ended_session_tombstones(state, ENDED_SESSION_TTL);
-    if !expired.is_empty() || !dead.is_empty() || tombstones > 0 {
+    let journals_released = release_reaped_session_journals(state, &expired);
+    if !expired.is_empty() || tombstones > 0 {
         tracing::info!(
-            expired = expired.len(),
-            dead_client = dead.len(),
+            expired = expired_count,
+            dead_client = dead_count,
+            journals_released,
             tombstones,
             remaining = state.sessions.active_count(),
             tombstones_remaining = state.ended_sessions.len(),
@@ -1101,8 +1113,9 @@ fn reap_finished_sessions_with_grace(
             state.cache_dir.as_path(),
             zccache_core::lifecycle::EVENT_SESSIONS_REAPED,
             serde_json::json!({
-                "expired": expired.len(),
-                "dead_client": dead.len(),
+                "expired": expired_count,
+                "dead_client": dead_count,
+                "journals_released": journals_released,
                 "tombstones": tombstones,
                 "remaining": state.sessions.active_count(),
                 "tombstones_remaining": state.ended_sessions.len(),

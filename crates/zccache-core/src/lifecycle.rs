@@ -51,7 +51,7 @@
 //! | `insecure_socket_dir` (#1171) | daemon | the directory holding the IPC endpoint was group/other-writable; another local user could substitute the socket | `path`, `outcome`, `detail` |
 //! | `insecure_deploy_dir` (#1172) | CLI | the directory the daemon binary is deployed into was group/other-writable; another local user could have replaced the binary the CLI executes | `path`, `outcome`, `detail` |
 //! | `ipc_peer_rejected` (#1171) | daemon | an accepted IPC connection was refused because the peer is not this user, or its credentials were unavailable | `reason`, `detail` |
-//! | `sessions_reaped` (#1165) | daemon | periodic maintenance reclaimed session state whose owning client is gone or whose tombstone aged out | `expired`, `dead_client`, `tombstones`, `remaining`, `tombstones_remaining` |
+//! | `sessions_reaped` (#1165) | daemon | periodic maintenance reclaimed session state whose owning client is gone or whose tombstone aged out | `expired`, `dead_client`, `journals_released` (#1907), `tombstones`, `remaining`, `tombstones_remaining` |
 //! | `stale_depfile_dirs_swept` (#1165) | daemon | periodic maintenance reclaimed depfile directories from dead daemon instances | `cleaned` |
 //! | `retired_stores_swept` (#1659) | daemon | periodic maintenance reclaimed a retired sibling `v<VERSION>` cache store | `stores_scanned`, `stores_removed`, `stores_live`, `files_removed`, `bytes_reclaimed`, `failed` |
 //! | `staged_publication_conflict` | daemon | one cache key produced two different valid generations; first generation retained | `cache_key`, `existing_generation`, `candidate_generation`, `elapsed_ns` |
