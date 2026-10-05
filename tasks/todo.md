@@ -1,3 +1,15 @@
+# Link output permissions
+
+- [x] Reproduce a successful fresh link followed by a non-executable cache hit.
+- [x] Add executable/sidecar mode coverage across delivery modes and restart.
+- [x] Retain modes in the artifact index; migrate legacy snapshots and re-link old entries.
+- [x] Verify a real compiler miss, hit, and restart hit through the fixed binary.
+- [x] Complete crate tests, real linker integration, and workspace lint.
+
+Validation: 1,183 daemon/artifact tests and the real Clang/LLD regression
+pass. Full `./lint` passes, including Linux/Windows/macOS Dylint and rustdoc.
+Real compiler miss, hit, and restart-hit verification pass.
+
 # PR #1655 rebase + Windows/dylint fixes
 
 - [x] Rebase `repair-3` onto main (resolve 5 conflicted files: keep both `current_rustc_out_dir` #1749 and PR's `depfile_key_root`; port moved cached_hit tests).
