@@ -410,6 +410,10 @@ fn run_server(args: Args) {
                 );
                 // #1905: no-op — we never wrote the lock file.
                 lock_file.remove_if_owned();
+                std::process::exit(1);
+            }
+            Err(e) => {
+                tracing::error!("failed to join daemon bind worker for {endpoint}: {e}");
                 // #1905: same — a no-op before `write_lock_file`.
                 lock_file.remove_if_owned();
                 std::process::exit(1);
@@ -811,10 +815,12 @@ mod tests {
         assert_eq!(args.idle_timeout, 0);
     }
 
-    /// #1904: the daemon writes its lock at `write_lock_file_for(&endpoint,
-    /// pid)` and removes it at `remove_lock_file_for(&endpoint)`. Pin the
-    /// property that makes the bug real — a daemon serving a non-default
-    /// endpoint can never land on (or clear) the default daemon's record.
+    /// #1904: the daemon writes its lock through
+    /// `startup_lockfile::record_ownership(&endpoint, pid)` and removes it
+    /// through `LockFileGuard`, whose path is
+    /// `lock_file_path_for(&endpoint)`. Pin the property that makes the bug
+    /// real — a daemon serving a non-default endpoint can never land on (or
+    /// clear) the default daemon's record.
     ///
     /// Before this, `run_server` called the endpoint-less
     /// `write_lock_file` / `remove_lock_file`, so a `--endpoint
@@ -852,7 +858,10 @@ mod tests {
              default daemon's"
         );
 
-        crate::ipc::remove_lock_file_for(&custom);
+        // Removed by resolved path, not through `ipc::remove_lock_file`: the
+        // #1905 wiring guard forbids that literal in this file, because an
+        // unconditional removal deletes whichever daemon won the bind.
+        let _ = std::fs::remove_file(crate::ipc::lock_file_path_for(&custom).as_path());
         assert_eq!(crate::ipc::read_lock_file_pid_for(&custom), None);
     }
 

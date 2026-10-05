@@ -79,7 +79,7 @@ fn dead_pid() -> u32 {
     spawn_and_reap(std::process::Command::new("cmd").args(["/c", "exit", "0"]))
 }
 
-fn spawn_and_reap(command: &mut std::process::Command) -> u32 {
+fn spawn_and_reap(mut command: std::process::Command) -> u32 {
     let child = command
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -94,24 +94,65 @@ fn spawn_and_reap(command: &mut std::process::Command) -> u32 {
     pid
 }
 
+/// Failure B: managing a custom endpoint must not retire the DEFAULT
+/// endpoint's socket, or a live default daemon is wedged out of reach of
+/// every client.
+///
+/// The fixture has to be a real unix socket, not a plain file at the same
+/// path: `retire_socket_endpoint` refuses to unlink anything that is not a
+/// socket (`InvalidInput`), so a regular file would make the pre-fix retire a
+/// silent no-op and this test would pass against the bug it exists to catch.
 #[cfg(unix)]
 #[test]
 fn check_running_daemon_does_not_retire_the_default_endpoint() {
-    // Failure B: managing a custom endpoint must not unlink the DEFAULT
-    // endpoint's socket. The default endpoint is a socket path on unix (a
-    // named pipe on Windows), so pre-create it as a plain file to observe
-    // whether it survives.
+    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::net::UnixListener;
+
     let cache = tempfile::tempdir().unwrap();
     let _env = EnvGuard::set_cache_dir(cache.path());
     let default = default_endpoint();
     let custom = custom_endpoint(cache.path(), "custom.sock");
     write_lock_file_for(&custom, dead_pid()).expect("seed custom-endpoint lock");
-    std::fs::write(&default, b"").expect("pre-create the default endpoint path");
+
+    // Bound and named — the listener stays alive for the whole test, so if the
+    // path is unlinked the daemon behind it is unreachable even though the
+    // process still holds the descriptor.
+    let _listener = UnixListener::bind(&default).expect("bind the default endpoint socket");
+    assert!(
+        std::fs::symlink_metadata(&default)
+            .expect("stat default endpoint")
+            .file_type()
+            .is_socket(),
+        "the fixture must be a socket, or the retire under test is a no-op"
+    );
 
     assert_eq!(check_running_daemon_for(&custom), None);
     assert!(
         std::path::Path::new(&default).exists(),
         "check_running_daemon_for({custom}) must not retire the default endpoint {default}"
+    );
+}
+
+/// The control for the test above: the fixture really does disappear when the
+/// endpoint it names is retired. Without it, the survival assertion above could
+/// pass for the wrong reason (a path that was never a socket in the first
+/// place).
+#[cfg(unix)]
+#[test]
+fn check_running_daemon_does_retire_the_endpoint_it_was_given() {
+    use std::os::unix::net::UnixListener;
+
+    let cache = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set_cache_dir(cache.path());
+    let custom = custom_endpoint(cache.path(), "custom.sock");
+    write_lock_file_for(&custom, dead_pid()).expect("seed custom-endpoint lock");
+    let _listener = UnixListener::bind(&custom).expect("bind the custom endpoint socket");
+
+    assert_eq!(check_running_daemon_for(&custom), None);
+    assert!(
+        !std::path::Path::new(&custom).exists(),
+        "a confirmed-dead custom-endpoint lock must retire {custom}, or the \
+         survival test above proves nothing"
     );
 }
 

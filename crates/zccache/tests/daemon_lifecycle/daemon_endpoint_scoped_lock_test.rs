@@ -146,8 +146,9 @@ impl TwoEndpoints {
     fn custom_lock_path(&self) -> PathBuf {
         let version = zccache::core::config::versioned_subdir();
         let scope = zccache::core::stable_path_id(Path::new(&self.custom_endpoint()));
-        self.version_dir()
-            .join(format!("daemon-{ENDPOINT_SCOPE_NAMESPACE}-{version}-{scope}.lock"))
+        self.version_dir().join(format!(
+            "daemon-{ENDPOINT_SCOPE_NAMESPACE}-{version}-{scope}.lock"
+        ))
     }
 
     /// A `zccache` invocation pinned to the isolated cache root + namespace,
