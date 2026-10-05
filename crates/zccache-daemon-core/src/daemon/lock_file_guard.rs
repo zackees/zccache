@@ -219,10 +219,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("daemon/entry.rs no longer contains `{needle}`"))
         };
 
-        let write = position("write_lock_file");
+        // #1903 moved the write itself into `daemon::startup_lockfile::record_ownership`,
+        // which returns the decision startup acts on, so the post-bind
+        // ownership write is now that call rather than a bare
+        // `ipc::write_lock_file` in this file. The ordering invariant is
+        // unchanged: still strictly between the pre-write cleanups and
+        // `mark_written`.
+        let write = position("record_ownership(pid)");
         assert!(
             position(concat!("mark_", "written")) > write,
-            "ownership may only be recorded after ipc::write_lock_file; \
+            "ownership may only be recorded after the lock-file write; \
              marking it earlier re-opens #1905"
         );
         assert!(

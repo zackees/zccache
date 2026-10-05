@@ -522,6 +522,17 @@ observable quickly while preventing the first warm compile from racing against
 the empty default graph and reporting `cold_skip` when a valid persisted graph
 is about to be installed (issue #798).
 
+Once the daemon has won the endpoint bind it MUST record its PID in the
+readiness lock file: the lock file is the ownership record, not a diagnostic.
+If that write fails — full disk, read-only mount, unwritable lock parent — the
+daemon emits the durable `daemon-lockfile-unrecorded` lifecycle event (exactly
+once per refused start), retires the endpoint it just bound, and exits non-zero
+without ever serving. It deliberately does not remove the lock file, because it
+never wrote one. The reason is discoverability: a daemon that serves without an
+ownership record cannot be found by a later `zccache start` nor stopped by
+`zccache stop`, so `stop` reports success while the process keeps holding the
+cache-root writer lock and every subsequent start fails (issue #1903).
+
 ### Crash Dumper (shared with CLI)
 
 Both `zccache-cli` and `zccache-daemon` call `zccache_core::crash::install(<bin-stem>)` at the top of `main`. That call wires up:

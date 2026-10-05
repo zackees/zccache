@@ -86,6 +86,7 @@
 //! | `embedded_dropped_without_shutdown` | daemon | a host dropped an embedded service without `shutdown()`; a best-effort checkpoint was written | `persisted`, `pid` |
 //! | `embedded_bringup` (#1652) | daemon | an embedded service became ready; per-phase wall time of its bring-up | `ready_ns`, `phases_ns`, `depgraph_load` |
 //! | `embedded_depgraph_loaded` (#1652) | daemon | the background startup depgraph load finished and compiles stopped waiting on it | `contexts`, `elapsed_ns` |
+//! | `daemon-lockfile-unrecorded` (#1903) | daemon | the daemon won the endpoint bind but could not record its PID in the ownership lock file, so it refused to serve | `endpoint`, `error`, `consequence` |
 //!
 //! ## Forensic walkthrough: the two-versions-on-one-pipe wedge
 //!
@@ -299,6 +300,16 @@ pub const EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN: &str = "embedded_dropped_with
 pub const EVENT_EMBEDDED_BRINGUP: &str = "embedded_bringup";
 /// The embedded service's background startup depgraph load finished (#1652).
 pub const EVENT_EMBEDDED_DEPGRAPH_LOADED: &str = "embedded_depgraph_loaded";
+/// The daemon won the endpoint bind but could not record its PID in the
+/// ownership lock file, so it retired the endpoint and exited instead of
+/// serving undiscoverably (#1903).
+///
+/// The lock file is the only ownership record `check_running_daemon` and
+/// `probe_existing_daemon` read, so a daemon without one can be neither found
+/// by a later `zccache start` nor stopped by `zccache stop` — `stop` reports
+/// success while the process keeps the cache-root writer lock. Emitted at most
+/// once per refused start, immediately before that exit.
+pub const EVENT_DAEMON_LOCKFILE_UNRECORDED: &str = "daemon-lockfile-unrecorded";
 
 /// Complete lifecycle-event catalog. Keep this additive and update the module
 /// schema table with every new event; log-audit and operator docs depend on it.
@@ -353,6 +364,7 @@ pub const EVENT_ALL: &[&str] = &[
     EVENT_EMBEDDED_DROPPED_WITHOUT_SHUTDOWN,
     EVENT_EMBEDDED_BRINGUP,
     EVENT_EMBEDDED_DEPGRAPH_LOADED,
+    EVENT_DAEMON_LOCKFILE_UNRECORDED,
     EVENT_LEGACY_ARTIFACT_PATH_ACCESSED,
     EVENT_DESTINATION_WRITE_FAILED,
     EVENT_MISS_REASON_UNKNOWN,

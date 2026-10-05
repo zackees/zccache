@@ -217,13 +217,11 @@ fn lockfile_window_has_no_synchronous_persisted_state_loads() {
     assert_no_sync_loads_in_window("bind_with_cache_dir", &lifecycle, bind_window);
 
     let daemon = workspace_source_file("crates/zccache-daemon-core/src/daemon/entry.rs");
-    // Marker is the binding name, not the full expression — rustfmt is free
-    // to reflow the spawn_blocking closure across lines.
-    let startup_window = slice_between(
-        &daemon,
-        "let bind_result =",
-        "crate::ipc::write_lock_file(pid)",
-    );
+    // Markers are binding/call names, not full expressions — rustfmt is free
+    // to reflow the spawn_blocking closure across lines. #1903 moved the lock
+    // write behind `daemon::startup_lockfile::record_ownership`, which owns
+    // the same post-bind position the window must end at.
+    let startup_window = slice_between(&daemon, "let bind_result =", "record_ownership(pid)");
     assert!(
         startup_window.contains("crate::daemon::DaemonServer::bind(&bind_endpoint)"),
         "daemon bind-to-lockfile window must include endpoint bind"
@@ -335,6 +333,12 @@ fn write_compiler_hash_placeholder(daemon_state_dir: &NormalizedPath) {
 }
 
 fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str) -> PathBuf {
+    // This binary also contains `daemon_lockfile_ownership_test`, which swaps
+    // the same variables. Serialize the critical section so neither fixture
+    // resolves a lock path against the other's cache root.
+    let _lock = crate::LOCKFILE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let prev_cache_dir = std::env::var_os("ZCCACHE_CACHE_DIR");
     let prev_namespace = std::env::var_os("ZCCACHE_DAEMON_NAMESPACE");
     let prev_colocate = std::env::var_os("ZCCACHE_COLOCATE");
