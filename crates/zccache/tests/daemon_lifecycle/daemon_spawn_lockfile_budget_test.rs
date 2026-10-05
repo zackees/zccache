@@ -114,7 +114,7 @@ fn measure_lockfile_latency(fixture: StateFixture) -> Duration {
     }
 
     let endpoint = zccache::ipc::unique_test_endpoint();
-    let lockfile = lock_file_path_for_cache_dir(cache_dir.as_path(), namespace);
+    let lockfile = lock_file_path_for_cache_dir(cache_dir.as_path(), namespace, &endpoint);
     let _ = std::fs::remove_file(lockfile.as_path());
 
     let spawn_at = Instant::now();
@@ -336,7 +336,7 @@ fn write_compiler_hash_placeholder(daemon_state_dir: &NormalizedPath) {
     file.flush().unwrap();
 }
 
-fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str) -> PathBuf {
+fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str, endpoint: &str) -> PathBuf {
     // This binary also contains `daemon_lockfile_ownership_test`, which swaps
     // the same variables. Serialize the critical section so neither fixture
     // resolves a lock path against the other's cache root.
@@ -351,7 +351,12 @@ fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str) -> PathBuf {
         std::env::set_var("ZCCACHE_DAEMON_NAMESPACE", namespace);
         std::env::remove_var("ZCCACHE_COLOCATE");
     }
-    let lockfile = zccache::ipc::lock_file_path().as_path().to_path_buf();
+    // Endpoint-scoped since #1904: the daemon spawned below writes its
+    // readiness lockfile under *its* endpoint's scope tag, so waiting on the
+    // default endpoint's historical name would never observe it.
+    let lockfile = zccache::ipc::lock_file_path_for(endpoint)
+        .as_path()
+        .to_path_buf();
     unsafe {
         restore_env("ZCCACHE_CACHE_DIR", prev_cache_dir);
         restore_env("ZCCACHE_DAEMON_NAMESPACE", prev_namespace);

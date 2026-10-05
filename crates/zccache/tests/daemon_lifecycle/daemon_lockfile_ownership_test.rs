@@ -44,16 +44,19 @@ fn daemon_with_unwritable_lock_file_exits_instead_of_serving() {
     let cache_dir = tmp.path().join("cache");
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
 
+    // Chosen first because the ownership record it must block is scoped to
+    // this endpoint (#1904).
+    let endpoint = zccache::ipc::unique_test_endpoint();
+
     // The ownership record this daemon must never clobber or remove: a
-    // directory where a lock file is expected.
-    let lock_path = lock_file_path_for_cache_dir(&cache_dir, TEST_DAEMON_NAMESPACE);
+    // directory where the endpoint-scoped lock file is expected.
+    let lock_path = lock_file_path_for_cache_dir(&cache_dir, TEST_DAEMON_NAMESPACE, &endpoint);
     std::fs::create_dir_all(&lock_path).expect("occupy lock path with a directory");
     assert!(
         lock_path.is_dir(),
         "lock path must be a directory for this test to force a write failure"
     );
 
-    let endpoint = zccache::ipc::unique_test_endpoint();
     let log_path = tmp.path().join("daemon.log");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_zccache-daemon"))
@@ -144,10 +147,17 @@ fn daemon_with_unwritable_lock_file_exits_instead_of_serving() {
 /// `cache_dir` / `namespace`.
 ///
 /// `fn`-private to `daemon_spawn_lockfile_budget_test`, so this module keeps its
-/// own copy: `zccache::ipc::lock_file_path()` derives the path from the
-/// process-global environment rather than taking arguments. The env swap is
-/// held under the binary-wide [`crate::LOCKFILE_ENV_LOCK`] for its duration.
-fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str) -> PathBuf {
+/// own copy: `zccache::ipc::lock_file_path_for()` derives the path from the
+/// process-global environment rather than taking its cache root as an
+/// argument. The env swap is held under the binary-wide
+/// [`crate::LOCKFILE_ENV_LOCK`] for its duration.
+///
+/// The endpoint is part of the path (#1904): the daemon this test spawns on a
+/// unique endpoint writes its ownership record under *that* endpoint's scope
+/// tag, so blocking only the default endpoint's historical name would let the
+/// daemon write a different file and serve — exactly what
+/// `daemon_with_unwritable_lock_file_exits_instead_of_serving` caught.
+fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str, endpoint: &str) -> PathBuf {
     let _lock = crate::LOCKFILE_ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -159,7 +169,9 @@ fn lock_file_path_for_cache_dir(cache_dir: &Path, namespace: &str) -> PathBuf {
         std::env::set_var("ZCCACHE_DAEMON_NAMESPACE", namespace);
         std::env::remove_var("ZCCACHE_COLOCATE");
     }
-    let lockfile = zccache::ipc::lock_file_path().as_path().to_path_buf();
+    let lockfile = zccache::ipc::lock_file_path_for(endpoint)
+        .as_path()
+        .to_path_buf();
     unsafe {
         restore_env("ZCCACHE_CACHE_DIR", prev_cache_dir);
         restore_env("ZCCACHE_DAEMON_NAMESPACE", prev_namespace);
