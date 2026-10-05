@@ -121,7 +121,7 @@ fn unchanged(tracked: &TrackedFile, observed: &FileObservation) -> bool {
         return false;
     }
     match observed.file_id {
-        Some(ref id) => id == &tracked.file_id,
+        Some(id) => tracked.file_id == Some(id),
         None => true,
     }
 }
