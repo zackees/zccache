@@ -359,7 +359,7 @@ fn from_parsed_args_carries_undefines_gnu() {
             "/src/a.c".to_string(),
             "-DVERSION=2".to_string(),
         ];
-        argv.extend(extra.iter().cloned());
+        argv.extend(extra.iter().map(|s| (*s).to_string()));
         let ctx = CompileContext::from_parsed_args(
             parse_gnu_args(&argv, Path::new("/")),
             super::test_compiler_hash(),
