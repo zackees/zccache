@@ -51,6 +51,7 @@ mod staged_compiler_sets;
 pub(crate) mod staged_env;
 mod store_mode;
 mod system_includes_deferred;
+mod watch_registration_rollback;
 mod watcher_lifecycle;
 mod wrapperless_rustc_rebuild;
 mod write_cached;
