@@ -76,7 +76,13 @@ fn dead_pid() -> u32 {
 
 #[cfg(windows)]
 fn dead_pid() -> u32 {
-    spawn_and_reap(std::process::Command::new("cmd").args(["/c", "exit", "0"]))
+    // `Command::args` chains off `&mut Command` and returns the reference;
+    // build the owned `Command` first so `spawn_and_reap` receives it (the
+    // same `&mut Command` vs `Command` shape this module's sibling harness
+    // hit in daemon_lifecycle).
+    let mut command = std::process::Command::new("cmd");
+    command.args(["/c", "exit", "0"]);
+    spawn_and_reap(command)
 }
 
 fn spawn_and_reap(mut command: std::process::Command) -> u32 {
