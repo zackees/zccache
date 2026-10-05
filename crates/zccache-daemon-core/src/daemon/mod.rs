@@ -44,6 +44,12 @@ pub mod side_effect;
 /// is about to be executed (zccache#1562).
 pub(crate) mod spawn_exclusion;
 pub(crate) mod staged_stats;
+/// Post-bind lock-file ownership policy for daemon startup (#1903). Gated the
+/// same way as `depgraph_load`: the standalone daemon entry point is the
+/// production caller, while `test` keeps the degraded arm reachable from a
+/// unit test.
+#[cfg(any(feature = "daemon-entry", test))]
+pub(crate) mod startup_lockfile;
 pub mod stats;
 pub mod trampoline;
 

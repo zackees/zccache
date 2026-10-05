@@ -430,26 +430,44 @@ fn run_server(args: Args) {
             }),
         );
         let pid = std::process::id();
-        if let Err(e) = crate::ipc::write_lock_file(pid) {
-            tracing::warn!("failed to write lock file: {e}");
-            // `write_lock_file` creates the parent directory before the
-            // write, so this failure is either a create failure (the file
-            // at this path is untouched) or a partially-applied
-            // `fs::write` (a truncated remnant). Only the second is ours
-            // to clean up: `read_lock_file_pid` cannot parse a truncated
-            // file, so leaving it makes `probe_existing_daemon` read it
-            // as "no pid" forever. An unparseable file is also the only
-            // shape here that is provably not another daemon's record, so
-            // this stays inside the #1905 invariant. Ownership stays
-            // unrecorded, so the `remove_if_owned` calls below remain
-            // no-ops for this process.
-            if crate::ipc::read_lock_file_pid().is_none() {
-                let _ = std::fs::remove_file(crate::ipc::lock_file_path());
+        match crate::daemon::startup_lockfile::record_ownership(pid) {
+            crate::daemon::startup_lockfile::StartupDecision::Serve => {
+                // #1905: only now does this process own the lock file, so
+                // only now may its cleanup paths remove it.
+                lock_file.mark_written();
             }
-        } else {
-            // #1905: only now does this process own the lock file, so only
-            // now may its cleanup paths remove it.
-            lock_file.mark_written();
+            crate::daemon::startup_lockfile::StartupDecision::RefuseServing { error } => {
+                // #1905: `write_lock_file` creates the parent directory
+                // before the write, so this failure is either a create
+                // failure (the file at this path is untouched) or a
+                // partially-applied `fs::write` (a truncated remnant).
+                // Only the second is ours to clean up:
+                // `read_lock_file_pid` cannot parse a truncated file, so
+                // leaving it makes `probe_existing_daemon` read it as
+                // "no pid" forever. An unparseable file is also the only
+                // shape here that is provably not another daemon's record,
+                // so this stays inside the #1905 invariant. Ownership stays
+                // unrecorded, so the `remove_if_owned` calls below remain
+                // no-ops for this process.
+                if crate::ipc::read_lock_file_pid().is_none() {
+                    let _ = std::fs::remove_file(crate::ipc::lock_file_path());
+                }
+                // #1903: we won the bind but cannot record ownership, so we
+                // are undiscoverable and unstoppable — both
+                // `check_running_daemon` and `probe_existing_daemon` read
+                // the lock file, and `zccache stop` reports success while
+                // this process keeps the cache-root writer lock. Serving
+                // here is what produced that state; refuse to serve instead
+                // of reporting a successful start.
+                tracing::error!(%endpoint, %error, "failed to write lock file — refusing to serve");
+                crate::daemon::startup_lockfile::report_unrecorded(&endpoint, &error);
+                // The endpoint is ours (we won the bind), so retire it. The
+                // lock file is NOT ours to remove: we never wrote one, and
+                // the removal above only unlinks a provably unparseable
+                // remnant — see #1905.
+                let _ = crate::ipc::retire_endpoint(&endpoint);
+                std::process::exit(1);
+            }
         }
         // #1005: advisory top-level marker of the last version that bound.
         // Diagnostics / warm-start hint only, never authoritative for identity.
