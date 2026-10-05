@@ -30,8 +30,13 @@ pub fn run_async<T>(
 /// `None` means the identity could not be established, and every kill path
 /// treats that as a refusal rather than as a wildcard.
 #[must_use]
-pub fn current_daemon_instance() -> Option<kernal_api::daemon_identity::DaemonIdentity> {
-    crate::ipc::read_backend_identity()
+pub fn current_daemon_instance(
+    endpoint: &str,
+) -> Option<kernal_api::daemon_identity::DaemonIdentity> {
+    // #1904: the instance a client is about to talk to is the one recorded for
+    // the endpoint it resolved. Reading the default endpoint's sidecar named an
+    // unrelated daemon, and every kill below is authorised against that name.
+    crate::ipc::read_backend_identity_for(endpoint)
 }
 
 #[derive(Debug)]
@@ -107,7 +112,7 @@ async fn spawn_and_wait(
     // contention that delayed the winner's bind by seconds. Exactly
     // one client wins the slot and spawns; the rest park directly on
     // the ready-wait below.
-    let spawn_slot = acquire_spawn_slot();
+    let spawn_slot = acquire_spawn_slot(endpoint);
     let meta = crate::core::lifecycle::client_meta(crate::core::VERSION);
     if spawn_slot.is_some() {
         // Record *why* the CLI is about to spawn a daemon. Pairs with the
@@ -157,7 +162,7 @@ async fn spawn_and_wait(
     // post-ready (lockfile race) we skip; the regular `spawn` line
     // still records the new daemon's identity.
     if let Some(killed_pid) = outbound_pid {
-        if let Some(new_pid) = crate::ipc::check_running_daemon() {
+        if let Some(new_pid) = crate::ipc::check_running_daemon_for(endpoint) {
             crate::core::lifecycle::emit_takeover_lifecycle_events(
                 killed_pid,
                 new_pid,
@@ -198,8 +203,8 @@ const SPAWN_SLOT_STALE: std::time::Duration = std::time::Duration::from_secs(20)
 /// Fail-open: if the filesystem refuses the arbitration entirely
 /// (permissions, exotic tmpfs), the caller behaves as the winner —
 /// worst case is the pre-#952 thundering herd, never a lost spawn.
-pub(crate) fn acquire_spawn_slot() -> Option<SpawnSlotGuard> {
-    let lock_path = crate::ipc::lock_file_path();
+pub(crate) fn acquire_spawn_slot(endpoint: &str) -> Option<SpawnSlotGuard> {
+    let lock_path = crate::ipc::lock_file_path_for(endpoint);
     let slot_path = std::path::PathBuf::from(format!("{}.spawn", lock_path.display()));
     acquire_spawn_slot_at(slot_path, SPAWN_SLOT_STALE)
 }
@@ -332,7 +337,7 @@ pub(crate) fn classify_wait_tick(
 pub async fn wait_for_daemon_ready(endpoint: &str) -> Result<(), String> {
     wait_for_daemon_ready_with(
         endpoint,
-        crate::ipc::check_running_daemon,
+        |ep| crate::ipc::check_running_daemon_for(ep),
         AdaptiveWaitConfig::default(),
     )
     .await
@@ -343,7 +348,7 @@ pub async fn wait_for_daemon_ready(endpoint: &str) -> Result<(), String> {
 /// touching the real daemon-lock file or sleeping for real seconds.
 pub(crate) async fn wait_for_daemon_ready_with(
     endpoint: &str,
-    daemon_alive_check: impl Fn() -> Option<u32>,
+    daemon_alive_check: impl Fn(&str) -> Option<u32>,
     cfg: AdaptiveWaitConfig,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
@@ -354,7 +359,12 @@ pub(crate) async fn wait_for_daemon_ready_with(
             return Ok(());
         }
         let elapsed = start.elapsed();
-        let daemon_pid = daemon_alive_check();
+        // #1904: the probe must be told WHICH endpoint this client resolved.
+        // `check_running_daemon` reads the default endpoint's lock and retires
+        // the default endpoint's socket, so a client waiting on
+        // `ZCCACHE_ENDPOINT=/tmp/custom.sock` would otherwise damage the
+        // default daemon's socket while waiting on its own.
+        let daemon_pid = daemon_alive_check(endpoint);
         if daemon_pid.is_some() {
             last_observed_pid = daemon_pid;
         }
@@ -505,7 +515,7 @@ pub async fn stop_wedged_daemon(
 /// if the lock has since moved to someone else, so a profile restart cannot
 /// take out a replacement another client spawned in between.
 pub(crate) async fn replace_running_daemon(endpoint: &str, reason: &str) -> Result<(), String> {
-    let instance = current_daemon_instance();
+    let instance = current_daemon_instance(endpoint);
     let killed_pid = stop_stale_daemon(endpoint, instance.as_ref()).await;
     spawn_and_wait(endpoint, reason, killed_pid).await
 }
@@ -523,12 +533,12 @@ async fn stop_daemon_instance(
     // Gate before the Shutdown request, not just before the kill: asking an
     // innocent daemon to retire is itself the damage this issue is about.
     match failed_instance {
-        Some(expected) if crate::ipc::daemon_identity_matches(expected) => {}
+        Some(expected) if crate::ipc::daemon_identity_matches_for(endpoint, expected) => {}
         Some(expected) => {
             tracing::warn!(
                 expected_pid = expected.pid(),
                 expected_started_at_unix_ms = expected.started_at_unix_ms(),
-                current_pid = crate::ipc::read_backend_identity().map(|d| d.pid()),
+                current_pid = crate::ipc::read_backend_identity_for(endpoint).map(|d| d.pid()),
                 "refusing to replace the daemon: the instance on disk is not the one that failed"
             );
             return None;
@@ -565,12 +575,14 @@ async fn stop_daemon_instance(
     // the fast kill for one that will not leave.
     let drained_cleanly = wait_for_process_exit(pid, drain_budget).await;
     if drained_cleanly {
-        crate::ipc::remove_lock_file();
+        // #1904: the lock record we just retired belongs to `endpoint`, not to
+        // whichever endpoint happens to be the default on this host.
+        crate::ipc::remove_lock_file_for(endpoint);
         // #1170 change 2, step 3: the lock file was never the whole of a dead
         // instance's state. Clear the rest here rather than leaving `<lock>
         // .spawn` to a 20 s staleness timer and the identity file to nothing
         // at all.
-        super::recovery::clear_stale_daemon_state();
+        super::recovery::clear_stale_daemon_state(endpoint);
         // Return the pid even though nothing was killed: the caller uses it to
         // link old -> new in the takeover lifecycle events. Previously a
         // daemon that exited inside the 200 ms window returned `None` here and
@@ -598,7 +610,7 @@ async fn stop_daemon_instance(
         }),
     );
 
-    let kill_ok = match crate::ipc::force_kill_verified_daemon(pid) {
+    let kill_ok = match crate::ipc::force_kill_verified_daemon_for(endpoint, pid) {
         Ok(Some(handle)) => {
             let deadline = std::time::Instant::now() + FORCE_KILL_REAP_BUDGET;
             loop {
@@ -634,8 +646,8 @@ async fn stop_daemon_instance(
         // unsupported or identity was unavailable.
         return None;
     }
-    crate::ipc::remove_lock_file();
-    super::recovery::clear_stale_daemon_state();
+    crate::ipc::remove_lock_file_for(endpoint);
+    super::recovery::clear_stale_daemon_state(endpoint);
     let killed_pid = kill_ok.then_some(pid);
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -652,7 +664,7 @@ async fn stop_daemon_instance(
 /// 1000 times. Now the first exhaustion writes a marker and the rest fail in
 /// microseconds, reporting the *original* cause rather than "breaker open".
 pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
-    if let Some(reason) = super::recovery::breaker_reason_if_open() {
+    if let Some(reason) = super::recovery::breaker_reason_if_open(endpoint) {
         return Err(format!(
             "daemon recovery already failed on this cache root and is in its cool-down: {reason}"
         ));
@@ -672,8 +684,8 @@ pub async fn ensure_daemon(endpoint: &str) -> Result<(), String> {
         // A working daemon is proof the outage is over. Clearing on every
         // success — not only after a recovery — is what stops a stale marker
         // from fast-failing a healthy build.
-        Ok(()) => super::recovery::clear_breaker(),
-        Err(reason) => super::recovery::open_breaker(reason),
+        Ok(()) => super::recovery::clear_breaker(endpoint),
+        Err(reason) => super::recovery::open_breaker(endpoint, reason),
     }
     outcome
 }
@@ -693,7 +705,7 @@ async fn ensure_daemon_ladder(endpoint: &str) -> Result<(), String> {
     // #1161: capture *before* probing. This names the instance we are about
     // to talk to, so a later kill can be bound to it rather than to whatever
     // the lock file says once the probe has already failed.
-    let probed_instance = crate::ipc::read_backend_identity();
+    let probed_instance = crate::ipc::read_backend_identity_for(endpoint);
     match check_daemon_version(endpoint).await {
         VersionCheck::Ok | VersionCheck::DaemonNewer => return Ok(()),
         VersionCheck::DaemonOlder { daemon_ver } => {
@@ -738,14 +750,14 @@ async fn ensure_daemon_ladder(endpoint: &str) -> Result<(), String> {
         VersionCheck::Unreachable => {}
     }
 
-    if let Some(pid) = crate::ipc::check_running_daemon() {
+    if let Some(pid) = crate::ipc::check_running_daemon_for(endpoint) {
         let mut backoff = std::time::Duration::from_millis(100);
         for _ in 0..20 {
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(std::time::Duration::from_millis(500));
             // Re-read every iteration: a daemon replaced legitimately between
             // attempts is a different instance, and the kill must follow.
-            let attempt_instance = crate::ipc::read_backend_identity();
+            let attempt_instance = crate::ipc::read_backend_identity_for(endpoint);
             match check_daemon_version(endpoint).await {
                 VersionCheck::Ok | VersionCheck::DaemonNewer => return Ok(()),
                 VersionCheck::DaemonOlder { daemon_ver } => {

@@ -221,7 +221,8 @@ fn lockfile_window_has_no_synchronous_persisted_state_loads() {
     // to reflow the spawn_blocking closure across lines. #1903 moved the lock
     // write behind `daemon::startup_lockfile::record_ownership`, which owns
     // the same post-bind position the window must end at.
-    let startup_window = slice_between(&daemon, "let bind_result =", "record_ownership(pid)");
+    let startup_window =
+        slice_between(&daemon, "let bind_result =", "record_ownership(&endpoint, pid)");
     assert!(
         startup_window.contains("crate::daemon::DaemonServer::bind(&bind_endpoint)"),
         "daemon bind-to-lockfile window must include endpoint bind"

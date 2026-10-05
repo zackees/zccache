@@ -180,7 +180,12 @@ fn print_status(args: &Args) {
         "  namespace:  {}",
         crate::core::config::daemon_namespace_label()
     );
-    println!("  lock file:  {}", crate::ipc::lock_file_path().display());
+    // #1904: the lock belongs to the endpoint printed on the line above, not
+    // unconditionally to the default one.
+    println!(
+        "  lock file:  {}",
+        crate::ipc::lock_file_path_for(&endpoint).display()
+    );
     println!();
 
     // Try to connect and get status from a running daemon
@@ -356,8 +361,12 @@ fn run_server(args: Args) {
         // ownership explicitly — nothing before `write_lock_file` may delete
         // a lock file this process did not write, or it unlinks the winning
         // daemon's file and makes a live daemon undiscoverable.
-        let mut lock_file =
-            crate::daemon::lock_file_guard::LockFileGuard::new(crate::ipc::lock_file_path());
+        // #1904: the guard owns the endpoint's OWN lock path, so its cleanup
+        // can only ever unlink a lock file belonging to the endpoint this
+        // process just tried to bind.
+        let mut lock_file = crate::daemon::lock_file_guard::LockFileGuard::new(
+            crate::ipc::lock_file_path_for(&endpoint),
+        );
         let bind_endpoint = endpoint.clone();
         let bind_result = kernal_api::async_engine::launch_blocking(move || {
             crate::daemon::DaemonServer::bind(&bind_endpoint)
@@ -401,10 +410,6 @@ fn run_server(args: Args) {
                 );
                 // #1905: no-op — we never wrote the lock file.
                 lock_file.remove_if_owned();
-                std::process::exit(1);
-            }
-            Err(e) => {
-                tracing::error!("failed to join daemon bind worker for {endpoint}: {e}");
                 // #1905: same — a no-op before `write_lock_file`.
                 lock_file.remove_if_owned();
                 std::process::exit(1);
@@ -430,7 +435,7 @@ fn run_server(args: Args) {
             }),
         );
         let pid = std::process::id();
-        match crate::daemon::startup_lockfile::record_ownership(pid) {
+        match crate::daemon::startup_lockfile::record_ownership(&endpoint, pid) {
             crate::daemon::startup_lockfile::StartupDecision::Serve => {
                 // #1905: only now does this process own the lock file, so
                 // only now may its cleanup paths remove it.
@@ -449,8 +454,13 @@ fn run_server(args: Args) {
                 // so this stays inside the #1905 invariant. Ownership stays
                 // unrecorded, so the `remove_if_owned` calls below remain
                 // no-ops for this process.
-                if crate::ipc::read_lock_file_pid().is_none() {
-                    let _ = std::fs::remove_file(crate::ipc::lock_file_path());
+                //
+                // #1904: scoped to the endpoint this process bound — reading
+                // and removing the DEFAULT endpoint's lock here would delete
+                // the live default daemon's record whenever a custom-endpoint
+                // daemon fails to start.
+                if crate::ipc::read_lock_file_pid_for(&endpoint).is_none() {
+                    let _ = std::fs::remove_file(crate::ipc::lock_file_path_for(&endpoint));
                 }
                 // #1903: we won the bind but cannot record ownership, so we
                 // are undiscoverable and unstoppable — both
@@ -474,7 +484,13 @@ fn run_server(args: Args) {
         if let Err(e) = crate::core::config::write_last_version_marker() {
             tracing::debug!("failed to write last-version marker: {e}");
         }
-        if let Err(e) = crate::ipc::write_backend_identity(&server.backend_identity()) {
+        // #1904: the identity sidecar belongs to the endpoint this process
+        // just bound. Writing the default endpoint's sidecar here let a
+        // daemon on a custom `--endpoint` overwrite the default daemon's
+        // identity, so every later kill decision taken against the default
+        // endpoint verified against — and terminated — this daemon.
+        let backend_identity = server.backend_identity();
+        if let Err(e) = crate::ipc::write_backend_identity_for(&endpoint, &backend_identity) {
             tracing::warn!("failed to write running-process backend identity: {e}");
         }
         // Publish the v1 CacheManifest so broker peers can discover this
@@ -793,5 +809,95 @@ mod tests {
         assert!(args.foreground);
         assert_eq!(args.endpoint.as_deref(), Some("test-endpoint"));
         assert_eq!(args.idle_timeout, 0);
+    }
+
+    /// #1904: the daemon writes its lock at `write_lock_file_for(&endpoint,
+    /// pid)` and removes it at `remove_lock_file_for(&endpoint)`. Pin the
+    /// property that makes the bug real — a daemon serving a non-default
+    /// endpoint can never land on (or clear) the default daemon's record.
+    ///
+    /// Before this, `run_server` called the endpoint-less
+    /// `write_lock_file` / `remove_lock_file`, so a `--endpoint
+    /// /tmp/custom.sock` daemon overwrote the default daemon's PID and
+    /// `zccache stop` on the default endpoint force-killed the wrong
+    /// process.
+    ///
+    /// Path- and write-level only: starting two real daemons is integration
+    /// territory, and the property under test — *which path this call site
+    /// targets* — is fully determined by the endpoint-scoped helpers.
+    #[test]
+    fn daemon_lock_write_is_scoped_to_its_own_endpoint() {
+        let custom = std::env::temp_dir()
+            .join("zccache-1904-custom.sock")
+            .to_string_lossy()
+            .into_owned();
+
+        assert_ne!(
+            crate::ipc::lock_file_path_for(&custom),
+            crate::ipc::lock_file_path(),
+            "a custom endpoint must not resolve to the default daemon's lock path"
+        );
+
+        let pid = std::process::id();
+        crate::ipc::write_lock_file_for(&custom, pid).expect("write endpoint-scoped lock");
+
+        // On unix the lock lands next to the endpoint; on Windows it lands in
+        // the cache dir under the endpoint-scoped name. Either way the
+        // endpoint-scoped read finds it and the endpoint-less read does not.
+        assert_eq!(crate::ipc::read_lock_file_pid_for(&custom), Some(pid));
+        assert_ne!(
+            crate::ipc::read_lock_file_pid(),
+            Some(pid),
+            "writing the custom endpoint's lock must not publish this PID as the \
+             default daemon's"
+        );
+
+        crate::ipc::remove_lock_file_for(&custom);
+        assert_eq!(crate::ipc::read_lock_file_pid_for(&custom), None);
+    }
+
+    /// #1904, identity half: `run_server` writes the sidecar with
+    /// `write_backend_identity_for(&endpoint, …)`. A daemon bound to a
+    /// non-default endpoint must not land on the default daemon's identity,
+    /// because that record is what `zccache stop` authorises a kill against —
+    /// an overwrite there is how a stop aimed at one daemon terminated
+    /// another.
+    ///
+    /// Path- and write-level, like the lock test above: `run_server` is not
+    /// reachable from a unit test without starting a daemon.
+    #[test]
+    fn daemon_identity_write_is_scoped_to_its_own_endpoint() {
+        let custom = std::env::temp_dir()
+            .join("zccache-1904-identity.sock")
+            .to_string_lossy()
+            .into_owned();
+        assert_ne!(
+            crate::ipc::backend_identity_path_for(&custom),
+            crate::ipc::backend_identity_path(),
+            "a custom endpoint must not resolve to the default daemon's identity path"
+        );
+
+        let identity = crate::ipc::current_backend_identity(&custom)
+            .expect("capture this process's identity for the fixture");
+        crate::ipc::write_backend_identity_for(&custom, &identity)
+            .expect("write endpoint-scoped identity");
+
+        assert_eq!(
+            crate::ipc::read_backend_identity_for(&custom).map(|d| d.pid()),
+            Some(std::process::id()),
+            "the daemon must be able to read back its own endpoint's identity"
+        );
+        // Compared by PID rather than by absence: the default endpoint's
+        // sidecar may legitimately hold a real daemon's identity on the host
+        // running this test. What must never happen is this process publishing
+        // itself there.
+        assert_ne!(
+            crate::ipc::read_backend_identity().map(|d| d.pid()),
+            Some(std::process::id()),
+            "#1904: a daemon on {custom} must not publish its identity as the \
+             DEFAULT endpoint's"
+        );
+
+        let _ = std::fs::remove_file(crate::ipc::backend_identity_path_for(&custom).as_path());
     }
 }

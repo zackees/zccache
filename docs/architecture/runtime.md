@@ -196,7 +196,7 @@ never the daemon's deployed identity.
 
 Every front-door name carries the version tag (`v<VERSION>`), folded into the
 leaf helpers `socket_name` / `daemon_socket_name` / `pipe_name` /
-`lock_file_name`. Two installed versions therefore get **distinct** endpoints,
+`lock_file_name_for`. Two installed versions therefore get **distinct** endpoints,
 locks, and backend-identity files and never contend — kill-and-replace becomes a
 same-version-only rare path (previously the #755 lifecycle-log herds). There is
 **no** unversioned compat alias: binding a shared alias would reintroduce the
@@ -218,6 +218,40 @@ namespace always wins: managed hosts such as soldr compute it once above a
 build and every wrapper plus the spawned daemon reuse that value. Official
 binaries carry the release footer and retain the bare, version-only identity
 so normal upgrade semantics are unchanged.
+
+### Endpoint-scoped ownership record (#1904)
+
+The lock file and the backend-identity sidecar fold a `stable_path_id` scope
+segment for **any endpoint other than** `default_endpoint()` — the same
+primitive `pipe_name` and `compact_cache_dir_endpoint` already use. So a daemon
+started with `ZCCACHE_ENDPOINT=/tmp/custom.sock` owns
+`daemon-<v>-<scope>.lock` / `daemon-<scope>.running-process.json` and never
+contends with the default-endpoint daemon over one global record. The default
+endpoint keeps its historical byte-for-byte name (empty scope segment) so
+already-installed builds and existing tests are unaffected. Because the endpoint
+is in the name, two endpoints cannot collide at all, so the write path needs no
+`create_new` and no ownership check. A client must pass its **resolved** endpoint
+to every lifecycle helper; the no-argument forms are default-endpoint-only
+wrappers over `default_endpoint()`.
+
+Both records — not just the lock — are endpoint-scoped, because a kill is
+authorised by pairing a PID from one with an identity from the other:
+
+| Record | Scoped helpers (`crates/zccache-ipc/src/ownership.rs` + `lib.rs`) |
+|---|---|
+| Lock file | `lock_file_path_for`, `write_lock_file_for`, `read_lock_file_pid_for`, `remove_lock_file_for`, `check_running_daemon_for` |
+| Backend identity | `backend_identity_path_for`, `write_backend_identity_for`, `read_backend_identity_for`, `verify_daemon_pid_for`, `daemon_identity_matches_for`, `force_kill_verified_daemon_for` |
+
+The daemon writes both records for the endpoint it actually bound
+(`daemon/entry.rs`), and every client read is scoped to the endpoint it
+resolved — including `probe_existing_daemon`, which validates the PID recorded
+for the endpoint being probed. `probe_backend_handle` reads the sidecar for the
+endpoint it probes. `current_daemon_instance` (the #1161 "which instance am I
+talking to" capture that gates every wedge/replace kill) takes the endpoint too.
+
+Reading the identity unscoped is what made Failure A destructive: `zccache stop`
+on the default endpoint picked up the custom daemon's PID from the shared lock,
+verified it against the custom daemon's identity, and terminated it.
 
 ### Conflict prevention & the retired broker (#1002)
 
@@ -696,7 +730,7 @@ cache root via one of the helpers in `zccache::core::config`:
 | `metadata.bin` (+ sibling tmp) | daemon - persisted metadata cache snapshot | `metadata_path_from_cache_dir` |
 | `ino/<key>.ino.cpp` | CLI — Arduino preprocessor cache | `default_cache_dir().join("ino")` |
 | `kv/<namespace>/<hex>.bin` | CLI — namespaced key/value store | derives from `default_cache_dir` |
-| `daemon[--namespace].lock` | CLI + daemon — PID lock | `lock_file_path` |
+| `daemon[--namespace]-v<VERSION>[-<endpoint-scope>].lock` | CLI + daemon — PID lock (scope segment only for a non-default endpoint) | `lock_file_path` / `lock_file_path_for` |
 | `daemon[--namespace].sock` (Unix, only when env override is set) | daemon — IPC socket co-located with the cache root | `default_endpoint` |
 
 The cache-root-rooted invariant for the well-known subpaths is asserted in

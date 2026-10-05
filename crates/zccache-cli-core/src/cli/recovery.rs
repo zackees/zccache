@@ -64,9 +64,14 @@ where
     }
 }
 
-/// Where the breaker marker lives for the current endpoint.
-fn breaker_marker_path() -> PathBuf {
-    let lock = crate::ipc::lock_file_path();
+/// Where the breaker marker lives for `endpoint`.
+///
+/// #1904: the marker sits beside the endpoint's own lock record, so it must be
+/// derived from the endpoint the caller resolved — a `ZCCACHE_ENDPOINT` client
+/// that opened a breaker against the default endpoint would have every build on
+/// the default daemon fast-fail for a cooldown it never caused.
+fn breaker_marker_path(endpoint: &str) -> PathBuf {
+    let lock = crate::ipc::lock_file_path_for(endpoint);
     PathBuf::from(format!("{}{BREAKER_MARKER_SUFFIX}", lock.display()))
 }
 
@@ -97,8 +102,8 @@ fn now_unix_ms() -> u64 {
 ///
 /// Reads the marker rather than caching in memory: the whole point is that
 /// each TU is a separate process.
-pub(crate) fn breaker_reason_if_open() -> Option<String> {
-    let marker = read_marker(&breaker_marker_path())?;
+pub(crate) fn breaker_reason_if_open(endpoint: &str) -> Option<String> {
+    let marker = read_marker(&breaker_marker_path(endpoint))?;
     let elapsed_ms = now_unix_ms().saturating_sub(marker.opened_at_unix_ms);
     (elapsed_ms < marker.cooldown_ms).then_some(marker.reason)
 }
@@ -113,8 +118,8 @@ fn read_marker(path: &std::path::Path) -> Option<BreakerMarker> {
 ///
 /// Emits `daemon_spawn_breaker_open` **once per opening**, not once per TU —
 /// a 1000-TU build must not produce 1000 rows of the same fact.
-pub(crate) fn open_breaker(reason: &str) {
-    let path = breaker_marker_path();
+pub(crate) fn open_breaker(endpoint: &str, reason: &str) {
+    let path = breaker_marker_path(endpoint);
     let previous = read_marker(&path);
     let consecutive_failures = previous
         .as_ref()
@@ -161,8 +166,8 @@ pub(crate) fn open_breaker(reason: &str) {
 /// Forget any breaker state. Called on every successful daemon acquisition,
 /// including the fast path — a working daemon is proof the outage is over,
 /// and leaving a stale marker would fast-fail a healthy build.
-pub(crate) fn clear_breaker() {
-    let _ = std::fs::remove_file(breaker_marker_path());
+pub(crate) fn clear_breaker(endpoint: &str) {
+    let _ = std::fs::remove_file(breaker_marker_path(endpoint));
 }
 
 /// Remove state a dead daemon instance left behind.
@@ -175,11 +180,14 @@ pub(crate) fn clear_breaker() {
 ///   binding the daemon wedged the whole herd for that window.
 /// - the backend identity file was never removed at all, so a stale identity
 ///   outlived the instance it described.
-pub(crate) fn clear_stale_daemon_state() {
-    let lock = crate::ipc::lock_file_path();
+pub(crate) fn clear_stale_daemon_state(endpoint: &str) {
+    // #1904: every artifact below belongs to `endpoint`. Clearing the default
+    // endpoint's slot/identity while stopping a `ZCCACHE_ENDPOINT` daemon
+    // destroys the ownership record of an unrelated, still-live instance.
+    let lock = crate::ipc::lock_file_path_for(endpoint);
     let spawn_slot = PathBuf::from(format!("{}.spawn", lock.display()));
     let _ = std::fs::remove_file(spawn_slot);
-    let _ = std::fs::remove_file(crate::ipc::backend_identity_path().as_path());
+    let _ = std::fs::remove_file(crate::ipc::backend_identity_path_for(endpoint).as_path());
 }
 
 #[cfg(test)]

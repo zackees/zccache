@@ -103,7 +103,7 @@ fn pending_when_never_observed_but_grace_still_running() {
 async fn returns_grace_error_when_no_lockfile_ever_observed() {
     // Tight grace + ceiling so the test resolves in well under a second.
     let c = cfg(150, 5_000, 25);
-    let err = wait_for_daemon_ready_with(dead_endpoint(), || None, c)
+    let err = wait_for_daemon_ready_with(dead_endpoint(), |_| None, c)
         .await
         .expect_err("no-daemon path must fail, not hang");
     assert!(
@@ -117,7 +117,7 @@ async fn returns_hard_ceiling_error_when_daemon_visible_but_unreachable() {
     // Daemon always-alive (mock returns Some), but no real socket → IPC
     // connect keeps failing → we hit the hard ceiling.
     let c = cfg(5_000, 200, 25);
-    let err = wait_for_daemon_ready_with(dead_endpoint(), || Some(12_345), c)
+    let err = wait_for_daemon_ready_with(dead_endpoint(), |_| Some(12_345), c)
         .await
         .expect_err("hard ceiling path must fail, not hang");
     assert!(err.contains("hard cap"), "wrong error: {err}");
@@ -133,7 +133,7 @@ async fn returns_daemon_exited_error_when_lockfile_disappears() {
     let polls_for_check = Arc::clone(&polls);
     let err = wait_for_daemon_ready_with(
         dead_endpoint(),
-        move || {
+        move |_endpoint| {
             let n = polls_for_check.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
                 Some(99_999)
@@ -147,6 +147,45 @@ async fn returns_daemon_exited_error_when_lockfile_disappears() {
     .expect_err("daemon-exit path must fail, not hang");
     assert!(err.contains("exited"), "wrong error: {err}");
     assert!(err.contains("99999"), "PID should appear: {err}");
+}
+
+/// #1904 Failure B. The liveness probe used to be `check_running_daemon`, which
+/// derives both its lock record and the socket it retires from
+/// `default_endpoint()` — so a client waiting on `ZCCACHE_ENDPOINT=/tmp/custom.sock`
+/// would still clean up the *default* endpoint on a confirmed-dead PID, unlinking
+/// a live daemon's socket out from under it. The probe therefore has to be handed
+/// the endpoint it was asked about; this asserts it is.
+#[tokio::test(flavor = "current_thread")]
+async fn probe_receives_the_endpoint_it_was_asked_about() {
+    use std::sync::Mutex;
+
+    let seen = Arc::new(Mutex::new(None::<String>));
+    let recorded = Arc::clone(&seen);
+    let c = cfg(150, 5_000, 25);
+    let endpoint = dead_endpoint();
+
+    let err = wait_for_daemon_ready_with(
+        endpoint,
+        move |ep| {
+            let mut slot = recorded.lock().expect("probe mutex poisoned");
+            *slot = Some(ep.to_string());
+            None
+        },
+        c,
+    )
+    .await
+    .expect_err("no-daemon path must fail, not hang");
+
+    assert!(
+        err.contains("no daemon lockfile observed"),
+        "wrong error: {err}"
+    );
+    assert_eq!(
+        seen.lock().expect("probe mutex poisoned").as_deref(),
+        Some(endpoint),
+        "the readiness probe must be asked about the endpoint the caller resolved, \
+         not the default one"
+    );
 }
 
 // ---------------------------------------------------------------------

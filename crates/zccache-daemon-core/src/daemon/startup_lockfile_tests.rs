@@ -42,7 +42,7 @@ fn unwritable_lock_file_parent_refuses_serving() {
     let temp = tempfile::tempdir().unwrap();
     let _guard = guarded_cache_dir(&cache_dir_behind_a_file(temp.path()));
 
-    match record_ownership(std::process::id()) {
+    match record_ownership(&crate::ipc::default_endpoint(), std::process::id()) {
         StartupDecision::RefuseServing { error } => {
             assert!(
                 !error.trim().is_empty(),
@@ -69,7 +69,7 @@ fn writable_lock_file_parent_serves() {
     let cache_dir = temp.path().join("cache");
     let _guard = guarded_cache_dir(&cache_dir);
 
-    let decision = record_ownership(std::process::id());
+    let decision = record_ownership(&crate::ipc::default_endpoint(), std::process::id());
 
     assert!(
         matches!(decision, StartupDecision::Serve),
@@ -82,6 +82,39 @@ fn writable_lock_file_parent_serves() {
     );
 
     crate::ipc::remove_lock_file();
+}
+
+/// #1904: `record_ownership` writes the lock of the endpoint it is given, not
+/// the default endpoint's. Before the endpoint argument existed, a daemon
+/// bound to a custom `--endpoint` wrote the default daemon's PID record, so
+/// `zccache stop` on the default endpoint read the custom daemon's PID.
+#[test]
+fn ownership_is_recorded_against_the_bound_endpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    let _guard = guarded_cache_dir(&cache_dir);
+    let endpoint = crate::ipc::unique_test_endpoint();
+
+    assert!(
+        matches!(
+            record_ownership(&endpoint, std::process::id()),
+            StartupDecision::Serve
+        ),
+        "a writable cache dir must record ownership against the given endpoint"
+    );
+    assert_eq!(
+        crate::ipc::read_lock_file_pid_for(&endpoint),
+        Some(std::process::id()),
+        "the lock must land on the endpoint the daemon bound"
+    );
+    assert_eq!(
+        crate::ipc::read_lock_file_pid(),
+        None,
+        "#1904: recording ownership for {endpoint} must not create or \
+         overwrite the DEFAULT endpoint's lock record"
+    );
+
+    let _ = std::fs::remove_file(crate::ipc::lock_file_path_for(&endpoint));
 }
 
 /// The refusal must leave a durable lifecycle row behind, and that row's name

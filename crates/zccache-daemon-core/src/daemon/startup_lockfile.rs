@@ -21,13 +21,18 @@ pub(crate) enum StartupDecision {
     RefuseServing { error: String },
 }
 
-/// Record `pid` in the daemon lock file and decide what startup does next.
+/// Record `pid` in the daemon lock file for `endpoint` and decide what startup
+/// does next.
 ///
 /// This is the whole #1903 policy: the decision is derived from the write's
 /// result rather than left to the caller's `match`, so "unrecorded implies
 /// refuse to serve" cannot be re-broken by a caller that ignores an arm.
-pub(crate) fn record_ownership(pid: u32) -> StartupDecision {
-    match crate::ipc::write_lock_file(pid) {
+///
+/// `endpoint` is the one this process just bound (#1904): writing the default
+/// endpoint's lock here let a daemon on a custom `--endpoint` hijack the
+/// default daemon's PID record.
+pub(crate) fn record_ownership(endpoint: &str, pid: u32) -> StartupDecision {
+    match crate::ipc::write_lock_file_for(endpoint, pid) {
         Ok(()) => StartupDecision::Serve,
         Err(e) => StartupDecision::RefuseServing {
             error: e.to_string(),

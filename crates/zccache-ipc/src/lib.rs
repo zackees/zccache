@@ -12,6 +12,7 @@ pub mod broker;
 pub mod error;
 mod full_family;
 pub mod manifest;
+mod ownership;
 pub mod probe;
 pub mod transport;
 
@@ -25,6 +26,12 @@ pub use full_family::{
     FullFamilyRoundtripFailure,
 };
 pub use manifest::{publish_manifest, publish_manifest_in, publish_service_definition};
+pub use ownership::{
+    backend_identity_path, backend_identity_path_for, daemon_identity_matches,
+    daemon_identity_matches_for, force_kill_verified_daemon, force_kill_verified_daemon_for,
+    probe_backend_handle, read_backend_identity, read_backend_identity_for, verify_daemon_pid,
+    verify_daemon_pid_for, write_backend_identity, write_backend_identity_for,
+};
 pub use transport::IpcClientConnection;
 pub use transport::{
     connect, unique_test_endpoint, IpcConnection, IpcListener, DEFAULT_CLIENT_RECV_TIMEOUT,
@@ -333,24 +340,34 @@ pub fn endpoint_for_private_daemon_name(
 /// Returns the path for the daemon lock file.
 #[must_use]
 pub fn lock_file_path() -> NormalizedPath {
+    lock_file_path_for(&default_endpoint())
+}
+
+/// Endpoint-scoped counterpart of [`lock_file_path`].
+///
+/// A daemon reachable on a non-default endpoint owns its OWN lock record
+/// (#1904): without the endpoint folded into the name, `zccache stop` on the
+/// default endpoint force-kills a daemon started with
+/// `ZCCACHE_ENDPOINT=/tmp/custom.sock`.
+#[must_use]
+pub fn lock_file_path_for(endpoint: &str) -> NormalizedPath {
     let namespace = zccache_core::config::daemon_namespace();
+    let name = lock_file_name_for(namespace.as_deref(), endpoint);
     if let Some(cache_dir) = normalized_override_root() {
-        return cache_dir.join(lock_file_name(namespace.as_deref()));
+        return cache_dir.join(&name);
     }
 
     let file_lock = {
-        let endpoint = default_endpoint();
         // Endpoint paths always live inside a directory, but the denied
         // `expect_used` lint fires when clippy compiles this cfg(unix)
         // arm (it was landed from a host where clippy never saw it —
         // caught during soldr#1286 docker-linux verification).
-        let dir = std::path::Path::new(&endpoint)
+        let dir = std::path::Path::new(endpoint)
             .parent()
             .unwrap_or_else(|| std::path::Path::new("/tmp"));
-        dir.join(lock_file_name(namespace.as_deref()))
+        dir.join(&name)
     };
-    let windows_lock =
-        { zccache_core::config::default_cache_dir().join(lock_file_name(namespace.as_deref())) };
+    let windows_lock = { zccache_core::config::default_cache_dir().join(&name) };
     crate::platform::ipc::select_host_text(
         file_lock.to_string_lossy().into_owned(),
         windows_lock.to_string_lossy().into_owned(),
@@ -405,11 +422,29 @@ fn default_file_endpoint(namespace: Option<&str>) -> String {
     format!("/tmp/zccache-{user}/{}", socket_name(namespace))
 }
 
-fn lock_file_name(namespace: Option<&str>) -> String {
+/// #1904 — the endpoint scope segment folded into every ownership-record
+/// name. Mirrors the version/namespace folding in `lock_file_name` and the
+/// `stable_path_id` scoping in `pipe_name`: two endpoints can then never
+/// contend over one record, so no ownership check on write is needed.
+///
+/// The DEFAULT endpoint returns an empty tag so its historical filename stays
+/// byte-for-byte identical for already-installed builds.
+fn endpoint_scope_tag(endpoint: &str) -> String {
+    if endpoint == default_endpoint() {
+        return String::new();
+    }
+    format!(
+        "-{}",
+        zccache_core::stable_path_id(std::path::Path::new(endpoint))
+    )
+}
+
+fn lock_file_name_for(namespace: Option<&str>, endpoint: &str) -> String {
     let v = version_tag();
+    let scope = endpoint_scope_tag(endpoint);
     match namespace {
-        Some(ns) => format!("daemon-{ns}-{v}.lock"),
-        None => format!("daemon-{v}.lock"),
+        Some(ns) => format!("daemon-{ns}-{v}{scope}.lock"),
+        None => format!("daemon-{v}{scope}.lock"),
     }
 }
 
@@ -417,7 +452,12 @@ fn lock_file_name(namespace: Option<&str>) -> String {
 ///
 /// Creates parent directories if needed.
 pub fn write_lock_file(pid: u32) -> Result<(), std::io::Error> {
-    let path = lock_file_path();
+    write_lock_file_for(&default_endpoint(), pid)
+}
+
+/// Endpoint-scoped counterpart of [`write_lock_file`] (#1904).
+pub fn write_lock_file_for(endpoint: &str, pid: u32) -> Result<(), std::io::Error> {
+    let path = lock_file_path_for(endpoint);
     if let Some(parent) = path.parent() {
         // #1171: same directory family as the socket endpoint.
         zccache_core::config::create_dir_all_private(parent)?;
@@ -428,30 +468,30 @@ pub fn write_lock_file(pid: u32) -> Result<(), std::io::Error> {
 /// Read the daemon PID from the lock file, if it exists and is valid.
 #[must_use]
 pub fn read_lock_file_pid() -> Option<u32> {
-    std::fs::read_to_string(lock_file_path())
+    read_lock_file_pid_for(&default_endpoint())
+}
+
+/// Endpoint-scoped counterpart of [`read_lock_file_pid`] (#1904).
+#[must_use]
+pub fn read_lock_file_pid_for(endpoint: &str) -> Option<u32> {
+    std::fs::read_to_string(lock_file_path_for(endpoint))
         .ok()
         .and_then(|s| s.trim().parse().ok())
 }
 
 /// Remove the lock file.
 pub fn remove_lock_file() {
-    let _ = std::fs::remove_file(lock_file_path());
+    remove_lock_file_for(&default_endpoint());
+}
+
+/// Endpoint-scoped counterpart of [`remove_lock_file`] (#1904).
+pub fn remove_lock_file_for(endpoint: &str) {
+    let _ = std::fs::remove_file(lock_file_path_for(endpoint));
 }
 
 /// Retire a stale native endpoint without exposing its host representation.
 pub fn retire_endpoint(endpoint: &str) -> std::io::Result<()> {
     crate::platform::ipc::Endpoint::from_native(endpoint).retire()
-}
-
-/// Path where the daemon records the identity sidecar consumed by identity
-/// probes ([`kernal_api::daemon_identity::DaemonIdentity::read_sidecar`]).
-#[must_use]
-pub fn backend_identity_path() -> NormalizedPath {
-    let namespace = zccache_core::config::daemon_namespace();
-    if let Some(cache_dir) = normalized_override_root() {
-        return cache_dir.join(backend_identity_file_name(namespace.as_deref()));
-    }
-    zccache_core::config::default_cache_dir().join(backend_identity_file_name(namespace.as_deref()))
 }
 
 /// #1003 — the single normalized cache identity for daemon ownership.
@@ -467,13 +507,6 @@ pub fn backend_identity_path() -> NormalizedPath {
 fn normalized_override_root() -> Option<NormalizedPath> {
     zccache_core::config::cache_dir_override()
         .map(|top| zccache_core::config::effective_cache_root_from_top_level(&top))
-}
-
-fn backend_identity_file_name(namespace: Option<&str>) -> String {
-    match namespace {
-        Some(ns) => format!("daemon-{ns}.running-process.json"),
-        None => "daemon.running-process.json".to_string(),
-    }
 }
 
 /// Convert zccache's direct daemon endpoint to the application-owned
@@ -535,78 +568,6 @@ pub fn backend_probe_responder(
         identity,
         [zccache_protocol::wire_frame::ZCCACHE_FRAME_PAYLOAD_PROTOCOL],
     )
-}
-
-/// Persist the daemon identity used by future identity probes.
-///
-/// The facade sidecar is byte-identical to the historical
-/// `serde_json::to_vec_pretty` form and written atomically, so older and newer
-/// zccache binaries keep reading each other's identity.
-pub fn write_backend_identity(
-    daemon: &kernal_api::daemon_identity::DaemonIdentity,
-) -> Result<(), std::io::Error> {
-    let path = backend_identity_path();
-    if let Some(parent) = path.parent() {
-        // #1171: same directory family as the socket endpoint.
-        zccache_core::config::create_dir_all_private(parent)?;
-    }
-    daemon.write_sidecar(path.as_path())
-}
-
-/// Read the persisted daemon identity, if one is recorded and parseable.
-///
-/// #1161: the identity has been *written* on every daemon start for a long
-/// time, and nothing read it back except `probe_backend_handle`'s inline load.
-/// Kill decisions verified only "PID is alive and its exe stem is
-/// `zccache-daemon`" — which a recycled PID belonging to a *different*
-/// zccache-daemon satisfies, so auto-recovery could kill an unrelated live
-/// instance.
-///
-/// The identity already carries what distinguishes instances:
-/// `started_at_unix_ms` (PID reuse within a boot) and `boot_id` (across
-/// boots). Exposing the read is what lets a kill be bound to the instance the
-/// caller actually failed to talk to.
-///
-/// `None` means "nothing recorded, or unreadable" — deliberately *not*
-/// "matches anything". See [`daemon_identity_matches`].
-#[must_use]
-pub fn read_backend_identity() -> Option<kernal_api::daemon_identity::DaemonIdentity> {
-    kernal_api::daemon_identity::DaemonIdentity::read_sidecar(backend_identity_path().as_path())
-}
-
-/// Is the daemon recorded on disk right now the same *instance* as `expected`?
-///
-/// Compares PID **and** start time **and** boot id. PID alone is not identity:
-/// the OS reuses PIDs, aggressively so on Windows, and the exe-stem check that
-/// guarded this before is satisfied by any `zccache-daemon` — including one
-/// serving a different namespace.
-///
-/// Returns `false` when nothing is recorded. That is the safe direction for a
-/// kill gate: refusing costs one clear error about a daemon that is already
-/// not answering, while permitting costs killing a live daemon that was never
-/// the one at fault. Note this deliberately differs from
-/// [`verify_pid_exe_stem`], whose `None => true` fallback is about *reading an
-/// exe path* on platforms that cannot — not about authorising a kill.
-#[must_use]
-pub fn daemon_identity_matches(expected: &kernal_api::daemon_identity::DaemonIdentity) -> bool {
-    let Some(current) = read_backend_identity() else {
-        return false;
-    };
-    current.pid() == expected.pid()
-        && current.started_at_unix_ms() == expected.started_at_unix_ms()
-        && current.boot_id() == expected.boot_id()
-}
-
-/// Load and actively verify the daemon identity through the frozen v1
-/// identity probe. Returns the verified identity when the recorded daemon
-/// still serves `endpoint`.
-#[must_use]
-pub fn probe_backend_handle(endpoint: &str) -> Option<kernal_api::daemon_identity::DaemonIdentity> {
-    let daemon = read_backend_identity()?;
-    let endpoint = running_process_endpoint(endpoint);
-    (daemon.probe_endpoint_blocking(&endpoint)
-        == kernal_api::daemon_identity::ProbeSameEndpoint::Current)
-        .then_some(daemon)
 }
 
 /// Broker escape hatch shared with the running-process rollout plan.
@@ -680,24 +641,6 @@ pub fn force_kill_process(pid: u32) -> Result<(), ForceKillError> {
     }
 }
 
-/// Force-kill the persisted daemon instance through one retained verified
-/// native control handle. `Ok(None)` means no persisted identity is available:
-/// callers must preserve the live legacy/direct IPC endpoint rather than
-/// reopening a PID and risking a recycled process.
-pub fn force_kill_verified_daemon(
-    pid: u32,
-) -> Result<Option<kernal_api::daemon_identity::VerifiedDaemon>, ForceKillError> {
-    let Some(identity) = read_backend_identity() else {
-        return Ok(None);
-    };
-    if identity.pid() != pid {
-        return Ok(None);
-    }
-    let verified = identity.verify_for_control()?;
-    verified.force_kill()?;
-    Ok(Some(verified))
-}
-
 /// Check if a process with the given PID is actually running.
 ///
 /// On Windows this is stricter than "the kernel still has a process object for
@@ -746,7 +689,10 @@ pub fn is_process_alive(pid: u32) -> bool {
 /// to absorb normal connect latency under load (typically <50 ms on
 /// a local pipe).
 pub async fn probe_existing_daemon(endpoint: &str, timeout: std::time::Duration) -> bool {
-    let Some(pid) = read_lock_file_pid() else {
+    // #1904: the PID this probe validates is the one recorded for `endpoint`.
+    // Reading the default endpoint's lock made a daemon probing its own custom
+    // endpoint short-circuit on an unrelated daemon's PID.
+    let Some(pid) = read_lock_file_pid_for(endpoint) else {
         return false;
     };
     // Don't probe ourselves — the post-fork daemon's own PID could be
@@ -756,7 +702,7 @@ pub async fn probe_existing_daemon(endpoint: &str, timeout: std::time::Duration)
     if pid == std::process::id() {
         return false;
     }
-    if !verify_daemon_pid(pid) {
+    if !verify_daemon_pid_for(endpoint, pid) {
         return false;
     }
     // RUNNING_PROCESS_DISABLE=1 is the upstream broker rollout escape hatch:
@@ -772,28 +718,7 @@ pub async fn probe_existing_daemon(endpoint: &str, timeout: std::time::Duration)
     }
 }
 
-/// Returns true if `pid` exists **and** its executable looks like a zccache
-/// daemon. Defends against stale `daemon.lock` files where the recorded PID has
-/// been recycled by an unrelated process — typical when a CI runner restores a
-/// cache directory containing a lock file from a prior, abruptly-terminated
-/// run. Identity verification authorizes a daemon-specific kill; discovery
-/// retains a live PID with unavailable identity so legacy/direct IPC can still
-/// prove ownership without destructively retiring its endpoint. See issue
-/// #132.
-#[must_use]
-pub fn verify_daemon_pid(pid: u32) -> bool {
-    let Some(identity) = read_backend_identity() else {
-        return false;
-    };
-    if identity.pid() != pid {
-        return false;
-    }
-    identity
-        .verify_live()
-        .is_ok_and(|verified| verified.is_alive())
-}
-
-/// Generic version of [`verify_daemon_pid`]: confirms `pid` is alive and its
+/// Generic version of `verify_daemon_pid`: confirms `pid` is alive and its
 /// executable filename (without `.exe`) matches `expected_stem`. Used by
 /// callers that own a different daemon binary (e.g. the download daemon).
 #[must_use]
@@ -822,7 +747,18 @@ fn exe_stem_matches(path: &std::path::Path, expected_stem: &str) -> bool {
 /// Check if a daemon is already running. Returns the PID if alive.
 #[must_use]
 pub fn check_running_daemon() -> Option<u32> {
-    let pid = read_lock_file_pid()?;
+    check_running_daemon_for(&default_endpoint())
+}
+
+/// Endpoint-scoped counterpart of [`check_running_daemon`] (#1904).
+///
+/// Both the lock record consulted and the endpoint retired on a confirmed-dead
+/// PID belong to `endpoint` — retiring the default endpoint from a client that
+/// is managing a custom endpoint wedges a live daemon out of reach of every
+/// client.
+#[must_use]
+pub fn check_running_daemon_for(endpoint: &str) -> Option<u32> {
+    let pid = read_lock_file_pid_for(endpoint)?;
     // A missing or unverifiable backend identity is not proof that a live
     // daemon is stale: RUNNING_PROCESS_DISABLE and legacy direct IPC both
     // intentionally retain that compatibility path. Only a confirmed-dead
@@ -832,9 +768,10 @@ pub fn check_running_daemon() -> Option<u32> {
         Some(pid)
     } else {
         // Confirmed-dead lock file — clean up without disturbing a live but
-        // unverified legacy/direct daemon.
-        remove_lock_file();
-        let endpoint = crate::platform::ipc::Endpoint::from_native(default_endpoint());
+        // unverified legacy/direct daemon. #1904: this must retire `endpoint`,
+        // not the default endpoint.
+        remove_lock_file_for(endpoint);
+        let endpoint = crate::platform::ipc::Endpoint::from_native(endpoint.to_string());
         let _ = endpoint.retire();
         None
     }

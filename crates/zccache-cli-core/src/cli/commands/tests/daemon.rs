@@ -1,8 +1,13 @@
 //! Daemon-bootstrap / teardown regression tests. These cover the
 //! protocol-mismatch auto-recovery path (issue #27), the bounded wait
-//! after a clean stop, and the bounded Status-probe (issue #554).
+//! after a clean stop, the bounded Status-probe (issue #554), and the
+//! endpoint-scoped ownership records in `zccache stop` (issue #1904).
 
-use super::super::daemon::{profile_env_overrides, tokio_console_bind, wait_for_daemon_teardown};
+use std::process::ExitCode;
+
+use super::super::daemon::{
+    cmd_stop, profile_env_overrides, tokio_console_bind, wait_for_daemon_teardown,
+};
 // #1161: the recovery path these tests cover now has a single implementation
 // in `cli::runtime`. The duplicate in `commands::daemon` — which had none of
 // the identity gating, probe-before-replace, or drain budget — is gone.
@@ -191,5 +196,173 @@ async fn ensure_daemon_is_bounded_when_status_probe_never_answers() {
     assert!(
         elapsed < std::time::Duration::from_secs(10),
         "ensure_daemon took {elapsed:?} against an unresponsive daemon; result={result:?}"
+    );
+}
+
+// ── Endpoint-scoped lifecycle (issue #1904) ───────────────────────────
+//
+// `cmd_stop` receives the endpoint it was asked to stop. When the IPC
+// shutdown roundtrip is unreachable it has to answer "is a daemon serving
+// THIS endpoint?" from THIS endpoint's ownership record. Reaching for the
+// default endpoint's lock makes a healthy daemon on an unrelated endpoint
+// look like the failure being cleaned up — and makes a stop against a custom
+// endpoint clear the default daemon's lock file.
+
+/// These tests mutate process-global cache-dir env, so they must not overlap
+/// with each other. (`cargo test` threads a single process; nextest gives each
+/// test its own.)
+static CACHE_ROOT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Pin `ZCCACHE_CACHE_DIR` / `ZCCACHE_DAEMON_NAMESPACE` to an isolated root so
+/// the default-endpoint ownership records these tests read and write are the
+/// tempdir's, never the developer's real daemon's. Restored on drop.
+struct IsolatedCacheRoot {
+    _tmp: tempfile::TempDir,
+    _serialized: std::sync::MutexGuard<'static, ()>,
+    previous_cache_dir: Option<String>,
+    previous_namespace: Option<String>,
+}
+
+impl IsolatedCacheRoot {
+    const NAMESPACE: &str = "stop-endpoint-scope";
+
+    fn set() -> Self {
+        let serialized = CACHE_ROOT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let previous_cache_dir = std::env::var("ZCCACHE_CACHE_DIR").ok();
+        let previous_namespace = std::env::var("ZCCACHE_DAEMON_NAMESPACE").ok();
+        std::env::set_var("ZCCACHE_CACHE_DIR", tmp.path());
+        std::env::set_var("ZCCACHE_DAEMON_NAMESPACE", Self::NAMESPACE);
+        Self {
+            _tmp: tmp,
+            _serialized: serialized,
+            previous_cache_dir,
+            previous_namespace,
+        }
+    }
+}
+
+impl Drop for IsolatedCacheRoot {
+    fn drop(&mut self) {
+        for (name, previous) in [
+            ("ZCCACHE_CACHE_DIR", &self.previous_cache_dir),
+            ("ZCCACHE_DAEMON_NAMESPACE", &self.previous_namespace),
+        ] {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+/// A process id that is guaranteed not to be running: spawn a short-lived
+/// child, reap it, then hand back its pid.
+fn dead_pid() -> u32 {
+    let mut child = if cfg!(windows) {
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Milliseconds 1"])
+            .spawn()
+            .expect("spawn reaped child")
+    } else {
+        std::process::Command::new("true").spawn().expect("spawn reaped child")
+    };
+    let pid = child.id();
+    child.wait().expect("reap child");
+    pid
+}
+
+/// An endpoint nothing serves, distinct from the (isolated) default one.
+fn unserved_endpoint() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let unique = format!("zccache-stop-scope-{}-{nanos}", std::process::id());
+    if cfg!(windows) {
+        format!(r"\\.\pipe\{unique}")
+    } else {
+        std::env::temp_dir()
+            .join(format!("{unique}.sock"))
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// Regression test for <https://github.com/zackees/zccache/issues/1904>.
+///
+/// `zccache stop` against a custom endpoint must not consult — or clear — the
+/// DEFAULT endpoint's ownership record. Before the fix the unreachable-IPC arm
+/// called the endpoint-less `check_running_daemon()`, which reads the default
+/// lock, confirms its pid dead, deletes that lock and retires the default
+/// endpoint: a stop aimed at one daemon silently dismantled another's.
+#[tokio::test]
+async fn stop_preserves_the_default_endpoints_stale_lock() {
+    let _root = IsolatedCacheRoot::set();
+    let endpoint = unserved_endpoint();
+    assert_ne!(
+        endpoint,
+        crate::ipc::default_endpoint(),
+        "the unserved endpoint must differ from the default one for this test to mean anything"
+    );
+
+    let default_lock = crate::ipc::lock_file_path();
+    crate::ipc::write_lock_file(dead_pid()).expect("write default-endpoint lock");
+
+    let code = cmd_stop(&endpoint).await;
+
+    assert_eq!(
+        code,
+        ExitCode::SUCCESS,
+        "`zccache stop` for an unserved endpoint must report success"
+    );
+    assert!(
+        default_lock.as_path().exists(),
+        "#1904: stopping {endpoint} cleared the DEFAULT endpoint's lock file at {}",
+        default_lock.as_path().display()
+    );
+}
+
+/// The other half of #1904's Failure A: a live daemon on the DEFAULT endpoint
+/// must not be mistaken for the daemon the caller failed to reach on a custom
+/// endpoint. With the pid still alive the endpoint-less lookup returned it, and
+/// the forced-kill arm refused (no persisted identity), so the stop failed on a
+/// clean, unrelated endpoint instead of reporting "not running at {endpoint}".
+#[tokio::test]
+async fn stop_ignores_a_live_default_endpoint_daemon() {
+    let _root = IsolatedCacheRoot::set();
+    let endpoint = unserved_endpoint();
+
+    let mut other = if cfg!(windows) {
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .spawn()
+            .expect("spawn bystander")
+    } else {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn bystander")
+    };
+    let other_pid = other.id();
+    crate::ipc::write_lock_file(other_pid).expect("write default-endpoint lock");
+
+    let code = cmd_stop(&endpoint).await;
+
+    let survived = other.try_wait().expect("poll bystander").is_none();
+    let _ = other.kill();
+    let _ = other.wait();
+
+    assert_eq!(
+        code,
+        ExitCode::SUCCESS,
+        "#1904: an unreachable custom endpoint must report 'daemon not running at \
+         {endpoint}', not fail on the live daemon serving the DEFAULT endpoint"
+    );
+    assert!(
+        survived,
+        "#1904: stopping {endpoint} must never signal process {other_pid}, which is \
+         serving a different endpoint"
     );
 }

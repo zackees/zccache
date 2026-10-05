@@ -167,14 +167,19 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
             // that case — so falling back to the raw number force-killed a PID
             // that had already failed verification, which is the #132 defense
             // being bypassed by the one path that always kills.
-            let Some(pid) = crate::ipc::check_running_daemon() else {
-                if let Some(stale) = crate::ipc::read_lock_file_pid() {
+            //
+            // #1904: every lookup below is scoped to `endpoint`. The
+            // endpoint-less forms read the DEFAULT endpoint's ownership
+            // record, so stopping a custom endpoint could retire a live
+            // default daemon or delete its lock file.
+            let Some(pid) = crate::ipc::check_running_daemon_for(endpoint) else {
+                if let Some(stale) = crate::ipc::read_lock_file_pid_for(endpoint) {
                     eprintln!(
                         "daemon not running at {endpoint}; lock file named process {stale}, \
                          which is not a live zccache daemon — leaving it alone and clearing \
                          the stale lock"
                     );
-                    crate::ipc::remove_lock_file();
+                    crate::ipc::remove_lock_file_for(endpoint);
                 } else {
                     eprintln!("daemon not running at {endpoint}");
                 }
@@ -185,7 +190,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
                 return ExitCode::SUCCESS;
             };
 
-            match crate::ipc::force_kill_verified_daemon(pid) {
+            match crate::ipc::force_kill_verified_daemon_for(endpoint, pid) {
                 Ok(Some(handle)) => {
                     for _ in 0..50 {
                         // Keep the native control handle that passed the full
@@ -194,7 +199,7 @@ pub(crate) async fn cmd_stop(endpoint: &str) -> ExitCode {
                         // reuse race destructive.
                         match handle.has_exited() {
                             Ok(true) => {
-                                crate::ipc::remove_lock_file();
+                                crate::ipc::remove_lock_file_for(endpoint);
                                 eprintln!(
                                     "daemon process {pid} terminated after IPC connection failed"
                                 );
