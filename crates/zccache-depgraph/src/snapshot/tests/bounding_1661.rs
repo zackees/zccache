@@ -40,6 +40,7 @@ fn ctx_snap(i: u8, last_accessed_unix_ms: u64) -> ContextEntrySnapshot {
         system: vec![format!("/sys{i}")],
         after: vec![format!("/after{i}")],
         defines: (0..20).map(|d| format!("DEFINE_{d}_{i}=value")).collect(),
+        undefines: vec![format!("UNDEFINE_{i}")],
         flags: vec!["-O2".into(), format!("-flag{i}")],
         force_includes: vec![format!("/force{i}.h")],
         unknown_flags: vec![format!("-unknown{i}")],
@@ -183,25 +184,28 @@ fn garbage_payload_is_err_not_panic() {
     }
 }
 
-/// A v7 (rkyv) snapshot is classified stale: one-time cold start.
+/// A pre-v9 snapshot is classified stale: one-time cold start. v9 added the
+/// per-context `undefines` list (#1899); v8 predates it, v7 was rkyv.
 #[test]
-fn v7_rkyv_header_is_version_mismatch() {
-    assert_eq!(DEPGRAPH_VERSION, 8);
+fn pre_v9_header_is_version_mismatch() {
+    assert_eq!(DEPGRAPH_VERSION, 9);
     let dir = TempDir::new().unwrap();
     let path = test_path(&dir);
-    let mut data = Vec::new();
-    data.extend_from_slice(&DEPGRAPH_MAGIC);
-    data.extend_from_slice(&7u32.to_le_bytes());
-    data.extend_from_slice(&64u64.to_le_bytes());
-    data.extend_from_slice(&[0u8; 64]);
-    std::fs::write(&path, &data).unwrap();
+    for stale in [7u32, 8u32] {
+        let mut data = Vec::new();
+        data.extend_from_slice(&DEPGRAPH_MAGIC);
+        data.extend_from_slice(&stale.to_le_bytes());
+        data.extend_from_slice(&64u64.to_le_bytes());
+        data.extend_from_slice(&[0u8; 64]);
+        std::fs::write(&path, &data).unwrap();
 
-    match classify_load(&path) {
-        DepGraphLoadOutcome::VersionMismatch {
-            file_version: 7,
-            expected_version: 8,
-        } => {}
-        other => panic!("expected VersionMismatch v7, got {other:?}"),
+        match classify_load(&path) {
+            DepGraphLoadOutcome::VersionMismatch {
+                file_version,
+                expected_version: 9,
+            } => assert_eq!(file_version, stale),
+            other => panic!("expected VersionMismatch v{stale}, got {other:?}"),
+        }
     }
 }
 

@@ -522,7 +522,7 @@ checkpoint the whole index into `index.bin`.
 |---|---|---|
 | `index.bin` | Index-writer checkpoints, embedded flush/shutdown, best-effort drop checkpoint | Unversioned bincode rows; temp file, file fsync, rename, best-effort parent fsync. The writer serializes its own flushes. |
 | `artifacts/` | Compile publication and disk maintenance | Payload files or staged/packed artifact layouts; publication precedes index insertion. Individual artifacts have their own commit protocol, not a cross-snapshot transaction. |
-| `depgraph/depgraph.bin` | Periodic depgraph save, embedded flush/shutdown, best-effort drop checkpoint | `ZCDG` header, version 8; temp file and file fsync. The saver currently removes the old destination before rename, leaving a small interruption window in which the file can be absent. Depgraph load/save operations share a persistence lock. |
+| `depgraph/depgraph.bin` | Periodic depgraph save, embedded flush/shutdown, best-effort drop checkpoint | `ZCDG` header, version 9; temp file and file fsync. The saver currently removes the old destination before rename, leaving a small interruption window in which the file can be absent. Depgraph load/save operations share a persistence lock. |
 | `metadata.bin` | Periodic metadata snapshot, embedded flush/shutdown, best-effort drop checkpoint | Version 1 bincode; unique temp name per write, file fsync, rename, best-effort parent fsync. Empty snapshots do not overwrite the old file. |
 | `compiler_hash.bin` | Embedded flush/shutdown | Version 2 bincode; temp file, file fsync, rename, best-effort parent fsync. |
 | `system_includes.bin` | Embedded flush/shutdown | Version 1 bincode; temp file, file fsync, rename, best-effort parent fsync. |

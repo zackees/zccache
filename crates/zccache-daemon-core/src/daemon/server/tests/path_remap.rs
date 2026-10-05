@@ -372,6 +372,7 @@ mod context_key_salt {
             source_file: NormalizedPath::from("src/main.cpp"),
             include_search: IncludeSearchPaths::default(),
             defines: Vec::new(),
+            undefines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),

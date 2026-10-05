@@ -76,6 +76,7 @@ impl DepGraph {
             system = ?ctx.include_search.system,
             user = ?ctx.include_search.user,
             defines = ?ctx.defines,
+            undefines = ?ctx.undefines,
             flags = ?ctx.flags,
             unknown_flags = ?ctx.unknown_flags,
             force_includes = ?ctx.force_includes,

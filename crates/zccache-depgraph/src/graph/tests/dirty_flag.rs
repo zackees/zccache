@@ -18,6 +18,7 @@ fn context(source: &str) -> CompileContext {
         source_file: NormalizedPath::from(source),
         include_search: IncludeSearchPaths::default(),
         defines: Vec::new(),
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),

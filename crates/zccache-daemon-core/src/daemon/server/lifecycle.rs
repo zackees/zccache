@@ -573,6 +573,7 @@ mod tests {
             source_file: source.into(),
             include_search: crate::depgraph::IncludeSearchPaths::default(),
             defines: Vec::new(),
+            undefines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
