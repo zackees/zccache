@@ -665,20 +665,40 @@ pub(in crate::daemon::server) struct OverflowSweep {
 /// re-hash. Correctness is unchanged — the expensive check is skipped only
 /// where there is positive evidence the bytes were not touched.
 pub(in crate::daemon::server) fn mark_changed_registered_links_suspect() -> OverflowSweep {
+    // Snapshot the non-suspect records under a short read guard, stat every
+    // blob with NO guard alive, then apply the verdicts under per-key write
+    // guards — the same lock discipline as `fingerprint/verify.rs` (#1908,
+    // the #724 class). `registry().iter_mut()` previously held write guards
+    // on every shard across one `stat()` per record.
     let mut sweep = OverflowSweep::default();
-    for mut record in registry().iter_mut() {
+    let mut snapshot: Vec<(FileIdentity, NormalizedPath, Option<StatSignature>)> = Vec::new();
+    for record in registry().iter() {
         if record.suspect {
             sweep.suspect += 1;
             continue;
         }
-        let unchanged = record
-            .stat_signature
-            .is_some_and(|recorded| stat_signature(record.blob_path.as_path()) == Some(recorded));
+        snapshot.push((
+            *record.key(),
+            record.blob_path.clone(),
+            record.stat_signature,
+        ));
+    }
+
+    for (id, blob_path, recorded) in snapshot {
+        let unchanged =
+            recorded.is_some_and(|recorded| stat_signature(blob_path.as_path()) == Some(recorded));
         if unchanged {
             sweep.unchanged += 1;
-        } else {
-            record.suspect = true;
-            sweep.suspect += 1;
+            continue;
+        }
+        sweep.suspect += 1;
+        if let Some(mut record) = registry().get_mut(&id) {
+            // A concurrent registration may have replaced this record while
+            // the stat ran; only a record still at the snapshot signature
+            // gets our verdict, mirroring the old under-lock comparison.
+            if !record.suspect && record.stat_signature == recorded {
+                record.suspect = true;
+            }
         }
     }
     sweep
