@@ -16,6 +16,8 @@ pub enum GhaError {
     Io(#[from] std::io::Error),
     #[error("Cache not found for key: {0}")]
     NotFound(String),
+    #[error("invalid cache URL: {0}")]
+    InvalidUrl(String),
 }
 
 /// Client for the GitHub Actions Cache API.
@@ -90,6 +92,21 @@ impl GhaCache {
 
     fn auth_header(&self) -> String {
         format!("Bearer {}", self.token)
+    }
+
+    /// Build the cache-restore URL, percent-encoding `key` and `version`.
+    ///
+    /// The values come from the caller (argv on the CLI path) and may contain
+    /// `#`, `&`, spaces, or any other reserved character, so they are encoded
+    /// as query parameters rather than interpolated into the query string.
+    fn restore_url(&self, key: &str, version: &str) -> Result<String, GhaError> {
+        let base = format!("{}/_apis/artifactcache/cache", self.base_url);
+        let mut url =
+            reqwest::Url::parse(&base).map_err(|e| GhaError::InvalidUrl(e.to_string()))?;
+        url.query_pairs_mut()
+            .append_pair("keys", key)
+            .append_pair("version", version);
+        Ok(url.to_string())
     }
 
     /// Compute a deterministic version hash from a set of path strings.
@@ -185,7 +202,7 @@ impl GhaCache {
 
     /// Restore a blob from the GHA cache. Returns `None` if no entry was found.
     pub async fn restore(&self, key: &str, version: &str) -> Result<Option<Vec<u8>>, GhaError> {
-        let url = self.api_url(&format!("cache?keys={key}&version={version}"));
+        let url = self.restore_url(key, version)?;
         let resp = self
             .client
             .get(&url)
@@ -313,5 +330,99 @@ mod tests {
         // Verify trailing slash is stripped.
         assert_eq!(cache.base_url, "https://example.com/cache");
         assert_eq!(cache.token, "test-token");
+    }
+
+    /// Build a `GhaCache` from `base`, returning the `EnvGuard` alongside it.
+    ///
+    /// The guard is returned rather than dropped here so the caller keeps
+    /// `env_lock()` held for the whole test body; dropping it at the end of
+    /// this helper would let a later env mutation in the same test race with
+    /// the other env-var tests in this module.
+    fn cache_with_base(base: &str) -> (GhaCache, EnvGuard) {
+        let guard = EnvGuard::new();
+        std::env::set_var("ACTIONS_CACHE_URL", base);
+        std::env::set_var("ACTIONS_RUNTIME_TOKEN", "test-token");
+        let cache = GhaCache::from_env().expect("both env vars are set");
+        (cache, guard)
+    }
+
+    fn query_pairs(url: &str) -> Vec<(String, String)> {
+        reqwest::Url::parse(url)
+            .expect("restore URL must parse")
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn restore_url_percent_encodes_hash_in_key() {
+        let (cache, _guard) = cache_with_base("https://example.com/cache/");
+        let url = cache.restore_url("plan#1", "v1").expect("valid base url");
+        assert!(!url.contains('#'), "key must not leak a fragment: {url}");
+        assert_eq!(
+            query_pairs(&url),
+            vec![
+                ("keys".to_string(), "plan#1".to_string()),
+                ("version".to_string(), "v1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_url_percent_encodes_ampersand_in_key() {
+        let (cache, _guard) = cache_with_base("https://example.com/cache/");
+        let url = cache
+            .restore_url("a&version=evil", "v1")
+            .expect("valid base url");
+        assert_eq!(
+            query_pairs(&url),
+            vec![
+                ("keys".to_string(), "a&version=evil".to_string()),
+                ("version".to_string(), "v1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_url_percent_encodes_space_in_key() {
+        let (cache, _guard) = cache_with_base("https://example.com/cache/");
+        let url = cache.restore_url("a b", "v1").expect("valid base url");
+        assert_eq!(
+            query_pairs(&url),
+            vec![
+                ("keys".to_string(), "a b".to_string()),
+                ("version".to_string(), "v1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_url_keeps_path_and_both_query_params() {
+        let (cache, _guard) = cache_with_base("https://example.com/cache/");
+        let url = cache
+            .restore_url("linux-target/debug", "abc123")
+            .expect("valid base url");
+        let parsed = reqwest::Url::parse(&url).expect("restore URL must parse");
+        assert_eq!(parsed.path(), "/cache/_apis/artifactcache/cache");
+        assert_eq!(parsed.fragment(), None);
+        assert_eq!(
+            query_pairs(&url),
+            vec![
+                ("keys".to_string(), "linux-target/debug".to_string()),
+                ("version".to_string(), "abc123".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_url_rejects_invalid_base_url() {
+        let (cache, _guard) = cache_with_base("not a url");
+        let err = cache
+            .restore_url("k", "v")
+            .expect_err("invalid base url must fail");
+        assert!(
+            matches!(err, GhaError::InvalidUrl(_)),
+            "expected InvalidUrl, got: {err}"
+        );
     }
 }
