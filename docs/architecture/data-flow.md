@@ -178,7 +178,12 @@ its own:
 - **Cacheable crate types are `lib`, `rlib`, `staticlib`, `proc-macro`,
   `bin`.** `dylib`/`cdylib` are deliberately not cached (platform
   linker state is not modeled) — PyO3/maturin `cdylib` final artifacts
-  recompile every time while their rlib deps still hit.
+  recompile every time while their rlib deps still hit. A `bin`/`staticlib`
+  key additionally folds in the explicit `-C linker` identity (or `default`)
+  and every `-C link-arg(s)`, because the linker — not rustc — produces those
+  products' bytes (zccache#1900). That includes a bare invocation with no
+  `--crate-type` at all, which this same admission rule defaults to a cacheable
+  `bin`; `lib`/`rlib`/`proc-macro` keys still drop the linker inputs.
 - **`--test` harness links are refused at admission** (zccache#1525,
   soldr#2931), reason string `test harness link product not cacheable`.
   Cargo builds an integration test with `--test` and no `--crate-type`,
@@ -207,9 +212,11 @@ its own:
   `shared-only` requests are never served a harness an `all` request
   stored (the request-level fast path skips harness entries for them). An
   admitted harness is keyed like any rustc unit (argv incl. `--test`,
-  `--cfg`, `-C` options, target, extern rlib hashes, sources) **plus its
-  linker inputs**: the explicit `-C linker` identity (or `default`) and
-  every `-C link-arg(s)`, which the context key otherwise drops. Storage
+  `--cfg`, `-C` options, target, extern rlib hashes, sources) **plus the
+  linked-product linker inputs** every linked product shares — the Dylint
+  `cdylib`, this `--test` harness, `bin`, and `staticlib` — namely the
+  explicit `-C linker` identity (or `default`) and every `-C link-arg(s)`,
+  which the context key otherwise drops (zccache#1550, zccache#1900). Storage
   is bounded twice: a harness whose outputs exceed
   `MAX_ADMITTED_TEST_HARNESS_BYTES` (512 MiB) runs uncached, and every
   entry is subject to the store's byte budget and age expiry.

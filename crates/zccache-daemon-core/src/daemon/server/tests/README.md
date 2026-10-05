@@ -13,6 +13,9 @@ cache inode only for eligible outputs, and switching modes migrates outputs.
 `store_mode.rs` covers the store direction: COPY/REFLINK never hardlink the
 compiler output into the cache.
 `fingerprint_encoding.rs` checks the request encoder against literal legacy bytes.
+`rustc_link_key.rs` proves a rustc `bin`/`staticlib` context key — explicit or
+rustc's no-`--crate-type` default — varies with `-C linker=` / `-C link-arg(s)`
+while an rlib's does not (#1900).
 `env_precision_1806.rs` and `link_env_1806.rs` prove the env-keying contract with
 real rustc compiles and a fake linker (#1806): read env never shares an artifact,
 unread env always does, and the linker's env splits the link key.
