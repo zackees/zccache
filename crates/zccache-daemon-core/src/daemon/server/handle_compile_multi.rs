@@ -4,6 +4,8 @@ use super::*;
 
 #[path = "handle_compile_multi_args.rs"]
 mod args;
+#[path = "handle_compile_multi_context.rs"]
+mod context;
 #[path = "handle_compile_multi_preflight.rs"]
 mod preflight;
 #[path = "handle_compile_multi_staged.rs"]
@@ -12,6 +14,7 @@ mod staged;
 mod types;
 
 use args::filter_multi_source_args;
+pub(super) use context::build_multi_base_context;
 pub(in crate::daemon::server) use preflight::detach_direct_batch_outputs;
 use preflight::InputSnapshot;
 pub(super) use types::materialize_multi_hit;
@@ -502,14 +505,6 @@ pub(super) async fn handle_compile_multi(
     // redundant arg parsing for each of the N compilation units.
     let (shared_base, shared_dep_flags): (Arc<CompileContext>, UserDepFlags) = {
         let first = &compilations[0];
-        let parsed = if first.family == crate::compiler::CompilerFamily::Msvc
-            || crate::compiler::parse_msvc::looks_like_msvc_args(&first.original_args)
-        {
-            crate::depgraph::msvc_args::parse_msvc_args(&first.original_args, &cwd_path)
-        } else {
-            crate::depgraph::args::parse_gnu_args(&first.original_args, &cwd_path)
-        };
-        let dep_flags = parsed.dep_flags.clone();
         // Issue #1166: compiler identity must vary the shared base
         // context's key too, mirroring the non-shared per-unit path's
         // `build_compile_context` call above.
@@ -517,14 +512,15 @@ pub(super) async fn handle_compile_multi(
             .compiler_hash_cache
             .get_or_hash_with(&first.compiler, hash_cc_identity)
             .unwrap_or(COMPILER_HASH_UNAVAILABLE);
-        let mut base = CompileContext::from_parsed_args(parsed, compiler_hash);
-        for path in &system_includes {
-            if !base.include_search.system.contains(path) {
-                base.include_search.system.push(path.clone());
-            }
-        }
-        dependency_mode.apply_to_cc_context(&mut base, &dep_flags);
-        (Arc::new(base), dep_flags)
+        build_multi_base_context(
+            first.family,
+            &first.original_args,
+            &cwd_path,
+            compiler_hash,
+            &system_includes,
+            client_env.as_deref().unwrap_or_default(),
+            dependency_mode,
+        )
     };
 
     // C/C++ only: AUTO keeps the full chain for non-rustc outputs (#1792).
