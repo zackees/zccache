@@ -112,11 +112,11 @@ zccache-test-support (dev-only test utilities)
 
 ## Key Design Patterns
 
-**Correctness model (layered invalidation):** Watcher events set confidence to Medium, never High. `lookup_since()` has a fast path (one stat, zero hash) that checks `(mtime, size)` against the cached entry even when the journal says "no changes"; `metadata.lookup()` is the full stat-verify + hash fallback. Content hashing is ground truth. A wrong cache hit is catastrophic; an extra stat is cheap.
+**Correctness model (layered invalidation):** Watcher events set confidence to Medium, never High. `lookup_since()` has a fast path (one stat, zero hash) that checks `(mtime, size)` against the cached entry even when the journal says "no changes"; `metadata.lookup()` is the full stat-verify + hash fallback. The daemon fingerprint manager's `verify_filesystem` safety net sits alongside them and compares `(mtime, size, file_id, inode_change_ns)` before it falls through to the content hash; `inode_change_ns` (Unix `ctime`) is the signal that catches an in-place edit whose mtime was restored (#1897). Where the platform exposes no `ctime` (Windows), `inode_change_ns` is `0` and a same-inode edit that restores mtime and size is caught only if the watcher delivers its event. Content hashing is ground truth. A wrong cache hit is catastrophic; an extra stat is cheap.
 
 **IPC:** Unix domain sockets on Linux/macOS, named pipes on Windows, behind a transport trait. Messages are length-prefixed prost. Daemon is lazily started by CLI if not running.
 
-**File identity:** Tracked as (path, file_id) where file_id = inode on Unix, nFileIndex on Windows. Catches file replacement even when mtime is unchanged.
+**File identity:** Tracked as (path, file_id) where file_id = inode on Unix, nFileIndex on Windows. Catches file replacement even when mtime is unchanged. The daemon fingerprint tracker records the same identity next to `(mtime, size, ctime)` per tracked file; the comparison lives in `crates/zccache-daemon-core/src/daemon/fingerprint/verify.rs`.
 
 **Cache keys:** blake3 hash of: compiler identity + sorted args + sorted env vars + source content hash + dependency hashes. Domain separation tag "zccache-cache-key-v1".
 

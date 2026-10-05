@@ -140,6 +140,30 @@ pub(crate) mod fs {
             allocated_bytes, file_id_width, volume_identity_u128,
         };
     }
+
+    /// Nanosecond inode-change time for an already-stat'd file, or `0` when the
+    /// platform exposes none.
+    ///
+    /// Unix `ctime` advances on every content or metadata write and cannot be put
+    /// back by `utimensat`/`File::set_times`, so it is the only stat-level signal
+    /// that catches an in-place edit whose mtime was restored. Windows has no
+    /// equivalent in the stable `std::fs::Metadata` surface, so it reports `0` and
+    /// callers fall back to file identity alone. This reads std `MetadataExt`, not a
+    /// native API, so it needs no kernal-api delegation (precedent:
+    /// `crates/zccache/src/dev_daemon_identity.rs`).
+    pub(crate) fn inode_change_ns(metadata: &std::fs::Metadata) -> u64 {
+        #[cfg(unix)]
+        let change_ns = {
+            use std::os::unix::fs::MetadataExt;
+            metadata.ctime() as u64 * 1_000_000_000 + metadata.ctime_nsec() as u64
+        };
+        #[cfg(not(unix))]
+        let change_ns = {
+            let _ = metadata;
+            0
+        };
+        change_ns
+    }
 }
 
 pub(crate) mod host {
