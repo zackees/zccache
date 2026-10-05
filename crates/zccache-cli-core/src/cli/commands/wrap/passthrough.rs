@@ -26,9 +26,23 @@ pub(super) fn release_cwd_for_command(cmd: &mut std::process::Command, child_cwd
     let _ = std::env::set_current_dir(std::env::temp_dir());
 }
 
-fn run_with_released_cwd(cmd: &mut std::process::Command) -> std::io::Result<i32> {
-    if let Ok(cwd) = std::env::current_dir() {
-        release_cwd_for_command(cmd, &cwd);
+/// Spawn `cmd` with the caller's original working directory as the child's
+/// CWD, then release the wrapper's own CWD handle.
+///
+/// `child_cwd` is passed in rather than read from
+/// `std::env::current_dir()` because by the time this runs the wrapper may
+/// already have chdir'd to the temp directory (issue #1909, the
+/// `WrapperRoute::ProbeBypass` route in `wrap.rs`). Reading the process cwd
+/// here spawned the compiler in `/tmp`, so relative `-I`/`-o` paths in the
+/// probe's argv resolved against the temp dir instead of the build tree.
+fn run_with_released_cwd(cmd: &mut std::process::Command, child_cwd: &Path) -> std::io::Result<i32> {
+    // An empty `child_cwd` is what `wrap.rs`'s
+    // `std::env::current_dir().unwrap_or_default()` yields when the cwd could
+    // not be read. Falling back to not setting `current_dir` keeps the
+    // previous behaviour (inherit the wrapper's cwd) rather than spawning in
+    // `""`.
+    if !child_cwd.as_os_str().is_empty() {
+        release_cwd_for_command(cmd, child_cwd);
     }
     // Wrapper passthrough is foreground execution: preserve Cargo jobserver
     // descriptors and the caller's process group, with no daemon containment
@@ -46,7 +60,11 @@ fn run_with_released_cwd(cmd: &mut std::process::Command) -> std::io::Result<i32
 /// #1211). `None` for the probe bypass (`ZCCACHE_PROBE_BYPASS`), which is
 /// machine-invoked: probe callers parse the tool's stderr (`clang -###`
 /// writes there), so injecting a warning line would corrupt the probe.
-pub(super) fn run_passthrough(args: &[String], reason: Option<&str>) -> ExitCode {
+///
+/// `child_cwd` is the caller's original working directory, threaded in rather
+/// than read from the process so the child is spawned in the build tree even
+/// after the wrapper has chdir'd to the temp dir (issue #1909).
+pub(super) fn run_passthrough(args: &[String], reason: Option<&str>, child_cwd: &Path) -> ExitCode {
     let tool = &args[0];
     let tool_args = args.get(1..).unwrap_or(&[]);
     let resolved = resolve_compiler_path(tool);
@@ -71,7 +89,7 @@ pub(super) fn run_passthrough(args: &[String], reason: Option<&str>) -> ExitCode
 
     let mut cmd = std::process::Command::new(&resolved);
     cmd.args(tool_args);
-    match run_with_released_cwd(&mut cmd) {
+    match run_with_released_cwd(&mut cmd, child_cwd) {
         Ok(code) => exit_code_from_i32(code),
         Err(e) => {
             eprintln!("zccache: failed to run {}: {e}", resolved.display());
@@ -119,7 +137,7 @@ mod tests {
 
         let mut args = vec![noop_tool().to_string_lossy().into_owned()];
         args.extend(noop_args());
-        let _ = run_passthrough(&args, None);
+        let _ = run_passthrough(&args, None, &canonical_build_dir);
 
         let after = std::env::current_dir().unwrap();
         // `tempfile`'s tempdir under `%TEMP%` would itself canonicalize
@@ -137,6 +155,56 @@ mod tests {
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);
         }
+    }
+
+    /// Issue #1909: the child's CWD must be the caller-supplied directory,
+    /// not the wrapper's own (by this point the temp) cwd. Spawning a shell
+    /// that reports its cwd into a relative file proves where the child
+    /// actually ran.
+    #[test]
+    fn run_passthrough_spawns_the_child_in_the_supplied_cwd() {
+        let _guard = CWD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_cwd = std::env::current_dir().ok();
+        let build_dir = tempfile::tempdir().unwrap();
+        let canonical_build_dir = std::fs::canonicalize(build_dir.path()).unwrap();
+
+        let (tool, tool_args): (std::path::PathBuf, Vec<String>) =
+            if crate::platform::host::is_windows() {
+                (
+                    std::path::PathBuf::from("cmd.exe"),
+                    vec!["/c".to_string(), "cd > zccache-cwd-probe.txt".to_string()],
+                )
+            } else {
+                (
+                    std::path::PathBuf::from("/bin/sh"),
+                    vec!["-c".to_string(), "pwd > zccache-cwd-probe.txt".to_string()],
+                )
+            };
+
+        let mut args = vec![tool.to_string_lossy().into_owned()];
+        args.extend(tool_args);
+        let code = run_passthrough(&args, None, &canonical_build_dir);
+
+        if let Some(cwd) = original_cwd {
+            let _ = std::env::set_current_dir(cwd);
+        }
+
+        assert_eq!(code, ExitCode::SUCCESS, "the shim must exit 0");
+        let reported = std::fs::read_to_string(canonical_build_dir.join("zccache-cwd-probe.txt"))
+            .expect("issue #1909: the child's cwd report must land in the caller-supplied \
+                    directory, proving the compiler ran there rather than in the temp dir");
+        let reported = reported.trim();
+        let expected = std::fs::canonicalize(&canonical_build_dir)
+            .unwrap_or_else(|_| canonical_build_dir.clone())
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            std::fs::canonicalize(reported)
+                .unwrap_or_else(|_| std::path::PathBuf::from(reported)),
+            std::fs::canonicalize(&canonical_build_dir)
+                .unwrap_or_else(|_| canonical_build_dir.clone()),
+            "issue #1909: the child must run in {expected}, reported {reported}",
+        );
     }
 
     /// `run_tool_direct` (used by the rustfmt help/version/stdin early

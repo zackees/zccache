@@ -21,6 +21,7 @@ mod cli_kv;
 mod cli_materialization_mode;
 mod cli_meson_configure_cache;
 mod cli_no_spawn_guard;
+mod cli_probe_bypass_cwd;
 mod cli_rust_plan_lifecycle;
 mod cli_session_end;
 mod cli_single_daemon_per_session;

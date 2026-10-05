@@ -23,7 +23,15 @@ pub(super) enum WrapperRoute {
     ProbeBypass,
 }
 
-pub(super) fn classify_invocation(tool: &str, tool_args: &[String]) -> WrapperRoute {
+/// `cwd` is the caller's working directory captured *before* the wrapper
+/// chdir's into the system temp dir (issue #1909), so a relative source
+/// argument can still be resolved against the directory the build system
+/// actually invoked the compiler from.
+pub(super) fn classify_invocation(
+    tool: &str,
+    tool_args: &[String],
+    cwd: &std::path::Path,
+) -> WrapperRoute {
     if crate::compiler::detect_family(tool).is_formatter() {
         return WrapperRoute::Formatter;
     }
@@ -34,7 +42,7 @@ pub(super) fn classify_invocation(tool: &str, tool_args: &[String]) -> WrapperRo
         return WrapperRoute::LinkOrArchive;
     }
 
-    if probe_bypass_enabled() && is_probe_shape(tool_args) {
+    if probe_bypass_enabled() && is_probe_shape(tool_args, cwd) {
         return WrapperRoute::ProbeBypass;
     }
 
@@ -57,7 +65,10 @@ fn probe_bypass_enabled() -> bool {
 /// 1. `-c` is present (compile-only — not a driver link).
 /// 2. `-o <output>` is present (single output target).
 /// 3. Exactly one positional argument is a recognised C / C++ / ObjC
-///    source extension and the file exists on disk.
+///    source extension and the file exists on disk. A relative source
+///    is resolved against the caller-supplied `cwd` (not the process
+///    cwd — the wrapper has already chdir'd to the temp dir by the
+///    time this runs, issue #1909); an absolute source is used as-is.
 /// 4. No response file (`@rsp`) — production builds use rsps to bypass
 ///    Windows command-length limits; probes don't.
 /// 5. No precompiled-header consumer (`-include-pch` / `-Xclang
@@ -74,7 +85,7 @@ fn probe_bypass_enabled() -> bool {
 /// alternative — walking every arg twice and inspecting source content —
 /// is more expensive, and the stat is amortised over the IPC roundtrip
 /// it lets us skip (~5–10 ms saved vs ~10–50 µs spent).
-fn is_probe_shape(tool_args: &[String]) -> bool {
+fn is_probe_shape(tool_args: &[String], cwd: &std::path::Path) -> bool {
     let mut has_compile_only = false;
     let mut has_output = false;
     let mut sources: Vec<&str> = Vec::with_capacity(1);
@@ -132,9 +143,16 @@ fn is_probe_shape(tool_args: &[String]) -> bool {
     }
 
     // Stat the source file. Cheap on local disk; absent or too-large
-    // sources fall back to the cache path.
+    // sources fall back to the cache path. A relative arg is resolved
+    // against the caller-supplied `cwd` rather than the process cwd,
+    // which the wrapper has already moved to the temp dir (#1909).
     let source_path = std::path::Path::new(sources[0]);
-    let size = match std::fs::metadata(source_path) {
+    let resolved = if source_path.is_absolute() {
+        source_path.to_path_buf()
+    } else {
+        cwd.join(source_path)
+    };
+    let size = match std::fs::metadata(resolved) {
         Ok(metadata) if metadata.is_file() => metadata.len(),
         _ => return false,
     };
@@ -199,7 +217,7 @@ mod tests {
     #[test]
     fn routes_rustfmt_to_formatter() {
         assert_eq!(
-            classify_invocation("rustfmt", &args(&["src/lib.rs"])),
+            classify_invocation("rustfmt", &args(&["src/lib.rs"]), std::path::Path::new(".")),
             WrapperRoute::Formatter
         );
     }
@@ -207,7 +225,11 @@ mod tests {
     #[test]
     fn routes_archiver_to_link_or_archive() {
         assert_eq!(
-            classify_invocation("ar", &args(&["rcs", "libfoo.a", "foo.o"])),
+            classify_invocation(
+                "ar",
+                &args(&["rcs", "libfoo.a", "foo.o"]),
+                std::path::Path::new(".")
+            ),
             WrapperRoute::LinkOrArchive
         );
     }
@@ -215,7 +237,11 @@ mod tests {
     #[test]
     fn routes_shared_linker_invocation_to_link_or_archive() {
         assert_eq!(
-            classify_invocation("gcc", &args(&["-shared", "foo.o", "-o", "libfoo.so"])),
+            classify_invocation(
+                "gcc",
+                &args(&["-shared", "foo.o", "-o", "libfoo.so"]),
+                std::path::Path::new(".")
+            ),
             WrapperRoute::LinkOrArchive
         );
     }
@@ -223,7 +249,11 @@ mod tests {
     #[test]
     fn routes_regular_compiler_invocation_to_compile() {
         assert_eq!(
-            classify_invocation("rustc", &args(&["--crate-name", "demo", "src/lib.rs"])),
+            classify_invocation(
+                "rustc",
+                &args(&["--crate-name", "demo", "src/lib.rs"]),
+                std::path::Path::new(".")
+            ),
             WrapperRoute::Compile
         );
     }
@@ -239,7 +269,11 @@ mod tests {
             std::fs::write(&probe, b"int main(void) { return 0; }").unwrap();
             let probe_str = probe.to_string_lossy().into_owned();
             assert_eq!(
-                classify_invocation("clang", &args(&["-c", probe_str.as_str(), "-o", "p.o"]),),
+                classify_invocation(
+                    "clang",
+                    &args(&["-c", probe_str.as_str(), "-o", "p.o"]),
+                    dir.path()
+                ),
                 WrapperRoute::Compile,
                 "default (no env var) must NOT bypass"
             );
@@ -254,7 +288,11 @@ mod tests {
             std::fs::write(&probe, b"int main(void) { return 0; }").unwrap();
             let probe_str = probe.to_string_lossy().into_owned();
             assert_eq!(
-                classify_invocation("clang", &args(&["-c", probe_str.as_str(), "-o", "probe.o"]),),
+                classify_invocation(
+                    "clang",
+                    &args(&["-c", probe_str.as_str(), "-o", "probe.o"]),
+                    dir.path()
+                ),
                 WrapperRoute::ProbeBypass,
             );
         });
@@ -269,7 +307,11 @@ mod tests {
             std::fs::write(&probe, vec![b'x'; (PROBE_SOURCE_MAX_BYTES + 1) as usize]).unwrap();
             let probe_str = probe.to_string_lossy().into_owned();
             assert_eq!(
-                classify_invocation("clang", &args(&["-c", probe_str.as_str(), "-o", "big.o"]),),
+                classify_invocation(
+                    "clang",
+                    &args(&["-c", probe_str.as_str(), "-o", "big.o"]),
+                    dir.path()
+                ),
                 WrapperRoute::Compile,
             );
         });
@@ -289,6 +331,7 @@ mod tests {
                 classify_invocation(
                     "clang",
                     &args(&["-c", &rsp_arg, probe_str.as_str(), "-o", "p.o"]),
+                    dir.path(),
                 ),
                 WrapperRoute::Compile,
             );
@@ -313,6 +356,7 @@ mod tests {
                         "-o",
                         "p.o",
                     ]),
+                    dir.path(),
                 ),
                 WrapperRoute::Compile,
             );
@@ -329,6 +373,7 @@ mod tests {
                         "-o",
                         "p.o",
                     ]),
+                    dir.path(),
                 ),
                 WrapperRoute::Compile,
             );
@@ -353,6 +398,7 @@ mod tests {
                         "-o",
                         "out.o",
                     ]),
+                    dir.path(),
                 ),
                 WrapperRoute::Compile,
             );
@@ -368,7 +414,11 @@ mod tests {
             let probe_str = probe.to_string_lossy().into_owned();
             // No `-c` → this is a link invocation, not a probe.
             assert_eq!(
-                classify_invocation("clang", &args(&[probe_str.as_str(), "-o", "p.exe"]),),
+                classify_invocation(
+                    "clang",
+                    &args(&[probe_str.as_str(), "-o", "p.exe"]),
+                    dir.path()
+                ),
                 WrapperRoute::LinkOrArchive,
             );
         });
@@ -389,7 +439,11 @@ mod tests {
             let abs_probe = std::fs::canonicalize(&probe).unwrap();
             let abs_str = abs_probe.to_string_lossy().into_owned();
             assert_eq!(
-                classify_invocation("clang", &args(&["-c", abs_str.as_str(), "-o", "probe.o"]),),
+                classify_invocation(
+                    "clang",
+                    &args(&["-c", abs_str.as_str(), "-o", "probe.o"]),
+                    dir.path()
+                ),
                 WrapperRoute::ProbeBypass,
                 "absolute source paths (Unix /tmp/... or Windows C:\\...) must be \
                  recognised as positional source args, not skipped as MSVC-style flags"
@@ -406,8 +460,29 @@ mod tests {
                 classify_invocation(
                     "clang",
                     &args(&["-c", "/no/such/path/probe.c", "-o", "p.o"]),
+                    std::path::Path::new("."),
                 ),
                 WrapperRoute::Compile,
+            );
+        });
+    }
+
+    #[test]
+    fn probe_bypass_matches_relative_source_resolved_against_supplied_cwd() {
+        with_bypass_enabled(|| {
+            // #1909: the wrapper chdir's to the temp dir before classifying,
+            // so a relative source must be resolved against the *captured*
+            // caller cwd, not the process cwd. This test deliberately never
+            // calls set_current_dir: if is_probe_shape falls back to the
+            // process cwd it stats `<repo>/probe.c`, which does not exist, and
+            // the assertion below fails.
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("probe.c"), b"int main(void) { return 0; }").unwrap();
+            assert_eq!(
+                classify_invocation("clang", &args(&["-c", "probe.c", "-o", "probe.o"]), dir.path()),
+                WrapperRoute::ProbeBypass,
+                "issue #1909: a relative probe source must be resolved against the \
+                 caller-supplied cwd, not the wrapper's post-chdir process cwd",
             );
         });
     }
