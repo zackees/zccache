@@ -41,7 +41,8 @@ pub use rustc_keys::{
 #[cfg(test)]
 mod tests;
 
-/// blake3 hash identifying a (source + include_dirs + defines + flags) combination.
+/// blake3 hash identifying a (source + include_dirs + defines + undefines + flags)
+/// combination.
 /// Same context key = same set of resolved headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ContextKey(ContentHash);
@@ -100,6 +101,9 @@ pub struct CompileContext {
     pub include_search: IncludeSearchPaths,
     /// Sorted defines (-D flags).
     pub defines: Vec<String>,
+    /// Sorted undefines (-U flags). Kept separate from `defines` because
+    /// `-D FOO -U FOO` is NOT `-D FOO` (issue #1899).
+    pub undefines: Vec<String>,
     /// Sorted cache-relevant flags (-std, -O, -f, etc.).
     pub flags: Vec<String>,
     /// Force-included files (-include).
@@ -119,21 +123,43 @@ pub struct CompileContext {
 
 impl CompileContext {
     /// Build a `CompileContext` from parsed arguments (consumes the args to avoid cloning).
+    ///
+    /// Destructures `ParsedArgs` exhaustively so a newly added parser field is
+    /// a compile error here rather than a silent drop before the cache key
+    /// (issue #1899 was exactly that for `undefines`). `output_file` and
+    /// `dep_flags` are deliberately excluded: neither changes the produced
+    /// object, only where it and its depfile land.
     #[must_use]
     pub fn from_parsed_args(args: ParsedArgs, compiler_hash: ContentHash) -> Self {
-        let mut defines = args.defines;
+        let ParsedArgs {
+            source_file,
+            output_file: _,
+            include_search,
+            defines,
+            undefines,
+            flags,
+            force_includes,
+            compiler: _,
+            dep_flags: _,
+            unknown_flags,
+        } = args;
+
+        let mut defines = defines;
         defines.sort();
-        let mut flags = args.flags;
+        let mut undefines = undefines;
+        undefines.sort();
+        let mut flags = flags;
         flags.sort();
-        let mut unknown_flags = args.unknown_flags;
+        let mut unknown_flags = unknown_flags;
         unknown_flags.sort();
 
         Self {
-            source_file: args.source_file,
-            include_search: args.include_search,
+            source_file,
+            include_search,
             defines,
+            undefines,
             flags,
-            force_includes: args.force_includes,
+            force_includes,
             unknown_flags,
             compiler_hash,
         }
@@ -142,9 +168,9 @@ impl CompileContext {
     /// Compute the context key.
     ///
     /// Includes: source file path, include dirs (in order), sorted defines,
-    /// sorted flags, unknown flags, force includes. Passes `None` for both
-    /// `key_root` and `worktree_salt` — callers that need either should call
-    /// [`compute_context_key`] directly.
+    /// sorted undefines, sorted flags, unknown flags, force includes. Passes
+    /// `None` for both `key_root` and `worktree_salt` — callers that need
+    /// either should call [`compute_context_key`] directly.
     #[must_use]
     pub fn context_key(&self) -> ContextKey {
         compute_context_key(self, None, None)
@@ -353,6 +379,16 @@ where
     hasher.update(b"defines\0");
     for def in &ctx.defines {
         hasher.update(def.as_bytes());
+        hasher.update(b"\0");
+    }
+
+    // Sorted undefines, domain-separated from `defines`: `-D FOO -U FOO`
+    // is not `-D FOO` (issue #1899). Adding this section changes the key
+    // for every context, undefines or not — one deliberate global cache
+    // invalidation in exchange for correctness.
+    hasher.update(b"undefines\0");
+    for u in &ctx.undefines {
+        hasher.update(u.as_bytes());
         hasher.update(b"\0");
     }
 

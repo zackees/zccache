@@ -43,11 +43,13 @@ pub use persistence::{
 
 /// On-disk format version. Bump when snapshot layout changes.
 ///
+/// v9 (zccache#1899): each context gained a persisted `undefines` list so a
+/// reloaded context carries the same key inputs it was registered under.
 /// v8 (zccache#1661): payload switched from rkyv to bincode 1 and each
-/// context gained a persisted wall-clock `last_accessed_unix_ms`. A v7
-/// (rkyv) file is classified as a version mismatch, so the first start after
+/// context gained a persisted wall-clock `last_accessed_unix_ms`. An older
+/// file is classified as a version mismatch, so the first start after
 /// upgrade is a one-time cold depgraph.
-pub const DEPGRAPH_VERSION: u32 = 8;
+pub const DEPGRAPH_VERSION: u32 = 9;
 
 /// Magic bytes identifying a depgraph snapshot file ("ZCDG").
 pub const DEPGRAPH_MAGIC: [u8; 4] = [0x5A, 0x43, 0x44, 0x47];
@@ -93,6 +95,9 @@ pub struct ContextEntrySnapshot {
     pub system: Vec<String>,
     pub after: Vec<String>,
     pub defines: Vec<String>,
+    /// Sorted undefines. Persisted so a reloaded context carries the same
+    /// key inputs it was registered under (#1899).
+    pub undefines: Vec<String>,
     pub flags: Vec<String>,
     pub force_includes: Vec<String>,
     pub unknown_flags: Vec<String>,
@@ -237,6 +242,7 @@ impl DepGraph {
                     system: paths_to_strings(&ctx.context.include_search.system),
                     after: paths_to_strings(&ctx.context.include_search.after),
                     defines: ctx.context.defines.clone(),
+                    undefines: ctx.context.undefines.clone(),
                     flags: ctx.context.flags.clone(),
                     force_includes: paths_to_strings(&ctx.context.force_includes),
                     unknown_flags: ctx.context.unknown_flags.clone(),
@@ -332,6 +338,7 @@ impl DepGraph {
                     after: strings_to_paths(c.after),
                 },
                 defines: c.defines,
+                undefines: c.undefines,
                 flags: c.flags,
                 force_includes: strings_to_paths(c.force_includes),
                 unknown_flags: c.unknown_flags,

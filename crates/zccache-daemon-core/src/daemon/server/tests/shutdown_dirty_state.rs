@@ -132,6 +132,7 @@ async fn shutdown_persists_every_cache_when_dirty() {
             source_file: source.into(),
             include_search: crate::depgraph::IncludeSearchPaths::default(),
             defines: Vec::new(),
+            undefines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),

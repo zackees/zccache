@@ -24,6 +24,17 @@ pub(super) fn test_compiler_hash() -> ContentHash {
 /// Minimal C/C++ `CompileContext` with the given source, optional user-include
 /// dirs and defines. Defines are sorted to match `from_parsed_args` invariant.
 pub(super) fn make_context(source: &str, user_dirs: &[&str], defines: &[&str]) -> CompileContext {
+    make_context_with_undefines(source, user_dirs, defines, &[])
+}
+
+/// [`make_context`] plus sorted undefines (-U flags), so tests can vary the
+/// undefine domain independently of defines (issue #1899).
+pub(super) fn make_context_with_undefines(
+    source: &str,
+    user_dirs: &[&str],
+    defines: &[&str],
+    undefines: &[&str],
+) -> CompileContext {
     CompileContext {
         source_file: NormalizedPath::from(source),
         include_search: IncludeSearchPaths {
@@ -37,6 +48,11 @@ pub(super) fn make_context(source: &str, user_dirs: &[&str], defines: &[&str]) -
             let mut d: Vec<String> = defines.iter().map(|s| s.to_string()).collect();
             d.sort();
             d
+        },
+        undefines: {
+            let mut u: Vec<String> = undefines.iter().map(|s| s.to_string()).collect();
+            u.sort();
+            u
         },
         flags: Vec::new(),
         force_includes: Vec::new(),

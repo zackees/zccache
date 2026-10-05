@@ -7,11 +7,14 @@ read aside (instead of letting the next shutdown overwrite it) and loads
 back a sidecar written by this build's own `DEPGRAPH_VERSION`; `tests/`
 (cfg(test)-only) splits per concern — roundtrip, persistence, behavioral.
 
-Format (v8, zccache#1661): `ZCDG` magic + `DEPGRAPH_VERSION` + payload
+Format (v9, zccache#1899): `ZCDG` magic + `DEPGRAPH_VERSION` + payload
 length header, then a bincode 1 payload streamed with `serialize_into` /
 `deserialize_from`. rkyv was removed: its 32-bit relative pointers capped a
-snapshot at 2 GiB and overflowed with a panic. A v7 (rkyv) file is a version
-mismatch and costs one cold start.
+snapshot at 2 GiB and overflowed with a panic. v8 added the persisted
+wall-clock `last_accessed_unix_ms`; v9 added the persisted per-context
+`undefines` (`-U` / `/U`) so a reloaded context carries the key inputs it was
+registered under. A v7 (rkyv) or v8 file is a version mismatch and costs one
+cold start.
 
 Bounding:
 

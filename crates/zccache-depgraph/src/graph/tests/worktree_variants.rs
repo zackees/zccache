@@ -16,6 +16,7 @@ fn context(root: &str) -> CompileContext {
         source_file: NormalizedPath::from(format!("{root}/src/lib.rs").as_str()),
         include_search: IncludeSearchPaths::default(),
         defines: Vec::new(),
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),

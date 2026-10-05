@@ -78,6 +78,7 @@ fn populated_graph_roundtrip() {
             after: vec![NormalizedPath::from("/after")],
         },
         defines: vec!["DEBUG=1".into()],
+        undefines: Vec::new(),
         flags: vec!["-std=c++17".into()],
         force_includes: vec![NormalizedPath::from("/pch.h")],
         unknown_flags: vec!["--custom".into()],
@@ -130,6 +131,26 @@ fn populated_graph_roundtrip() {
     assert_eq!(loaded.get_state(&key), Some(ContextState::Warm));
     let resolved = loaded.get_includes(&key).unwrap();
     assert_eq!(resolved, vec![NormalizedPath::from("/include/header.h")]);
+}
+
+/// `#1899`: `undefines` is a cache-key input, so dropping it from the
+/// snapshot would make a reloaded context's in-memory `CompileContext`
+/// disagree with the `context_key` it is stored under.
+#[test]
+fn undefines_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let path = test_path(&dir);
+    let graph = DepGraph::new();
+
+    let mut ctx = make_ctx("/src/a.cpp");
+    ctx.undefines = vec!["BAR".into(), "FOO".into()];
+    graph.register(ctx);
+
+    save_to_file(&graph, &path).unwrap();
+    let loaded = load_from_file(&path).unwrap();
+
+    let snap = loaded.to_snapshot();
+    assert_eq!(snap.contexts[0].undefines, vec!["BAR", "FOO"]);
 }
 
 #[test]
@@ -467,6 +488,7 @@ fn empty_strings_roundtrip() {
             after: vec![NormalizedPath::from("")],
         },
         defines: vec![String::new()],
+        undefines: Vec::new(),
         flags: vec![String::new()],
         force_includes: vec![NormalizedPath::from("")],
         unknown_flags: vec![String::new()],

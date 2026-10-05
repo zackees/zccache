@@ -13,6 +13,7 @@ use super::super::{
     compute_context_key_with_native_cpu_salt, normalize_key_path, CompileContext,
 };
 use super::make_context;
+use super::make_context_with_undefines;
 
 #[test]
 fn context_key_deterministic() {
@@ -60,6 +61,7 @@ fn windows_context_key_normalizes_equivalent_path_spellings() {
             ..Default::default()
         },
         defines: Vec::new(),
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: vec![NormalizedPath::from(r"C:\work\pch\base.h")],
         unknown_flags: Vec::new(),
@@ -72,6 +74,7 @@ fn windows_context_key_normalizes_equivalent_path_spellings() {
             ..Default::default()
         },
         defines: Vec::new(),
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: vec![NormalizedPath::from("c:/work/pch/base.h")],
         unknown_flags: Vec::new(),
@@ -88,6 +91,7 @@ fn windows_artifact_key_normalizes_equivalent_path_spellings() {
         source_file: NormalizedPath::from(r"C:\work\src\main.cpp"),
         include_search: IncludeSearchPaths::default(),
         defines: Vec::new(),
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
@@ -288,6 +292,103 @@ fn artifact_key_ignores_workspace_root_when_key_root_is_stable() {
         compute_artifact_key(&key, &mut hashes_a, Some(Path::new("/workspace-a"))),
         compute_artifact_key(&key, &mut hashes_b, Some(Path::new("/workspace-b")))
     );
+}
+
+/// Issue #1899: `-U` / `/U` undefines were parsed but never reached
+/// `CompileContext`, so `-DVERSION=2 -UVERSION` collided with plain
+/// `-DVERSION=2` and served a wrong cache hit.
+#[test]
+fn context_key_includes_undefines() {
+    let with_foo = make_context_with_undefines("/src/a.c", &[], &[], &["FOO"]);
+    let without = make_context_with_undefines("/src/a.c", &[], &[], &[]);
+    assert_ne!(
+        with_foo.context_key(),
+        without.context_key(),
+        "an undefine must change the context key"
+    );
+
+    let with_bar = make_context_with_undefines("/src/a.c", &[], &[], &["BAR"]);
+    assert_ne!(
+        with_bar.context_key(),
+        with_foo.context_key(),
+        "different undefines must produce different context keys"
+    );
+}
+
+#[test]
+fn context_key_undefines_order_independent() {
+    let k1 = make_context_with_undefines("/src/a.c", &[], &[], &["FOO", "BAR"]).context_key();
+    let k2 = make_context_with_undefines("/src/a.c", &[], &[], &["BAR", "FOO"]).context_key();
+    assert_eq!(k1, k2, "undefine order should not affect context key");
+}
+
+/// End-to-end at the artifact layer: identical source/header content hashes
+/// with different undefines must not resolve to the same `ArtifactKey`.
+#[test]
+fn artifact_key_includes_undefines() {
+    let ctx_a = make_context_with_undefines("/src/a.c", &[], &[], &["FOO"]);
+    let ctx_b = make_context_with_undefines("/src/a.c", &[], &[], &[]);
+    let key_a = ctx_a.context_key();
+    let key_b = ctx_b.context_key();
+
+    let inputs: Vec<(NormalizedPath, zccache_hash::ContentHash)> = vec![
+        (
+            NormalizedPath::from("/src/a.c"),
+            zccache_hash::hash_bytes(b"source"),
+        ),
+        (
+            NormalizedPath::from("/inc/foo.h"),
+            zccache_hash::hash_bytes(b"header"),
+        ),
+    ];
+
+    let mut hashes_a = inputs.clone();
+    let mut hashes_b = inputs;
+    assert_ne!(
+        compute_artifact_key(&key_a, &mut hashes_a, None),
+        compute_artifact_key(&key_b, &mut hashes_b, None),
+        "undefines must reach the artifact key, not just the context key"
+    );
+}
+
+#[test]
+fn from_parsed_args_carries_undefines_gnu() {
+    for extra in [vec!["-UVERSION"], vec!["-U", "VERSION"]] {
+        let mut argv = vec![
+            "-c".to_string(),
+            "/src/a.c".to_string(),
+            "-DVERSION=2".to_string(),
+        ];
+        argv.extend(extra.iter().cloned());
+        let ctx = CompileContext::from_parsed_args(
+            parse_gnu_args(&argv, Path::new("/")),
+            super::test_compiler_hash(),
+        );
+        assert_eq!(
+            ctx.undefines,
+            vec!["VERSION"],
+            "the undefine must survive as its own entry"
+        );
+        assert_eq!(
+            ctx.defines,
+            vec!["VERSION=2"],
+            "an undefine must not be folded into defines"
+        );
+    }
+}
+
+#[test]
+fn from_parsed_args_carries_undefines_msvc() {
+    let argv: Vec<String> = ["/c", "a.c", "/DVERSION=2", "/UVERSION"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let ctx = CompileContext::from_parsed_args(
+        crate::msvc_args::parse_msvc_args(&argv, Path::new("/")),
+        super::test_compiler_hash(),
+    );
+    assert_eq!(ctx.undefines, vec!["VERSION"]);
+    assert_eq!(ctx.defines, vec!["VERSION=2"]);
 }
 
 #[test]

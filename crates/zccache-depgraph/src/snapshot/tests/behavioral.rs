@@ -46,6 +46,7 @@ fn loaded_graph_serves_cache_hits() {
             ..Default::default()
         },
         defines: vec!["NDEBUG".into()],
+        undefines: Vec::new(),
         flags: vec!["-O2".into(), "-std=c++17".into()],
         force_includes: vec![NormalizedPath::from("/pch.h")],
         unknown_flags: Vec::new(),
@@ -120,6 +121,9 @@ fn context_key_consistent_after_roundtrip() {
             after: vec![NormalizedPath::from("/after/dir")],
         },
         defines: vec!["FOO=1".into(), "BAR=2".into()],
+        // Non-empty so the roundtrip guard actually covers `undefines`:
+        // a snapshot that drops them recomputes a divergent key (#1899).
+        undefines: vec!["BAZ".into()],
         flags: vec!["-Wall".into()],
         force_includes: vec![NormalizedPath::from("/fi/pch.h")],
         unknown_flags: vec!["--custom".into()],
@@ -167,6 +171,7 @@ fn context_key_consistent_after_roundtrip() {
             after: strings_to_paths(snap.contexts[0].after.clone()),
         },
         defines: snap.contexts[0].defines.clone(),
+        undefines: snap.contexts[0].undefines.clone(),
         flags: snap.contexts[0].flags.clone(),
         force_includes: strings_to_paths(snap.contexts[0].force_includes.clone()),
         unknown_flags: snap.contexts[0].unknown_flags.clone(),
@@ -203,6 +208,7 @@ fn unicode_paths_roundtrip() {
             ..Default::default()
         },
         defines: vec![unicode_define.into()],
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
@@ -280,6 +286,7 @@ fn double_roundtrip_idempotent() {
                 ..Default::default()
             },
             defines: vec![format!("VAR{i}=1")],
+            undefines: Vec::new(),
             flags: vec!["-O2".into()],
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
@@ -355,6 +362,7 @@ fn overlapping_contexts_roundtrip() {
             ..Default::default()
         },
         defines: vec!["A=1".into()],
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
@@ -367,6 +375,7 @@ fn overlapping_contexts_roundtrip() {
             ..Default::default()
         },
         defines: vec!["B=1".into()],
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
@@ -558,6 +567,7 @@ fn large_graph_roundtrip() {
                 ..Default::default()
             },
             defines: (0..5).map(|d| format!("DEF{d}={i}")).collect(),
+            undefines: Vec::new(),
             flags: vec!["-O2".into(), format!("-std=c++{}", 14 + (i % 4) * 3)],
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),
@@ -613,6 +623,7 @@ fn register_after_load_finds_existing() {
             ..Default::default()
         },
         defines: vec!["X=1".into()],
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),

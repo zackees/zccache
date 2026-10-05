@@ -291,6 +291,7 @@ mod tests {
             source_file: NormalizedPath::from(source),
             include_search: search,
             defines: Vec::new(),
+            undefines: Vec::new(),
             flags: Vec::new(),
             force_includes: Vec::new(),
             unknown_flags: Vec::new(),

@@ -482,7 +482,7 @@ This is a deliberate design choice. Persisting the metadata cache would add comp
 
 ### Dep Graph Recovery
 
-The dep graph **is** persisted across daemon restarts (issue #262). At graceful shutdown, and again every 5 minutes while running, the daemon flushes the current `DepGraph` to `<cache_dir>/depgraph/depgraph.bin`. Since #1661 the snapshot is **bincode 1 via serde** (rkyv was removed from the workspace): a `ZCDG` magic plus `DEPGRAPH_VERSION` (currently 8) header, followed by a body streamed with `bincode::serialize_into` / `deserialize_from`, so neither save nor load materializes the whole snapshot as one buffer. The write goes to a sibling tmp file that is atomically renamed over `depgraph.bin`, so a crash mid-save leaves the previous snapshot intact. Snapshots written by an incompatible build are rejected rather than misread.
+The dep graph **is** persisted across daemon restarts (issue #262). At graceful shutdown, and again every 5 minutes while running, the daemon flushes the current `DepGraph` to `<cache_dir>/depgraph/depgraph.bin`. Since #1661 the snapshot is **bincode 1 via serde** (rkyv was removed from the workspace): a `ZCDG` magic plus `DEPGRAPH_VERSION` (currently 9) header, followed by a body streamed with `bincode::serialize_into` / `deserialize_from`, so neither save nor load materializes the whole snapshot as one buffer. The write goes to a sibling tmp file that is atomically renamed over `depgraph.bin`, so a crash mid-save leaves the previous snapshot intact. Snapshots written by an incompatible build are rejected rather than misread.
 
 Snapshot growth is bounded two ways (#1660, #1661):
 

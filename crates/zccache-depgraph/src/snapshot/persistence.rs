@@ -1,7 +1,7 @@
 //! File I/O for the dependency-graph snapshot: save, load, and structured
 //! classification of load outcomes for the daemon's startup path.
 //!
-//! ## Format (v8, zccache#1661)
+//! ## Format (v9, zccache#1899)
 //!
 //! `ZCDG` magic + `DEPGRAPH_VERSION` (LE u32) + payload length (LE u64),
 //! followed by a bincode 1 (fixint, little-endian) encoding of

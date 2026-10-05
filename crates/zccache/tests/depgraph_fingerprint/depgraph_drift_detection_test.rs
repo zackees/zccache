@@ -37,6 +37,7 @@ fn make_ctx(source: &str) -> CompileContext {
         source_file: NormalizedPath::from(source),
         include_search: Default::default(),
         defines: Vec::new(),
+        undefines: Vec::new(),
         flags: Vec::new(),
         force_includes: Vec::new(),
         unknown_flags: Vec::new(),
