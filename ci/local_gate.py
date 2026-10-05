@@ -56,7 +56,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # jobs in ci.yml and integration.yml check out the same SHA;
 # ci/tests/test_local_gate.py keeps them in step.
 CI_LINT_REF = "365508627edb8130e2c5615338b00bf02a069fa7"
-LANES = ("lint", "py-tests", "check", "docs", "tests")
+LANES = ("lint", "py-tests", "check", "docs", "dylint", "tests")
 PY = ("uv", "run", "--no-project", "--python", "3.13")
 # ci.yml's and integration.yml's workflow-level env: warnings are errors. It
 # also replaces .cargo/config.toml's build.rustflags, exactly as on CI.
@@ -196,6 +196,35 @@ def checks() -> list[Check]:
             bosn_job="msrv",
             selected_job="msrv",
             required_steps=("Check MSRV", "Verify nested Dylint cache contract"),
+        ),
+        # The Dylint job is the longest on a zccache PR (~9m of a ~9.2m
+        # critical path), and until it had a lane here an attested head could
+        # not skip it -- so every attested PR still paid it. Replay the real
+        # job rather than mirroring its steps, so the lane cannot drift.
+        Check(
+            "Dylint (isolated Bosn Actions)",
+            (
+                "bosn",
+                "ci",
+                "run",
+                "--workspace",
+                ".",
+                "--workflow",
+                ".github/workflows/ci.yml",
+                "--job",
+                "dylint",
+                "--trigger",
+                "pr",
+                "--wait",
+                "--json",
+            ),
+            "dylint",
+            exclusive=True,
+            min_version=(0, 1, 12),
+            bosn_workflow=".github/workflows/ci.yml",
+            bosn_job="dylint",
+            selected_job="dylint",
+            required_steps=("Run Dylint", "Prove custom-lint selection for every OS"),
         ),
         Check(
             "rustdoc",

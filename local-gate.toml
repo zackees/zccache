@@ -66,6 +66,12 @@ tools = ["bosn"]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "docs"]
 tools = ["soldr"]
 
+# The Dylint job, replayed in bosn: the longest job on a PR and, until this
+# lane existed, unskippable even for a fully attested head.
+[gate.lanes.dylint]
+run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "dylint"]
+tools = ["bosn"]
+
 # The test suite, in bosn: the Integration (Linux) job's test commands.
 [gate.lanes.tests]
 run = ["uv", "run", "--no-project", "--python", "3.13", "python", "ci/local_gate.py", "--lane", "tests"]
@@ -83,8 +89,8 @@ tools = ["bosn"]
 # release ignores attestations.
 [gate.trust]
 mode = "enforce"
-skip = ["ci.yml:fmt", "ci.yml:docs", "ci.yml:msrv", "integration.yml:integration"]
-covered-by = { "ci.yml:docs" = ["docs"], "ci.yml:msrv" = ["check", "tests"], "integration.yml:integration" = ["tests"] }
+skip = ["ci.yml:fmt", "ci.yml:docs", "ci.yml:msrv", "ci.yml:dylint", "integration.yml:integration"]
+covered-by = { "ci.yml:docs" = ["docs"], "ci.yml:msrv" = ["check", "tests"], "ci.yml:dylint" = ["dylint"], "integration.yml:integration" = ["tests"] }
 # What the isolated lane runs and how it is isolated, plus the scripts only
 # the skipped Integration job runs (its CI-only telemetry audit can only be
 # validated remotely).

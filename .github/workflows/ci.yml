@@ -65,6 +65,7 @@ jobs:
       skip_fmt: ${{ steps.gate.outputs.skip_fmt }}
       skip_docs: ${{ steps.gate.outputs.skip_docs }}
       skip_msrv: ${{ steps.gate.outputs.skip_msrv }}
+      skip_dylint: ${{ steps.gate.outputs.skip_dylint }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -128,6 +129,10 @@ jobs:
   dylint:
     name: Dylint
     needs: [cache-pre-prune, ci-mode]
+    # GATE-008/010: skipped only for an attested PR head whose `dylint` lane
+    # passed (see ci-mode). This is the longest job on a PR, so it is the one
+    # worth skipping most.
+    if: ${{ needs.ci-mode.outputs.skip_dylint != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
