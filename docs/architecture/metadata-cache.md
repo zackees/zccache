@@ -149,3 +149,9 @@ The watcher does not watch the entire filesystem. Watched directories:
 - **System include directories** (e.g., `/usr/include`): NOT watched. These change rarely and watching them would be expensive and noisy. Files in unwatched directories always start at `Low` confidence and are stat-verified on every lookup.
 
 Watch registrations are accumulated over the daemon's lifetime. Directories are never unwatched (the cost of maintaining a watch is negligible compared to the risk of missing an event).
+
+Registration tracks the same directory under two keys — its raw path in `watched_raw_dirs` and its canonical path in `watched_dirs` — and the two must agree:
+
+- **Raw paths are marked up front**, before any registration runs. They are the pre-filter that lets a directory already known to be watched skip a `canonicalize()` syscall (1-5 ms on Windows).
+- **A canonicalize failure stays marked, on purpose.** The path does not exist (or is otherwise unreachable); unmarking it would re-issue a failing syscall for a nonexistent path on every subsequent compile call — a canonicalize storm, not a retry.
+- **A registration failure is unmarked from both sets**, so the next call re-canonicalizes and retries. This is a correctness invariant, not tidiness: when `w.watch` errors (inotify `ENOSPC`, a permission error) or no watcher is armed at all, a directory left marked is silently unwatched forever. No events means no confidence downgrades, so `journal_proves_fresh` keeps returning true and `try_fast_hit` — which consults only the journal, never `get_cached_hash_if_stat_valid` — authorizes a cache hit with zero content hashing over a source tree that may have changed (#1906).

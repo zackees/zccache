@@ -16,6 +16,9 @@ compiler output into the cache.
 `rustc_link_key.rs` proves a rustc `bin`/`staticlib` context key — explicit or
 rustc's no-`--crate-type` default — varies with `-C linker=` / `-C link-arg(s)`
 while an rlib's does not (#1900).
+`watch_registration_rollback.rs` pins the watch-registration rollback contract (#1906):
+a failed registration clears both `watched_dirs` and `watched_raw_dirs` so the next
+call really re-watches, while a canonicalize failure deliberately stays marked.
 `env_precision_1806.rs` and `link_env_1806.rs` prove the env-keying contract with
 real rustc compiles and a fake linker (#1806): read env never shares an artifact,
 unread env always does, and the linker's env splits the link key.
