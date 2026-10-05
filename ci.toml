@@ -1,0 +1,178 @@
+# ci.toml — this repository's CI contract. Checked and planned by ci-lint
+# (zackees/ci.yml). Nothing here generates YAML: it bounds what the YAML may
+# do and decides what each run selects.
+#
+# First declaration for this repository (zackees/ci.yml#335). Every platform,
+# runner and cache family below was read off the existing workflows and the
+# live cache listing. Where the YAML and this file disagree, the YAML is right
+# and this file is the bug.
+#
+# `[local.gate]` is deliberately ABSENT: this repository declares its gate in
+# `local-gate.toml`, and declaring both is a GATE-001 violation.
+schema  = 3
+profile = "rust-pypi-app"
+linter  = "zackees/ci.yml@365508627edb8130e2c5615338b00bf02a069fa7"
+
+# ── Platforms ────────────────────────────────────────────────────────────────
+# Every target below appears in the workflows. The musl pair is real coverage
+# (setup-soldr-prepare-v3 musl cross entries are live), so it is declared
+# rather than folded into the gnu rows.
+[platforms]
+linux-x64     = { target = "x86_64-unknown-linux-gnu",  runs-on = "ubuntu-24.04",     group = "linux",   wheel = "manylinux_2_17" }
+linux-arm64   = { target = "aarch64-unknown-linux-gnu", runs-on = "ubuntu-24.04",     group = "linux",   wheel = "manylinux_2_17" }
+linux-musl-x64 = { target = "x86_64-unknown-linux-musl", runs-on = "ubuntu-24.04",    group = "linux" }
+linux-musl-arm64 = { target = "aarch64-unknown-linux-musl", runs-on = "ubuntu-24.04", group = "linux" }
+windows-x64   = { target = "x86_64-pc-windows-msvc",    runs-on = "windows-2025",     group = "windows" }
+windows-arm64 = { target = "aarch64-pc-windows-msvc",   runs-on = "windows-11-arm",   group = "windows" }
+macos-arm64   = { target = "aarch64-apple-darwin",      runs-on = "macos-15",         group = "macos" }
+macos-x64     = { target = "x86_64-apple-darwin",       runs-on = "macos-15-intel",   group = "macos" }
+
+# ── Python packaging ─────────────────────────────────────────────────────────
+# pyproject.toml:21-23 -- run_zccache / run_zccache_daemon are the entry points
+# that shell out to the native binary, so the CLI is native.
+[python]
+backend = "soldr"
+cli     = { name = "zccache", crate = "zccache", native = true }
+abi3    = "cp310"
+pythons = ["3.13"]
+
+# ── Rust workspace discipline ─────────────────────────────────────────────────
+# Cargo.toml:3 -- 24 workspace members under crates/; zccache is the published
+# amalgam and the rest are internal.
+[rust]
+public  = "crates/zccache"
+private = "crates/zccache-*"
+
+[rust.tests]
+max-binary = "60MB"
+max-total  = "400MB"
+binaries   = ["zccache:lib", "zccache-compiler:lib"]
+
+# ── Lint lanes ───────────────────────────────────────────────────────────────
+# Unlike the other repositories, zccache HAS a standalone Dylint job
+# (ci.yml:129-131, `name: Dylint`). Budget measured from three live runs
+# (2026-10-05): 311s / 321s / 340s. Warm is the median; cold carries headroom
+# for the first run on a fresh runner.
+[lint.dylint]
+targets = "all-platforms"
+shape   = "multi-target"
+budget  = { warm = "340s", cold = "900s" }
+
+# ── Suites ───────────────────────────────────────────────────────────────────
+[suites]
+unit        = { run = "ci/test.py unit",        required = true }
+smoke       = { run = "ci/wheel.py smoke",      required = true }
+integration = { run = "ci/test.py integration", required = true }
+perf        = { run = "ci/perf_guard.py", kind = "bench", gating = false }
+
+# ── Flows ────────────────────────────────────────────────────────────────────
+[flow.pr]
+platforms = ["linux-x64"]
+suites    = ["unit", "smoke"]
+dylint    = "all-platforms"
+budget    = { critical-path = "8m" }
+
+[flow.main]
+extends   = "pr"
+cache     = "write"
+pre-prune = true
+
+[flow.release]
+platforms = "all"
+suites    = "all"
+wheels    = "all"
+publish   = "pypi"
+
+[flow.nightly]
+extends   = "release"
+schedule  = "daily"
+cache     = "write"
+janitor   = true
+publish   = "none"
+pre-prune = true
+
+# ── Tags ─────────────────────────────────────────────────────────────────────
+[tags]
+ci-full        = { add = { platforms = "all", suites = ["integration"] } }
+ci-perf        = { add = { suites = ["perf"] } }
+ci-cache-save  = { cache = "pr-base" }
+no-test        = { remove = { suites = "tests" } }
+release        = { flow = "release", publish = "rehearsal" }
+
+# ── Default-branch reuse ─────────────────────────────────────────────────────
+# `off` is measured, not defaulted: zccache's skip target was measured as the
+# Reflink e2e, not the Dylint writer, and its Dylint lane (8.9m) was the long
+# pole with no lane to skip it. Reuse here needs that worked down first.
+[reuse.default-branch]
+mode          = "off"
+max-age-hours = 24
+
+# ── Cache ────────────────────────────────────────────────────────────────────
+# Families and sizes measured from the live listing
+# (`gh api repos/zackees/zccache/actions/caches`, 2026-10-05).
+[cache]
+budget   = "9GB"
+write-on = ["main", "nightly"]
+never    = []
+retired  = []
+pr       = { mode = "delta", families = ["compile"], max-per-pr = "128MB", budget = "1GB", trim = "on-close" }
+
+[cache.family]
+# dylint-output-v2 (0.81 GiB) and dylint-v2 (0.51 GiB) are the two largest
+# families measured, and both are at or above CACHE-031's 256MB floor.
+dylint     = { via = "setup-soldr:dylint",         max = "600MB",  per = "none", min = "1MB",                evict = "lru", promote = "ancestor" }
+dylint-out = { via = "setup-soldr:dylint-output",  max = "900MB",  lockfile = true, per = "none", min = "1MB", evict = "lru", promote = "ancestor" }
+# zccache's own test/bench caches (0.24 and 0.23 GiB measured) sit just below the
+# floor and stay unopted; a family this size is noise, not a budget threat.
+compile    = { via = "setup-soldr:build-cache",     max = "800MB", lockfile = true, per = "platform", min = "1MB", evict = "lru", promote = "ancestor" }
+registry   = { via = "setup-soldr:cargo-registry",  max = "300MB", lockfile = true, per = "none",          evict = "lru", promote = "ancestor" }
+toolchain  = { via = "setup-soldr:solo-toolchain", max = "210MB", per = "none",                            evict = "lru" }
+sdk        = { via = "setup-soldr:cross-targets",   max = "500MB", per = "cross-platform",                  evict = "lru", promote = "ancestor" }
+soldr-mini = { via = "setup-soldr:soldr-mini",     max = "30MB",  per = "none", min = "1MB",                evict = "lru" }
+uv         = { via = "setup-uv",                   max = "100MB", per = "platform",                        evict = "lru" }
+
+# Ancestor promotion (CACHE-024, zackees/ci.yml#335). Standardizing on
+# setup-soldr's ancestor encoding -- shortest parent-edge distance from a live
+# git DAG walk -- rather than a first-parent ordinal, which INVERTS on wide
+# merges: a 50-commit branch tip reports ordinal 53 while the merge commit
+# containing it reports 4, so a cache saved at the merge looks older than one
+# saved 50 commits before it. #335 keeps the `m<n>` label for offline audit only.
+#
+# DECLARATION ONLY: setup-soldr#566 is merged but unreleased, so CACHE-030 and
+# CACHE-032 report `needs_review` and the opt-in is inert until a tag lands.
+[cache.promote]
+mode          = "ancestor"
+max-age-hours = 168
+
+# ── Local runs ───────────────────────────────────────────────────────────────
+# Only the runner: the gate itself lives in `local-gate.toml`, and declaring
+# `[local.gate]` here as well would be GATE-001.
+[local]
+runner = "bosn-act"
+lanes  = ["precheck"]
+cache  = "machine"
+
+# ── Allowlist ────────────────────────────────────────────────────────────────
+# Which workflows a repository HAS is repo-specific (ci.yml#341 made that
+# explicit so a large repository is not told to shrink to the example's shape).
+[allow]
+workflows         = { "ci.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-linux.yml" = ["workflow_call"], "ci-windows.yml" = ["workflow_call"], "ci-macos.yml" = ["workflow_call"], "ci-check.yml" = ["workflow_call"], "ci-check-cross.yml" = ["workflow_call"], "build.yml" = ["workflow_call"], "clippy.yml" = ["workflow_call"], "coverage.yml" = ["workflow_call"], "integration.yml" = ["workflow_call"], "python-tests.yml" = ["workflow_call"], "cache-budget.yml" = ["schedule", "workflow_dispatch"], "cache-cleanup.yml" = ["schedule", "workflow_dispatch"], "cache-pre-prune.yml" = ["workflow_call"], "wait-cache-pre-prune.yml" = ["workflow_call"], "release-auto.yml" = ["push:tag", "workflow_dispatch"] }
+actions           = ["actions/checkout", "actions/upload-artifact", "actions/download-artifact", "zackees/setup-soldr", "astral-sh/setup-uv"]
+tools             = ["soldr", "uv", "python3", "yq", "git"]
+secrets           = []
+platform-selector = "crates/zccache/src/lib.rs"
+platform-code     = ["crates/zccache/src/**"]
+
+# Read off the workflows: release publishes over OIDC, and the cache
+# maintenance jobs (cache-cleanup / cache-budget) need `actions: write`.
+permissions = { "id-token: write" = ["publish"], "actions: write" = ["cache-maint", "cache-budget"] }
+
+# This repository calls `zackees/setup-soldr` directly and has no composite
+# wrapper under `.github/actions/`, so `only-in` is the empty string: it asserts
+# "no wrapper anywhere" rather than naming a directory that does not exist.
+setup-soldr       = { only-in = "", require = { save-cache = "plan" } }
+setup-uv          = { require = { save-cache = "plan" } }
+
+# ── Publish ──────────────────────────────────────────────────────────────────
+[publish]
+pypi = { auth = "oidc", environment = "pypi", mode = "mock" }
