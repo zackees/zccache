@@ -81,22 +81,32 @@ def test_legacy_harness_runs_every_integration_test_command() -> None:
         assert normalized in lane, normalized
 
 
-def test_isolated_lanes_replay_both_real_workflows() -> None:
+def test_isolated_lanes_replay_the_real_workflows() -> None:
+    """Every lane that attests a remote job replays that job through Bosn.
+
+    Keyed by lane so adding a lane cannot be satisfied by reordering the ones
+    already covered -- each row below is a job a PR head can now skip.
+    """
     isolated = [check for check in local_gate.checks() if check.bosn_workflow]
-    assert len(isolated) == 2
-    assert [check.bosn_workflow for check in isolated] == [
-        ".github/workflows/ci.yml",
-        ".github/workflows/integration.yml",
-    ]
-    assert [check.bosn_job for check in isolated] == ["msrv", "integration"]
-    assert [check.lane for check in isolated] == ["check", "tests"]
+    by_lane = {check.lane: check for check in isolated}
+    assert len(isolated) == len(by_lane) == 3
+    assert {
+        lane: (check.bosn_workflow, check.bosn_job, check.selected_job)
+        for lane, check in by_lane.items()
+    } == {
+        "check": (".github/workflows/ci.yml", "msrv", "msrv"),
+        "dylint": (".github/workflows/ci.yml", "dylint", "dylint"),
+        "tests": (".github/workflows/integration.yml", "integration", None),
+    }
     assert all(check.argv[:3] == ("bosn", "ci", "run") for check in isolated)
     assert all("--wait" in check.argv and "--json" in check.argv for check in isolated)
     assert all(check.min_version == (0, 1, 12) for check in isolated)
-    assert isolated[0].selected_job == "msrv"
-    assert isolated[1].selected_job is None
-    assert "Verify nested Dylint cache contract" in isolated[0].required_steps
-    assert "Test (full workspace)" in isolated[1].required_steps
+    assert "Verify nested Dylint cache contract" in by_lane["check"].required_steps
+    assert by_lane["dylint"].required_steps == (
+        "Run Dylint",
+        "Prove custom-lint selection for every OS",
+    )
+    assert "Test (full workspace)" in by_lane["tests"].required_steps
     for check in isolated:
         workflow = check.bosn_workflow.rsplit("/", 1)[-1]
         block = _job_block(workflow, check.bosn_job)
