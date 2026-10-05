@@ -3,6 +3,10 @@
 //! Tracks per-watch dirty state in memory. FS watcher events flow through
 //! `on_batch()` to set watches dirty; CLI queries via IPC get sub-millisecond
 //! answers from the in-memory state.
+//!
+//! Filesystem verification lives in the `verify` submodule, split into a
+//! guard-free collect half and an in-memory apply half, so the stat + hash
+//! pass runs entirely off the watch-map shard (issue #1908).
 
 use crate::core::NormalizedPath;
 use std::collections::{HashMap, HashSet};
@@ -10,7 +14,7 @@ use std::path::Path;
 
 use dashmap::DashMap;
 
-use self::verify::{verify_filesystem, FileObservation};
+use self::verify::FileObservation;
 
 mod verify;
 
@@ -31,7 +35,7 @@ pub(crate) struct WatchKey {
 struct TrackedFile {
     mtime_ns: u64,
     size: u64,
-    /// File identity, used by `verify_filesystem` to catch a path replacement
+    /// File identity, used by the filesystem-verification pass to catch a replacement
     /// that preserved mtime and size (#1897).
     file_id: Option<crate::platform::fs::identity::FileIdentity>,
     /// Unix `ctime` in nanoseconds, or `0` where the platform exposes none.
@@ -51,7 +55,7 @@ impl TrackedFile {
         self.apply(observed);
     }
 
-    /// Adopt the cheap stat signals, which `verify_filesystem` re-reads
+    /// Adopt the cheap stat signals, which `collect_verifications` re-reads
     /// before deciding the file is unchanged.
     fn apply(&mut self, observed: &FileObservation) {
         self.mtime_ns = observed.mtime_ns;
@@ -181,9 +185,47 @@ impl FingerprintManager {
 
             if !dirty && status == "success" {
                 // Verify against filesystem to catch missed watcher events.
-                if let Some(mut w) = self.watches.get_mut(&key) {
-                    let changed = verify_filesystem(&mut w);
-                    if changed.is_empty() {
+                //
+                // Lock discipline (issue #1908, the sibling of the #724 fix
+                // documented in `on_batch`): verification stats and
+                // blake3-hashes every tracked file, which on a fully-touched
+                // tree is the whole root. That I/O must never run while a
+                // shard guard on `self.watches` is alive — it would stall
+                // `on_batch`, `mark_success`/`mark_failure` and every
+                // concurrent `check` hashed to the same shard. So every
+                // guard is scoped to a statement: a short *read* guard
+                // clones what the verification needs, the collect phase runs
+                // guard-free, and the write guard is re-acquired only to
+                // apply the results.
+                'verify: {
+                    let snapshot = self
+                        .watches
+                        .get(&key)
+                        .map(|w| (w.root.clone(), w.files.clone()));
+                    let Some((root, files_snapshot)) = snapshot else {
+                        // Watch disappeared between the two reads — fall
+                        // through to the initial scan below.
+                        break 'verify;
+                    };
+
+                    // No guard is alive in this scope: all filesystem I/O
+                    // happens inside this call.
+                    let updates = verify::collect_verifications(&root, &files_snapshot);
+
+                    let Some(mut w) = self.watches.get_mut(&key) else {
+                        // Watch removed during verification — fall through
+                        // to the initial scan below.
+                        break 'verify;
+                    };
+                    let changed = verify::apply_verifications(&mut w, &files_snapshot, &updates);
+                    // `w.dirty` can only have become true while the collect
+                    // phase ran guard-free (an `on_batch` landed in that
+                    // window). Returning "skip" there would serve a cache
+                    // hit for a change the watcher already told us about,
+                    // so fall through to the "run" path instead — that is
+                    // the safe direction: a redundant recompile, never a
+                    // stale hit.
+                    if changed.is_empty() && !w.dirty {
                         tracing::debug!("fingerprint check: skip (verified, not dirty)");
                         return FpCheckResult {
                             decision: "skip".into(),
@@ -208,7 +250,7 @@ impl FingerprintManager {
                         changed_files: changed,
                     };
                 }
-                // Watch disappeared between get/get_mut — fall through to rescan.
+                // 'verify broke only because the watch vanished — rescan.
             } else if dirty {
                 // Bug A fix: collect the actual dirty file paths.
                 // Mark as pending and snapshot the generation (Bug B fix).
@@ -407,7 +449,7 @@ impl FingerprintManager {
                     } else if let Some(tracked) = watch.files.get_mut(&rel_str) {
                         // Just update the stat signals, content unchanged (smart
                         // touch). Identity and `ctime` must be refreshed too, or a
-                        // later `verify_filesystem` would compare against a stale
+                        // later `collect_verifications` would compare against a stale
                         // identity and miss a path replacement (#1897).
                         tracked.refresh(&cm.observed);
                     }

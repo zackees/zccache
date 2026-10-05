@@ -347,20 +347,26 @@ impl MetadataCache {
         &self,
         path: &NormalizedPath,
     ) -> Option<zccache_hash::ContentHash> {
-        let entry = self.entries.get(path)?;
-        match entry.confidence {
-            Confidence::High | Confidence::Medium => {}
-            Confidence::Low => return None,
-        }
-        let hash = entry
-            .content_hash
-            .map(zccache_hash::ContentHash::from_bytes)?;
+        // Copy the entry out under a short read guard so the stat below runs
+        // with no shard guard alive — same lock discipline as `rescan_all`
+        // and `fingerprint/verify.rs` (#1908, the #724 class).
+        let (recorded_mtime, recorded_size, hash) = {
+            let entry = self.entries.get(path)?;
+            match entry.confidence {
+                Confidence::High | Confidence::Medium => {}
+                Confidence::Low => return None,
+            }
+            let hash = entry
+                .content_hash
+                .map(zccache_hash::ContentHash::from_bytes)?;
+            (entry.mtime, entry.size, hash)
+        };
 
         // One stat syscall to verify mtime + size still match.
         let fs_meta = std::fs::metadata(path).ok()?;
         let mtime = fs_meta.modified().ok()?;
         let size = fs_meta.len();
-        if mtimes_match(entry.mtime, mtime) && entry.size == size {
+        if mtimes_match(recorded_mtime, mtime) && recorded_size == size {
             Some(hash)
         } else {
             None

@@ -58,6 +58,34 @@ This eliminates deadlock by design.
 
 ---
 
+## Fingerprint watch-map lock discipline
+
+`FingerprintManager` keeps its per-root watch state in a `DashMap`
+(`crates/zccache-daemon-core/src/daemon/fingerprint/`). **No function in
+that module may hold a DashMap read or write guard across filesystem I/O** —
+not a `stat`, a file read, a `canonicalize`, and not a blake3 `hash_file`.
+
+The sanctioned shape is three phases:
+
+1. Snapshot the tracked entries you need under a short-lived guard.
+2. Do all filesystem work with **no guard held**. `on_batch` computes
+   canonicalize/stat/hash for the whole batch up front, once per file rather
+   than once per watch (#724); `check` runs the same split via
+   `fingerprint/verify.rs`'s guard-free `collect_verifications` pass followed
+   by an in-memory `apply_verifications` (#1908).
+3. Re-acquire the guard only to write results back into the map.
+
+**Why:** layer-2 rehash of a single root is unbounded work — a `git checkout`
+or branch switch invalidates every file under a 300-file root, and each
+`hash_file` is a full read. Held under the shard, that single rehash stalls
+every other `check`, `mark_success`, `mark_failure`, and watcher `on_batch`
+that maps to the same shard, stalling daemon-wide metadata invalidation.
+
+The rationale and the failure history live in the code comments on `on_batch`
+and in `fingerprint/verify.rs`; this section is the breadcrumb.
+
+---
+
 ## Async / process bridge (watchdogs, cancellation & timeouts)
 
 The daemon is async internally, but compiler/linker/tool execution, some IPC,

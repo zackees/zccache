@@ -573,3 +573,125 @@ fn on_batch_many_watches_completes_quickly() {
         );
     }
 }
+
+/// Regression test for issue #1908: `check`'s verification pass must not hold
+/// a watch-map shard guard across its stat/blake3 window. The collect hook
+/// pauses the verification thread *inside* that window; the main thread then
+/// drives `mark_success`, whose `iter_mut` needs every shard's write guard.
+/// If verification held any guard, this would block for the hook's full
+/// timeout instead of completing immediately.
+#[test]
+fn verify_does_not_hold_the_write_shard_while_hashing() {
+    use std::time::{Duration, Instant};
+
+    let src = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    create_file(src.path(), "src.cpp", "original");
+
+    let cache_file = cache_dir.path().join("fp.json");
+    let other_cache_file = cache_dir.path().join("other.json");
+    let mgr = FingerprintManager::new();
+
+    mgr.check(&cache_file, "two-layer", src.path(), &[], &[], &[]);
+    mgr.mark_success(&cache_file);
+
+    // Make the next check take the verification path (layer 1 fails: mtime/size).
+    std::thread::sleep(Duration::from_millis(50));
+    create_file(src.path(), "src.cpp", "modified");
+
+    let (start_tx, start_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    // `Receiver` is `Send` but not `Sync`, and the hook must be `Fn + Send +
+    // Sync`; the mutex bridges that without changing the protocol.
+    let release_rx = std::sync::Mutex::new(release_rx);
+    verify::set_collect_hook(move || {
+        let _ = start_tx.send(());
+        // Bounded so a failed assertion cannot wedge the whole test binary.
+        if let Ok(release) = release_rx.lock() {
+            let _ = release.recv_timeout(Duration::from_secs(10));
+        }
+    });
+
+    let root = src.path().to_path_buf();
+    let cache = cache_file.clone();
+    let mut elapsed: Option<Duration> = None;
+    std::thread::scope(|scope| {
+        // Borrowed, not moved: the main thread below drives `mgr.mark_success`,
+        // which is the whole point of the assertion.
+        scope.spawn(|| {
+            // Arm on this thread so no other test's collect pass can consume
+            // the hook.
+            verify::arm_collect_hook();
+            mgr.check(&cache, "two-layer", &root, &[], &[], &[])
+        });
+
+        // The moment the old implementation is sitting on the shard with its
+        // guard live.
+        start_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("collect hook never fired");
+
+        let t0 = Instant::now();
+        mgr.mark_success(&other_cache_file);
+        elapsed = Some(t0.elapsed());
+
+        // Release before any assertion that can panic, so a failure cannot
+        // deadlock the verification thread and hang the whole test binary.
+        let _ = release_tx.send(());
+    });
+
+    let elapsed = elapsed.unwrap();
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "mark_success took {elapsed:?} while the verification hash was in flight; \
+         check() is holding the watch-map write shard across filesystem I/O \
+         (issue #1908 regression)"
+    );
+}
+
+/// The collect/apply split must not change any verdict `check` used to return.
+#[test]
+fn verify_collect_and_apply_preserve_semantics() {
+    // (i) Real content change is still reported as "run" with the rel listed.
+    let src = TempDir::new().unwrap();
+    let cache_dir = TempDir::new().unwrap();
+    create_file(src.path(), "a.rs", "original");
+    let cache_file = cache_dir.path().join("fp.json");
+    let mgr = FingerprintManager::new();
+
+    mgr.check(&cache_file, "two-layer", src.path(), &[], &[], &[]);
+    mgr.mark_success(&cache_file);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    create_file(src.path(), "a.rs", "modified");
+
+    let changed = mgr.check(&cache_file, "two-layer", src.path(), &[], &[], &[]);
+    assert_eq!(changed.decision, "run");
+    assert!(
+        changed.changed_files.iter().any(|f| f.contains("a.rs")),
+        "changed_files should contain a.rs, got {:?}",
+        changed.changed_files
+    );
+
+    // (ii) A smart touch after the change is clean content → "skip". This only
+    // holds if the apply phase of (i) wrote the post-change `hash_hex`/
+    // `mtime_ns` back into `watch.files`: without that write the tracked hash
+    // still holds the pre-change value, so layer 1 fails and layer 2 re-reports
+    // a change that was already recorded.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    mgr.mark_success(&cache_file);
+    create_file(src.path(), "a.rs", "modified");
+    let touched = mgr.check(&cache_file, "two-layer", src.path(), &[], &[], &[]);
+    assert_eq!(
+        touched.decision, "skip",
+        "apply must persist the new hash_hex/mtime_ns, else every later check \
+         re-reports a change it already recorded"
+    );
+
+    // (iii) A second check immediately after a genuine change still says "run".
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    create_file(src.path(), "a.rs", "modified again");
+    let again = mgr.check(&cache_file, "two-layer", src.path(), &[], &[], &[]);
+    assert_eq!(again.decision, "run");
+    assert!(again.changed_files.iter().any(|f| f.contains("a.rs")));
+}
