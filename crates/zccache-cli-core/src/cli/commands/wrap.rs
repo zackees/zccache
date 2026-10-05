@@ -95,7 +95,10 @@ fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
         // Never silent (issue #1211): the user opted out, but each uncached
         // invocation still announces itself and the reason.
         profile::set_route("disabled");
-        return passthrough::run_passthrough(args, Some("ZCCACHE_DISABLE is set"));
+        // Evaluated before any chdir, so this is the caller's cwd. The captured
+        // `cwd` local does not exist yet on this path.
+        let cwd = std::env::current_dir().unwrap_or_default();
+        return passthrough::run_passthrough(args, Some("ZCCACHE_DISABLE is set"), &cwd);
     }
 
     let strict_paths_mode = match env::effective_strict_paths_mode(overrides) {
@@ -127,7 +130,7 @@ fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
     // Everything above is wrapper setup; everything below is the routed call.
     profile::mark_setup_done();
 
-    match routing::classify_invocation(&args[0], &tool_args) {
+    match routing::classify_invocation(&args[0], &tool_args, &cwd) {
         WrapperRoute::Formatter => {
             profile::set_route("formatter");
             crate::formatter::run_rustfmt_cached(&wrapped_tool, &tool_args, &cwd, None)
@@ -144,9 +147,12 @@ fn run_wrap_routed(args: &[String], overrides: WrapperOverrides) -> ExitCode {
         }
         // Silent by design: probe callers parse the tool's stderr, so a
         // warning line here would corrupt the probe (see run_passthrough).
+        // The captured `cwd` is passed explicitly because this route runs after
+        // the chdir to the temp directory, so the process cwd is no longer the
+        // caller's build directory (#1909).
         WrapperRoute::ProbeBypass => {
             profile::set_route(profile::ROUTE_PROBE_BYPASS);
-            passthrough::run_passthrough(args, None)
+            passthrough::run_passthrough(args, None, &cwd)
         }
         WrapperRoute::Compile => {
             profile::set_route("compile");
