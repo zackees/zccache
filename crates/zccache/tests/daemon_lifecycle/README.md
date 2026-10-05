@@ -1,6 +1,6 @@
 # Daemon lifecycle — `daemon_lifecycle` test target
 
-One linked test executable for 11 contracts (#1526). Covers start/stop, cwd release, exe overwrite, stdio detach, spawn budgets and storms, crash minidumps, and the embedded service.
+One linked test executable for 13 contracts (#1526). Covers start/stop, cwd release, exe overwrite, stdio detach, spawn budgets and storms, crash minidumps, endpoint-scoped ownership records, and the embedded service.
 
 Each file here is a **module** of `main.rs`, not its own integration-test
 binary. Cargo compiles every top-level `tests/*.rs` file as a separate
@@ -27,6 +27,7 @@ cargo nextest run --test daemon_lifecycle -E 'test(/^<file_stem>::/)'
 - `daemon_cli_flow_test`
 - `daemon_crash_minidump_test`
 - `daemon_cwd_release`
+- `daemon_endpoint_scoped_lock_test`
 - `daemon_exe_overwrite`
 - `daemon_idle_cpu_budget_test`
 - `daemon_integration_test`

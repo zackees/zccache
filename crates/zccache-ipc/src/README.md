@@ -33,6 +33,18 @@ legacy raw-connect probe for older daemons that have not written the identity
 file yet. `RUNNING_PROCESS_DISABLE=1` skips the BackendHandle probe and uses
 that same legacy raw-connect fallback.
 
+`ownership.rs` owns the endpoint-scoped daemon ownership records (#1904): the
+lock file and the identity sidecar above. Both fold a `stable_path_id` scope
+segment for any endpoint other than `default_endpoint()`, so a daemon on
+`ZCCACHE_ENDPOINT=/tmp/custom.sock` owns its own records and cannot contend
+with — or be killed through — the default daemon's. The default endpoint keeps
+its historical filenames byte-for-byte. Every helper takes the endpoint it was
+asked about; the no-argument forms (`check_running_daemon`,
+`read_backend_identity`, `force_kill_verified_daemon`, …) are
+default-endpoint-only wrappers. A kill pairs a PID from one endpoint's lock with
+an identity from that same endpoint's sidecar, so scoping only the lock is not
+sufficient.
+
 `broker.rs` wires the frozen
 `AsyncBrokerSession::adopt` one-call recipe (re-exported through
 `running_process::broker::protocol_v2::client_compat` per zccache#782

@@ -7,6 +7,8 @@ use super::*;
 use std::ffi::OsString;
 use std::sync::MutexGuard;
 
+#[path = "mod_tests/endpoint_scope.rs"]
+mod endpoint_scope;
 #[path = "mod_tests/identity.rs"]
 mod identity;
 

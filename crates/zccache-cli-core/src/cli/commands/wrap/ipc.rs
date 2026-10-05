@@ -29,7 +29,7 @@ pub(super) async fn cmd_compile(
     // If this request wedges, the lock file may already name a replacement
     // some other client spawned, and killing "whoever is current" is how one
     // client's timeout becomes a kill chain through a `-j16` herd.
-    let served_by = current_daemon_instance();
+    let served_by = current_daemon_instance(endpoint);
     let mut conn = match connect(endpoint).await {
         Ok(c) => {
             super::profile::mark_connected();
@@ -569,7 +569,7 @@ async fn cmd_compile_ephemeral_with_stdin(
 
     // #1161: identity of the instance this attempt targets, read before the
     // exchange so a later wedge kill cannot land on a replacement.
-    let served_by = current_daemon_instance();
+    let served_by = current_daemon_instance(endpoint);
 
     // Issue #752: retry once on transport failure
     // (`lost connection to daemon`). Wedge has its own handling.
@@ -654,7 +654,7 @@ pub(super) async fn cmd_link_ephemeral(
     };
 
     // #1161: see `cmd_compile_ephemeral` — identity before the exchange.
-    let served_by = current_daemon_instance();
+    let served_by = current_daemon_instance(endpoint);
 
     // Issue #752: retry once on transport failure
     // (`lost connection to daemon`). Wedge has its own handling.

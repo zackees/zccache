@@ -48,6 +48,17 @@ from that cache root. Unix uses `<cache>/daemon.sock` or
 pipe and appends `-<ns>` when a daemon namespace is configured. Explicit
 `ZCCACHE_ENDPOINT` still overrides the derived endpoint.
 
+## Endpoint-scoped ownership records (#1904)
+
+The lock file and the backend-identity sidecar are per **endpoint**, not per
+host. A daemon on `ZCCACHE_ENDPOINT=/tmp/custom.sock` owns
+`daemon-<v>-<scope>.lock` / `daemon-<scope>.running-process.json` and cannot
+contend with — or be killed through — the default endpoint's records; the
+default endpoint keeps its historical filenames byte-for-byte. A kill pairs a
+PID from one endpoint's lock with an identity from that same endpoint's sidecar,
+so every lifecycle helper takes the endpoint it was asked about. See
+[runtime.md § Endpoint-scoped ownership record](runtime.md#endpoint-scoped-ownership-record-1904).
+
 ## Endpoint Access Control (#1171)
 
 The connectable `Request` surface is process execution as the daemon user, so

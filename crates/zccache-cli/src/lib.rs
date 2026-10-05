@@ -766,7 +766,12 @@ fn default_endpoint() -> String {
 
 #[pyfunction]
 fn check_running_daemon() -> Option<u32> {
-    zccache::ipc::check_running_daemon()
+    // #1904: scope the lookup to the endpoint this process actually resolves
+    // (honouring `ZCCACHE_ENDPOINT`, exactly like the Rust CLI) rather than the
+    // default endpoint, so a Python caller sees its own daemon. No new
+    // parameter: the pyo3 surface is public and adding one would be a breaking
+    // change for no gain.
+    zccache::ipc::check_running_daemon_for(&zccache::cli::resolve_endpoint(None))
 }
 
 #[pymodule]
