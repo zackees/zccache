@@ -1,0 +1,213 @@
+# ci.toml — zccache's CI contract. Loaded, validated and planned by ci-lint
+# (zackees/ci.yml). Nothing here generates YAML: it bounds what the YAML may
+# do and decides what each run selects.
+#
+# Sizing provenance: every `[cache.family]` ceiling below is derived from the
+# fully paginated live measurement of zackees/zccache's Actions caches taken
+# 2026-10-05 (240 entries, 7.421 GiB = 74% of GitHub's 10 GiB), NOT from
+# guesswork. Families whose live entries differ by more than ~4x in size
+# declare `shapes` (zackees/ci.yml#334), because a single `max` would have to
+# be set to the largest entry and would then multiply it by the platform
+# count -- over-stating the budget for every small shape.
+schema  = 3
+profile = "rust-cli"
+linter  = "zackees/ci.yml@aaf113ca50565244567c0d19f1e739e9d3120dda"
+
+# ── Platforms ─────────────────────────────────────────────────────────────────
+# The set is exactly the (runs-on, target) pairs the workflows actually build.
+# Native arm64 Linux runs on workflow_dispatch only (ci-linux.yml's `arm` job
+# is deliberately off the PR and main-push paths), and the two musl lanes are
+# cross-compiled from the x64 runner, so they are declared as cross lanes
+# rather than as hosts with their own runner.
+[platforms]
+linux-x64        = { target = "x86_64-unknown-linux-gnu",   runs-on = "ubuntu-24.04",     group = "linux" }
+linux-arm64      = { target = "aarch64-unknown-linux-gnu",  runs-on = "ubuntu-24.04-arm", group = "linux" }
+linux-x64-musl   = { target = "x86_64-unknown-linux-musl",  runs-on = "ubuntu-24.04",     group = "linux" }
+linux-arm64-musl = { target = "aarch64-unknown-linux-musl", runs-on = "ubuntu-24.04",     group = "linux" }
+windows-x64      = { target = "x86_64-pc-windows-msvc",     runs-on = "windows-2025",     group = "windows" }
+windows-arm64    = { target = "aarch64-pc-windows-msvc",    runs-on = "windows-11-arm",   group = "windows" }
+macos-arm64      = { target = "aarch64-apple-darwin",       runs-on = "macos-15",         group = "macos" }
+
+# ── Suites ────────────────────────────────────────────────────────────────────
+# Ids map to the lanes ci/local_gate.py dispatches and to the workflow jobs that
+# mirror them. `required = true` means a skip inside it is a failure. The
+# Dylint lane is declared explicitly rather than left to the gate config: it is
+# both the longest job on a PR (8.9 min measured) and the one the gate attests,
+# so its remote skip is the mechanism GATE-008/#190 turns on.
+[suites]
+lint     = { run = "ci/local_gate.py --lane lint",     required = true }
+py-tests = { run = "ci/local_gate.py --lane py-tests", required = true }
+check    = { run = "ci/local_gate.py --lane check",    required = true }
+docs     = { run = "ci/local_gate.py --lane docs",     required = true }
+dylint   = { run = "ci/local_gate.py --lane dylint",   required = true }
+tests    = { run = "ci/local_gate.py --lane tests",    required = true }
+
+# ── Flows ─────────────────────────────────────────────────────────────────────
+[flow.pr]
+platforms = ["linux-x64"]
+suites    = ["lint", "check"]
+dylint    = "all-platforms"
+budget    = { critical-path = "12m" }
+
+# `pre-prune = true` is a FACT here, not an aspiration: cache-pre-prune.yml runs
+# on every push to main and every lane job waits on its barrier
+# (wait-cache-pre-prune.yml) before it produces. That is what waives the
+# lockfile-change-peak term in CACHE-004's arithmetic.
+[flow.main]
+extends   = "pr"
+platforms = "all"
+suites    = ["lint", "py-tests", "check", "docs", "dylint", "tests"]
+cache     = "write"
+pre-prune = true
+
+[flow.release]
+platforms = "all"
+suites    = "all"
+publish   = "none"
+
+# ── Tags ──────────────────────────────────────────────────────────────────────
+[tags]
+ci-full = { add = { platforms = "all", suites = ["tests"] } }
+release = { flow = "release", publish = "rehearsal" }
+
+# ── Caches ────────────────────────────────────────────────────────────────────
+# Live measurement 2026-10-05, 240 entries / 7.421 GiB, by declared family:
+#   compile   setup-soldr-buildcache-v2-*      3269.1 MB (10 entries, 8 shapes)
+#   deps      cook-base-v2-*                   1473.7 MB (3 entries)
+#   registry  setup-soldr-cargoregistry-v1-*    830.4 MB (7 entries)
+#   dylint-out setup-soldr-dylint-output-v2-*   825.4 MB (1 entry)
+#   dylint    setup-soldr-dylint-v2-*           523.8 MB (1 entry)
+#   sdk       setup-soldr-prepare-v3-*          184.2 MB (2 entries)
+#   soldr-mini soldr-mini-v2-*                   39.1 MB (4 entries)
+#   uv        setup-uv-1-*                        4.0 MB (7 entries)
+#
+# PR saves are OFF (pr.mode = "none", 0 MB budget): zccache's PR paths restore
+# from the default-branch caches and never write a family, and keeping it that
+# way is what holds 240 main-branch entries inside 9.5 GB instead of letting a
+# busy fork multiply every family by its open-PR count.
+[cache]
+budget   = "9.5GB"
+write-on = ["main"]
+never    = ["target-dir", "incremental", "nextest-archives", "perf-results", "wheels"]
+retired  = ["solo-toolchain", "cook-delta-v2"]
+pr       = { mode = "none", families = [], max-per-pr = "0MB", budget = "0MB", trim = "on-close" }
+
+# KNOWN GAP -- 205 live entries (471.3 MB) are CACHE-001 "undeclared" and CANNOT
+# be declared through schema 3 today, so `ci-lint cache janitor` proposes
+# deleting all of them. Two prefixes, neither resolvable by any `via` in
+# ci_lint.cache.families.ALLOWED_VIA_VALUES:
+#
+#   sccache/<a>/b>/<c>/<64-hex>       203 entries / 167.4 MB
+#       mozilla-actions/sccache-action's own cache, used by bench-action.yml
+#       and perf-guard.yml. Its key shape is a sharded path, not a prefix the
+#       families table models.
+#   zccache-Linux-X64-bench-<sha>       1 entry  / 233.2 MB
+#   cargo-registry-Linux-X64-test-<t>   1 entry  /  48.9 MB
+#       zccache's OWN action caches, written by .github/actions/ with
+#       `shared-key: bench` and the test target. ci_lint's `via = "ci-lint"`
+#       convention synthesizes `<family-id>-v1-`, which does not match these.
+#
+# They are deliberately NOT listed in [cache].retired either: that would convert
+# CACHE-001 into CACHE-009 and delete them on the next janitor, which is a
+# behavior change, not a declaration. Closing this needs a new FamilyShape for
+# the sccache path and either a family-id that matches zccache's own prefixes or
+# a schema-3 way to name a literal prefix -- both changes in zackees/ci.yml, not
+# here. Until then, DO NOT run `ci-lint cache janitor` against this repository.
+
+[cache.family]
+# `compile` -- setup-soldr's build cache, the family's real problem: 8 live
+# shapes spanning 0.0 MB to 883.6 MB. A single `max` would have to be 900MB and,
+# multiplied by the 7 declared platforms, would model 6.3 GB for a family that
+# occupies 3.19 GB -- and would then be a number `ci-lint cache janitor` LRU-
+# evicts to. The `shapes` form is the honest one: each scope gets its own
+# ceiling at or above that shape's measured maximum.
+compile = { via = "setup-soldr:build-cache", max = "900MB", lockfile = true, per = "platform", evict = "lru", shapes = { "linux-x64-integration" = { max = "900MB" }, "linux-x64-dylint" = { max = "550MB" }, "linux-x64-base" = { max = "980MB" }, "linux-x64-cross-x86-musl" = { max = "250MB" }, "linux-x64-cross-arm-musl" = { max = "250MB" }, "linux-x64-test" = { max = "50MB" }, "windows-x64" = { max = "410MB" }, "windows-arm64" = { max = "5MB" } } }
+
+# `deps` -- the cook base. All three live entries are linux-x64, and they are
+# three DIFFERENT shapes (a locked generation, a bare generation, and the
+# 0.9.27 pre-transition one), not three generations of one shape, so each gets
+# its own ceiling.
+deps = { via = "setup-soldr:cook", max = "810MB", lockfile = true, per = "os", evict = "lru", shapes = { "linux-x64-locked" = { max = "810MB" }, "linux-x64-bare" = { max = "410MB" }, "linux-x64-v093" = { max = "280MB" } } }
+
+# `registry` -- the cargo registry. Live: linux 4 entries / 434.1 MB (max
+# 112.2), windows 2 / 287.4 MB (max 152.3), macos 1 / 108.9 MB. The digest
+# suffix is a shape, not a generation (see ci_lint.cache.audit's
+# _CARGO_REGISTRY_RE), so each OS holds its entries concurrently.
+registry = { via = "setup-soldr:cargo-registry", max = "160MB", lockfile = true, per = "platform", evict = "lru", shapes = { "linux" = { max = "450MB" }, "windows" = { max = "300MB" }, "macos" = { max = "120MB" } } }
+
+# `dylint` -- the tool/driver/foundation cache, one host, one live entry.
+dylint = { via = "setup-soldr:dylint", max = "540MB", per = "none", min = "1MB", evict = "lru" }
+
+# `dylint-out` -- the Dylint output cache. One generation per lockfile, not per
+# target (ci.yml#44 round-4B measured). The single live entry is 825.4 MB: the
+# second-largest family, and the one zccache's dylint lane replays.
+dylint-out = { via = "setup-soldr:dylint-output", max = "850MB", lockfile = true, per = "none", min = "1MB", evict = "lru" }
+
+# `sdk` -- setup-soldr's cross-target prepare tree, one entry per musl target.
+sdk = { via = "setup-soldr:cross-targets", max = "100MB", per = "cross-platform", evict = "lru" }
+
+# `soldr-mini` -- one small entry per (os, arch); 10.5 MB is the measured max.
+soldr-mini = { via = "setup-soldr:soldr-mini", max = "15MB", per = "platform", min = "1MB", evict = "lru" }
+
+# `uv` -- astral-sh/setup-uv v6's own built-in cache, still writing the legacy
+# `setup-uv-1-` generation (families.py carries it as a legacy prefix). Live:
+# 7 entries / 4.0 MB total, largest single entry 0.9 MB, but 7 distinct
+# (arch, triple, OS-version, python-version) combinations -- more than any
+# `per` value can count, which is the open question families.py documents. So
+# `evict = "lru"` is what bounds it, and `max` is set at 4MB (the family's
+# TOTAL, not one entry) because these are concurrent generations rather than
+# alternatives.
+uv = { via = "setup-uv", max = "4MB", per = "platform", evict = "lru" }
+
+# NEAREST-ANCESTOR PROMOTION IS DELIBERATELY OFF. zackees/setup-soldr#566
+# (ancestor-cache.ts) is merged but UNRELEASED: no tag contains it, so no
+# repository can produce a `setup-soldr-ancestor-build-v1-*` key yet. Setting
+# mode = "ancestor" here would claim a mechanism zccache cannot exercise, and
+# would trip CACHE-030 (`needs_review`) on every precheck. Flip it when
+# setup-soldr ships a tag containing #566.
+[cache.promote]
+mode = "off"
+
+# ── Local runs ────────────────────────────────────────────────────────────────
+# NOTE: this repository's local gate is declared in `local-gate.toml`
+# (`[gate]`, `[gate.isolation]`, `[gate.lanes.*]`, `[gate.trust]`) -- zccache's
+# first-class declaration (GATE-001..010, ci.yml#166/#168/#177/#190/#196/#198).
+# NO `[local.gate]` table is declared here on purpose: local_gate.py prefers
+# ci.toml's `[local.gate]` whenever that table EXISTS (ci_lint.local_gate.
+# _gate_table, and it flags a both-declared repository), so declaring an empty
+# one would silently take the gate's configuration source away from
+# local-gate.toml. Absent here, local-gate.toml stays authoritative.
+[local]
+runner = "bosn-act"
+lanes  = ["precheck", "lint", "check", "dylint", "tests"]
+cache  = "machine"
+
+# ── Allowlists ────────────────────────────────────────────────────────────────
+[allow]
+workflows = { "ci.yml" = ["push:main", "pull_request"], "ci-linux.yml" = ["push:main", "workflow_dispatch"], "ci-macos.yml" = ["push:main"], "ci-windows.yml" = ["push:main"], "ci-check.yml" = ["workflow_call"], "ci-check-cross.yml" = ["workflow_call"], "integration.yml" = ["push:main", "schedule", "workflow_dispatch"], "python-tests.yml" = ["push:main", "pull_request"], "clippy.yml" = ["push:main"], "coverage.yml" = ["push:main"], "wrapper-e2e.yml" = ["push:main"], "release-auto.yml" = ["push:main", "push:tags", "workflow_dispatch"], "cache-pre-prune.yml" = ["push:main"], "wait-cache-pre-prune.yml" = ["workflow_call"], "reflink-e2e.yml" = ["workflow_call"], "cache-budget.yml" = ["schedule", "workflow_dispatch"], "cache-cleanup.yml" = ["schedule", "workflow_dispatch"] }
+actions = ["actions/checkout", "actions/upload-artifact", "actions/download-artifact", "actions/github-script", "zackees/setup-soldr", "astral-sh/setup-uv", "mozilla-actions/sccache-action"]
+tools = ["soldr", "uv", "python3", "git"]
+secrets = []
+
+# LAYOUT-001's one allowed platform-selector file, plus the other `platform.rs`
+# modules zccache's OS branching is split across.
+platform-selector = "crates/zccache/src/platform.rs"
+platform-code = ["crates/zccache/src/platform.rs", "crates/zccache-core/src/platform.rs", "crates/zccache-cli-core/src/platform.rs", "crates/zccache-daemon-core/src/platform.rs", "crates/zccache-ipc/src/platform.rs"]
+
+# zccache calls `zackees/setup-soldr` directly (there is no
+# `.github/actions/soldr` composite wrapper here), and it already gates its own
+# writes with an explicit per-step expression
+# (`save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && ... }}`)
+# rather than a precheck plan output -- zccache has no `ci-pre.yml` precheck
+# job for `needs.precheck.outputs.cache_save` to come from. So `require` is
+# empty: demanding `save-cache = "plan"` here would be an unsatisfiable
+# declaration, and leaving the table out entirely is a schema violation.
+# The writer-vs-PR half of that rule is still enforced, by [cache].pr.mode.
+[allow.setup-soldr]
+only-in = ""
+
+# ── Publish ───────────────────────────────────────────────────────────────────
+# zccache ships a binary plus a PyPI wrapper, but release-auto.yml publishes
+# from its own release job rather than from the ci-lint plan, so this contract
+# declares no PyPI publish target.
+[publish]
