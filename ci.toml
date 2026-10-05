@@ -121,13 +121,13 @@ pr       = { mode = "none", families = [], max-per-pr = "0MB", budget = "0MB", t
 # occupies 3.19 GB -- and would then be a number `ci-lint cache janitor` LRU-
 # evicts to. The `shapes` form is the honest one: each scope gets its own
 # ceiling at or above that shape's measured maximum.
-compile = { via = "setup-soldr:build-cache", max = "900MB", lockfile = true, per = "platform", evict = "lru", shapes = { "linux-x64-integration" = { max = "900MB" }, "linux-x64-dylint" = { max = "550MB" }, "linux-x64-base" = { max = "980MB" }, "linux-x64-cross-x86-musl" = { max = "250MB" }, "linux-x64-cross-arm-musl" = { max = "250MB" }, "linux-x64-test" = { max = "50MB" }, "windows-x64" = { max = "410MB" }, "windows-arm64" = { max = "5MB" } } }
+compile = { via = "setup-soldr:build-cache", max = "900MB", lockfile = true, per = "platform", evict = "lru", shapes = { "linux-x64-integration" = { max = "900MB" }, "linux-x64-dylint" = { max = "550MB" }, "linux-x64-base" = { max = "980MB" }, "linux-x64-cross-x86-musl" = { max = "250MB" }, "linux-x64-cross-arm-musl" = { max = "250MB" }, "linux-x64-test" = { max = "50MB" }, "windows-x64" = { max = "410MB" }, "windows-arm64" = { max = "5MB" } } , promote = "ancestor" }
 
 # `deps` -- the cook base. All three live entries are linux-x64, and they are
 # three DIFFERENT shapes (a locked generation, a bare generation, and the
 # 0.9.27 pre-transition one), not three generations of one shape, so each gets
 # its own ceiling.
-deps = { via = "setup-soldr:cook", max = "810MB", lockfile = true, per = "os", evict = "lru", shapes = { "linux-x64-locked" = { max = "810MB" }, "linux-x64-bare" = { max = "410MB" }, "linux-x64-v093" = { max = "280MB" } } }
+deps = { via = "setup-soldr:cook", max = "810MB", lockfile = true, per = "os", evict = "lru", shapes = { "linux-x64-locked" = { max = "810MB" }, "linux-x64-bare" = { max = "410MB" }, "linux-x64-v093" = { max = "280MB" } } , promote = "ancestor" }
 
 # `registry` -- the cargo registry. Live: linux 4 entries / 434.1 MB (max
 # 112.2), windows 2 / 287.4 MB (max 152.3), macos 1 / 108.9 MB. The digest
@@ -136,12 +136,12 @@ deps = { via = "setup-soldr:cook", max = "810MB", lockfile = true, per = "os", e
 registry = { via = "setup-soldr:cargo-registry", max = "160MB", lockfile = true, per = "platform", evict = "lru", shapes = { "linux" = { max = "450MB" }, "windows" = { max = "300MB" }, "macos" = { max = "120MB" } } }
 
 # `dylint` -- the tool/driver/foundation cache, one host, one live entry.
-dylint = { via = "setup-soldr:dylint", max = "540MB", per = "none", min = "1MB", evict = "lru" }
+dylint = { via = "setup-soldr:dylint", max = "540MB", per = "none", min = "1MB", evict = "lru" , promote = "ancestor" }
 
 # `dylint-out` -- the Dylint output cache. One generation per lockfile, not per
 # target (ci.yml#44 round-4B measured). The single live entry is 825.4 MB: the
 # second-largest family, and the one zccache's dylint lane replays.
-dylint-out = { via = "setup-soldr:dylint-output", max = "850MB", lockfile = true, per = "none", min = "1MB", evict = "lru" }
+dylint-out = { via = "setup-soldr:dylint-output", max = "850MB", lockfile = true, per = "none", min = "1MB", evict = "lru" , promote = "ancestor" }
 
 # `sdk` -- setup-soldr's cross-target prepare tree, one entry per musl target.
 sdk = { via = "setup-soldr:cross-targets", max = "100MB", per = "cross-platform", evict = "lru" }
@@ -165,8 +165,24 @@ uv = { via = "setup-uv", max = "4MB", per = "platform", evict = "lru" }
 # mode = "ancestor" here would claim a mechanism zccache cannot exercise, and
 # would trip CACHE-030 (`needs_review`) on every precheck. Flip it when
 # setup-soldr ships a tag containing #566.
+# zackees/ci.yml#335. Promotion standardizes on setup-soldr's ancestor
+# encoding -- shortest parent-edge distance from a live git DAG walk -- rather
+# than a first-parent ordinal, which INVERTS on wide merges: a 50-commit branch
+# tip reports ordinal 53 while the merge commit containing it reports 4, so a
+# cache saved at the merge looks OLDER than one saved 50 commits before it.
+# #335 keeps the `m<n>` label for offline audit only.
+#
+# `promote = "ancestor"` above declares those keys carry the LINEAGE LABEL that
+# makes a nearest-ancestor search decidable; a key ending in a bare content
+# hash destroys the ancestry at save time (CACHE-031). The four families at or
+# above CACHE-031's 256MB floor opt in; `registry` (160MB), `sdk` (100MB),
+# `soldr-mini` (15MB) and `uv` (4MB) stay below it, where unbounded entry
+# count is noise rather than a budget threat.
+#
+# DECLARATION ONLY: setup-soldr#566 is merged but unreleased, so CACHE-030 and
+# CACHE-032 report `needs_review` and the opt-in is inert until a tag lands.
 [cache.promote]
-mode = "off"
+mode = "ancestor"
 
 # ── Local runs ────────────────────────────────────────────────────────────────
 # NOTE: this repository's local gate is declared in `local-gate.toml`
