@@ -164,7 +164,9 @@ impl TwoEndpoints {
 
     /// The same, pinned to `endpoint`.
     fn command_at(&self, subcommand: &str, endpoint: &str) -> Command {
-        self.command(subcommand).env("ZCCACHE_ENDPOINT", endpoint)
+        let mut cmd = self.command(subcommand);
+        cmd.env("ZCCACHE_ENDPOINT", endpoint);
+        cmd
     }
 
     fn start_at(&self, endpoint: Option<&str>) -> std::process::Output {

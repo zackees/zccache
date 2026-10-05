@@ -267,7 +267,9 @@ fn dead_pid() -> u32 {
             .spawn()
             .expect("spawn reaped child")
     } else {
-        std::process::Command::new("true").spawn().expect("spawn reaped child")
+        std::process::Command::new("true")
+            .spawn()
+            .expect("spawn reaped child")
     };
     let pid = child.id();
     child.wait().expect("reap child");
