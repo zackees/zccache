@@ -25,6 +25,12 @@ pub mod fingerprint;
 pub mod jobserver;
 pub mod lifecycle;
 pub mod lineage;
+/// Lock-file ownership guard (#1905). Gated with `test` as well as
+/// `daemon-entry` so its unit tests build in a plain `-p
+/// zccache-daemon-core` test run, while a non-test build without
+/// `daemon-entry` does not carry a dead-code warning.
+#[cfg(any(feature = "daemon-entry", test))]
+pub(crate) mod lock_file_guard;
 /// Bounded opt-in tracing file sink (#1165). Gated with `entry` because it is
 /// a `tracing_subscriber` layer and that dependency is optional — the daemon
 /// library is also built by hosts that install their own subscriber.
