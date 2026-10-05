@@ -33,6 +33,7 @@ mod link_cache;
 mod link_env_1806;
 mod metadata_deferred;
 mod miss_overhead_budget;
+mod multi_context_salts;
 mod multi_restart_context_key;
 mod pack;
 mod path_remap;
