@@ -479,7 +479,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("probe.c"), b"int main(void) { return 0; }").unwrap();
             assert_eq!(
-                classify_invocation("clang", &args(&["-c", "probe.c", "-o", "probe.o"]), dir.path()),
+                classify_invocation(
+                    "clang",
+                    &args(&["-c", "probe.c", "-o", "probe.o"]),
+                    dir.path()
+                ),
                 WrapperRoute::ProbeBypass,
                 "issue #1909: a relative probe source must be resolved against the \
                  caller-supplied cwd, not the wrapper's post-chdir process cwd",

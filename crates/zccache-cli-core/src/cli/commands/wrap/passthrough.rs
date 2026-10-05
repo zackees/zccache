@@ -35,7 +35,10 @@ pub(super) fn release_cwd_for_command(cmd: &mut std::process::Command, child_cwd
 /// `WrapperRoute::ProbeBypass` route in `wrap.rs`). Reading the process cwd
 /// here spawned the compiler in `/tmp`, so relative `-I`/`-o` paths in the
 /// probe's argv resolved against the temp dir instead of the build tree.
-fn run_with_released_cwd(cmd: &mut std::process::Command, child_cwd: &Path) -> std::io::Result<i32> {
+fn run_with_released_cwd(
+    cmd: &mut std::process::Command,
+    child_cwd: &Path,
+) -> std::io::Result<i32> {
     // An empty `child_cwd` is what `wrap.rs`'s
     // `std::env::current_dir().unwrap_or_default()` yields when the cwd could
     // not be read. Falling back to not setting `current_dir` keeps the
@@ -191,16 +194,17 @@ mod tests {
 
         assert_eq!(code, ExitCode::SUCCESS, "the shim must exit 0");
         let reported = std::fs::read_to_string(canonical_build_dir.join("zccache-cwd-probe.txt"))
-            .expect("issue #1909: the child's cwd report must land in the caller-supplied \
-                    directory, proving the compiler ran there rather than in the temp dir");
+            .expect(
+                "issue #1909: the child's cwd report must land in the caller-supplied \
+                    directory, proving the compiler ran there rather than in the temp dir",
+            );
         let reported = reported.trim();
         let expected = std::fs::canonicalize(&canonical_build_dir)
             .unwrap_or_else(|_| canonical_build_dir.clone())
             .to_string_lossy()
             .into_owned();
         assert_eq!(
-            std::fs::canonicalize(reported)
-                .unwrap_or_else(|_| std::path::PathBuf::from(reported)),
+            std::fs::canonicalize(reported).unwrap_or_else(|_| std::path::PathBuf::from(reported)),
             std::fs::canonicalize(&canonical_build_dir)
                 .unwrap_or_else(|_| canonical_build_dir.clone()),
             "issue #1909: the child must run in {expected}, reported {reported}",
