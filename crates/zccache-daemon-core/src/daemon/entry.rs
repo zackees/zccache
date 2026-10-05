@@ -350,6 +350,14 @@ fn run_server(args: Args) {
         // depgraph load itself moves.
 
         // ── Issue #637/#639: discriminate loser-of-race from real bind failure ──
+        //
+        // #1905: `write_lock_file` runs well below this block, so on every
+        // bind failure this process has NOT created the lock file. Track
+        // ownership explicitly — nothing before `write_lock_file` may delete
+        // a lock file this process did not write, or it unlinks the winning
+        // daemon's file and makes a live daemon undiscoverable.
+        let mut lock_file =
+            crate::daemon::lock_file_guard::LockFileGuard::new(crate::ipc::lock_file_path());
         let bind_endpoint = endpoint.clone();
         let bind_result = kernal_api::async_engine::launch_blocking(move || {
             crate::daemon::DaemonServer::bind(&bind_endpoint)
@@ -359,6 +367,15 @@ fn run_server(args: Args) {
         let server = match bind_result {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
+                // #1905: `WouldBlock` — cache-root writer contention from
+                // `CacheRootWriterLock::acquire`, where THIS daemon bound its
+                // endpoint fine but a different daemon already owns the cache
+                // root — is deliberately NOT in this list. This arm exits 0
+                // to mean "another daemon owns this endpoint", which is a
+                // different claim from "another daemon owns this cache
+                // root"; deferring on it would silently drop a real bind
+                // failure. Ownership, not error-kind enumeration, is what
+                // keeps the winner's lock file safe (`lock_file` below).
                 let is_pipe_in_use = matches!(
                     &e,
                     crate::ipc::IpcError::Io(io_err) if matches!(
@@ -378,13 +395,18 @@ fn run_server(args: Args) {
                     // winning daemon, not us.
                     std::process::exit(0);
                 }
-                tracing::error!("failed to bind {endpoint}: {e}");
-                crate::ipc::remove_lock_file();
+                tracing::error!(
+                    wrote_lock_file = lock_file.wrote_lock_file(),
+                    "failed to bind {endpoint}: {e}"
+                );
+                // #1905: no-op — we never wrote the lock file.
+                lock_file.remove_if_owned();
                 std::process::exit(1);
             }
             Err(e) => {
                 tracing::error!("failed to join daemon bind worker for {endpoint}: {e}");
-                crate::ipc::remove_lock_file();
+                // #1905: same — a no-op before `write_lock_file`.
+                lock_file.remove_if_owned();
                 std::process::exit(1);
             }
         };
@@ -410,6 +432,24 @@ fn run_server(args: Args) {
         let pid = std::process::id();
         if let Err(e) = crate::ipc::write_lock_file(pid) {
             tracing::warn!("failed to write lock file: {e}");
+            // `write_lock_file` creates the parent directory before the
+            // write, so this failure is either a create failure (the file
+            // at this path is untouched) or a partially-applied
+            // `fs::write` (a truncated remnant). Only the second is ours
+            // to clean up: `read_lock_file_pid` cannot parse a truncated
+            // file, so leaving it makes `probe_existing_daemon` read it
+            // as "no pid" forever. An unparseable file is also the only
+            // shape here that is provably not another daemon's record, so
+            // this stays inside the #1905 invariant. Ownership stays
+            // unrecorded, so the `remove_if_owned` calls below remain
+            // no-ops for this process.
+            if crate::ipc::read_lock_file_pid().is_none() {
+                let _ = std::fs::remove_file(crate::ipc::lock_file_path());
+            }
+        } else {
+            // #1905: only now does this process own the lock file, so only
+            // now may its cleanup paths remove it.
+            lock_file.mark_written();
         }
         // #1005: advisory top-level marker of the last version that bound.
         // Diagnostics / warm-start hint only, never authoritative for identity.
@@ -562,7 +602,7 @@ fn run_server(args: Args) {
         let mut server = server;
         if let Err(e) = server.run(idle_timeout).await {
             tracing::error!("server error: {e}");
-            crate::ipc::remove_lock_file();
+            lock_file.remove_if_owned();
             // Best-effort: abort the background load if it hasn't
             // landed yet. If it has, the swap is harmless.
             load_handle.cancel();
@@ -570,7 +610,7 @@ fn run_server(args: Args) {
         }
 
         tracing::info!("daemon exiting cleanly");
-        crate::ipc::remove_lock_file();
+        lock_file.remove_if_owned();
         // The load may still be running if shutdown came in <3 s after
         // start; abort is safe (nothing for the swap to corrupt).
         load_handle.cancel();
