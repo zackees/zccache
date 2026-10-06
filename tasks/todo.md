@@ -1333,3 +1333,15 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Validate committed no-cook candidate e3b4520: full gate passed in 954 s, stamped e587de8e; all 3478 tests passed. Explicit ci-tests default serialized nextest, so restore num-cpus parallelism in the final slice.
 - [x] Add RED old-lock retention/bootstrap checks; retire measured Test and Integration generations, reserve the initial 1.2 GB without double-counting, and replay the captured 7.90 GB inventory at a 9.10 GB forecast below the unchanged 9.20 GB target.
 - [ ] Review and validate the final committed planner/parallelism slice before push.
+
+## #1926: busy-child fixture containment
+
+- [x] Capture live orphan CPU evidence; file and read back #1926.
+- [x] Run a focused panic-cleanup unit regression RED in isolated Linux (Bosn job 9: 0 passed, 1 failed).
+- [x] Add unwind cleanup, bounded polling and a finite busy workload.
+- [x] Verify GREEN for panic, normal cleanup, independent expiry and CPU accounting (16 process-session tests passed).
+- [x] Run the required focused code review.
+
+Publication requires the repository local gate; attach its final evidence to the focused PR.
+
+Review: clud-review found no correctness issues; its independent Bosn rerun passed all three cleanup/expiry regressions (job 12).

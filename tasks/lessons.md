@@ -318,3 +318,8 @@ act's cache server has no budget. Lesson: copy workflow precedent only from
 current `main`, and run `ci/check_cache_footprint.py` after every workflow
 edit. Never treat a local act cache hit as evidence that a GitHub cache
 family is wanted.
+
+## #1926: busy-child unit fixtures
+
+- Reproduce a fixture leak with a focused failing unit test before changing its cleanup.
+- A raw Child handle does not kill on drop. Guard the process group immediately after spawn, reap the driver on scope exit and panic, bound polling, and give CPU burners their own finite lifetime for runner termination.
