@@ -379,8 +379,8 @@ fn a_driver_moving_from_its_compiler_to_its_assembler_is_making_progress() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn descendant_cpu_counts_a_busy_compiler_child_of_a_waiting_driver() {
-    use std::os::unix::process::CommandExt;
     use crate::platform::process::inspect::{cpu_ticks, descendant_cpu_ticks};
+    use std::os::unix::process::CommandExt;
 
     // The trailing `exit 0` keeps the shell waiting, as gcc waits on cc1plus.
     // The busy child runs a CPU-intensive loop (bounded by the test's overall timeout).
@@ -399,8 +399,8 @@ async fn descendant_cpu_counts_a_busy_compiler_child_of_a_waiting_driver() {
     // Wait for the busy compiler child to appear (bounded).
     let compiler = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
-            let children =
-                std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+            let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                .unwrap_or_default();
             if let Some(child) = children.split_whitespace().next() {
                 return child.parse::<u32>().unwrap();
             }
@@ -485,8 +485,9 @@ async fn descendant_cpu_fixture_cleans_up_on_panic() {
                 let pid = driver.lock().unwrap().as_ref().unwrap().id();
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     loop {
-                        let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-                            .unwrap_or_default();
+                        let children =
+                            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                                .unwrap_or_default();
                         if children.split_whitespace().next().is_some() {
                             return;
                         }
@@ -522,11 +523,14 @@ async fn descendant_cpu_fixture_cleans_up_on_panic() {
         .expect("cleanup verification session starts");
 
     let pid = driver.id();
-    let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-        .unwrap_or_default();
+    let children =
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
     // The new session's child should be the only one.
     let child_count = children.split_whitespace().count();
-    assert!(child_count <= 1, "no orphaned processes from previous panic: {children}");
+    assert!(
+        child_count <= 1,
+        "no orphaned processes from previous panic: {children}"
+    );
 
     let _ = std::process::Command::new("kill")
         .args(["-KILL", "--", &format!("-{}", pid)])
