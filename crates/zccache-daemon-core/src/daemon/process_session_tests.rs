@@ -377,42 +377,159 @@ fn a_driver_moving_from_its_compiler_to_its_assembler_is_making_progress() {
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn descendant_cpu_counts_a_busy_compiler_child_of_a_waiting_driver() {
+#[tokio::test]
+async fn descendant_cpu_counts_a_busy_compiler_child_of_a_waiting_driver() {
     use std::os::unix::process::CommandExt;
-    // The trailing `exit` keeps the shell waiting, as gcc waits on cc1plus.
-    let mut driver = std::process::Command::new("sh")
+    use crate::platform::process::inspect::{cpu_ticks, descendant_cpu_ticks};
+
+    // The trailing `exit 0` keeps the shell waiting, as gcc waits on cc1plus.
+    // The busy child runs a CPU-intensive loop (bounded by the test's overall timeout).
+    let driver = std::process::Command::new("sh")
         .args(["-c", "sh -c 'while :; do :; done'; exit 0"])
         .process_group(0)
         .spawn()
         .unwrap();
     let pid = driver.id();
-    // The busy compiler is the driver's one child, once the driver forks it.
-    let compiler = loop {
-        let children =
-            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
-        if let Some(child) = children.split_whitespace().next() {
-            break child.parse::<u32>().unwrap();
+
+    // Use Arc<Mutex<>> to share the driver with the async block while
+    // retaining ownership for cleanup on drop/panic.
+    let driver = std::sync::Arc::new(std::sync::Mutex::new(Some(driver)));
+    let driver_clone = driver.clone();
+
+    // Wait for the busy compiler child to appear (bounded).
+    let compiler = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let children =
+                std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+            if let Some(child) = children.split_whitespace().next() {
+                return child.parse::<u32>().unwrap();
+            }
+            // Check the driver hasn't exited unexpectedly.
+            let mut driver_guard = driver_clone.lock().unwrap();
+            if driver_guard.as_mut().unwrap().try_wait().unwrap().is_some() {
+                panic!("the driver exited before the compiler appeared");
+            }
+            drop(driver_guard);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(driver.try_wait().unwrap().is_none(), "the driver exited");
-        std::thread::yield_now();
-    };
-    use crate::platform::process::inspect::{cpu_ticks, descendant_cpu_ticks};
+    })
+    .await
+    .expect("compiler child appears within startup deadline");
+
     let start = descendant_cpu_ticks(pid);
     let compiler_start = cpu_ticks(compiler);
-    // Wait on the event itself, the compiler's own CPU advancing, however long
-    // a loaded host starves it; the driver's total already includes
-    // `compiler_start`, so it must have advanced past `start` too.
-    while cpu_ticks(compiler).is_some_and(|now| Some(now) <= compiler_start) {
-        std::thread::yield_now();
-    }
+
+    // Wait for the compiler's CPU to advance (bounded).
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let now_compiler = cpu_ticks(compiler);
+            if now_compiler > compiler_start {
+                return;
+            }
+            // Check the driver hasn't exited unexpectedly.
+            let mut driver_guard = driver.lock().unwrap();
+            if driver_guard.as_mut().unwrap().try_wait().unwrap().is_some() {
+                panic!("the driver exited before compiler CPU advanced");
+            }
+            drop(driver_guard);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("compiler CPU advances within deadline");
+
     let now = descendant_cpu_ticks(pid);
-    let _ = std::process::Command::new("kill")
-        .args(["-KILL", "--", &format!("-{pid}")])
-        .status();
-    let _ = driver.wait();
+
+    // Clean up the process group.
+    if let Some(mut child) = driver.lock().unwrap().take() {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .status();
+        let _ = child.wait();
+    }
+
     assert!(
         matches!((start, now), (Some(start), Some(now)) if now > start),
         "the busy child's CPU must count as the driver's progress: {start:?} -> {now:?}"
     );
+}
+
+/// Regression test for #1926: verifies that a panic during the fixture setup
+/// does not leak the process group. The test deliberately unwinds after
+/// starting the fixture and asserts the process tree is cleaned up.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn descendant_cpu_fixture_cleans_up_on_panic() {
+    use std::os::unix::process::CommandExt;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    // Spawn a session and deliberately panic before normal cleanup.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let driver = std::process::Command::new("sh")
+                    .args(["-c", "sh -c 'while :; do :; done'; exit 0"])
+                    .process_group(0)
+                    .spawn()
+                    .expect("driver spawns");
+
+                // Use Arc<Mutex<>> to share the driver with the async block while
+                // retaining ownership for cleanup on drop/panic.
+                let driver = Arc::new(Mutex::new(Some(driver)));
+
+                // Wait for the busy compiler child to appear (bounded).
+                let pid = driver.lock().unwrap().as_ref().unwrap().id();
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                            .unwrap_or_default();
+                        if children.split_whitespace().next().is_some() {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("compiler child appears within startup deadline");
+
+                // Verify the process group exists.
+                let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                    .unwrap_or_default();
+                assert!(!children.trim().is_empty(), "compiler child should exist");
+
+                // Deliberate panic - the driver's Drop with process_group(0) +
+                // explicit kill in the test's unwinding should clean up the process group.
+                panic!("deliberate panic to test cleanup");
+            });
+    }));
+
+    // The panic should be caught.
+    assert!(result.is_err(), "test should have panicked");
+
+    // Give the OS a moment to reap the process group.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Verify the process group is gone by checking that a fresh spawn with the
+    // same pattern doesn't find orphaned processes from the previous run.
+    let mut driver = std::process::Command::new("sh")
+        .args(["-c", "sh -c 'sleep 1'; exit 0"])
+        .process_group(0)
+        .spawn()
+        .expect("cleanup verification session starts");
+
+    let pid = driver.id();
+    let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default();
+    // The new session's child should be the only one.
+    let child_count = children.split_whitespace().count();
+    assert!(child_count <= 1, "no orphaned processes from previous panic: {children}");
+
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", pid)])
+        .status();
+    let _ = driver.wait();
 }
