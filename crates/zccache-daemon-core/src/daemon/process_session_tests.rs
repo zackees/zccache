@@ -379,13 +379,11 @@ fn a_driver_moving_from_its_compiler_to_its_assembler_is_making_progress() {
 #[cfg(target_os = "linux")]
 #[test]
 fn descendant_cpu_counts_a_busy_compiler_child_of_a_waiting_driver() {
-    use std::os::unix::process::CommandExt;
-    // The trailing `exit` keeps the shell waiting, as gcc waits on cc1plus.
-    let mut driver = std::process::Command::new("sh")
-        .args(["-c", "sh -c 'while :; do :; done'; exit 0"])
-        .process_group(0)
-        .spawn()
-        .unwrap();
+    let mut driver = spawn_busy_compiler_driver();
+    let fixture = BusyCompilerGuard {
+        driver: &mut driver,
+    };
+    let driver = &mut *fixture.driver;
     let pid = driver.id();
     // The busy compiler is the driver's one child, once the driver forks it.
     let compiler = loop {
@@ -414,5 +412,75 @@ fn descendant_cpu_counts_a_busy_compiler_child_of_a_waiting_driver() {
     assert!(
         matches!((start, now), (Some(start), Some(now)) if now > start),
         "the busy child's CPU must count as the driver's progress: {start:?} -> {now:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_busy_compiler_driver() -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+    // The trailing `exit` keeps the shell waiting, as gcc waits on cc1plus.
+    std::process::Command::new("sh")
+        .args(["-c", "sh -c 'while :; do :; done'; exit 0"])
+        .process_group(0)
+        .spawn()
+        .expect("busy compiler driver starts")
+}
+
+#[cfg(target_os = "linux")]
+struct BusyCompilerGuard<'a> {
+    driver: &'a mut std::process::Child,
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn busy_child_fixture_cleans_up_after_panic() {
+    use crate::platform::process::inspect::is_alive;
+    let mut driver = spawn_busy_compiler_driver();
+    let pid = driver.id();
+    // Keep the handle outside catch_unwind so RED can reap its leaked driver.
+    let mut compiler = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let fixture = BusyCompilerGuard {
+            driver: &mut driver,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+                .expect("driver children are readable");
+            if let Some(child) = children.split_whitespace().next() {
+                compiler = Some(child.parse::<u32>().expect("child pid"));
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child startup deadline"
+            );
+            assert!(
+                fixture.driver.try_wait().unwrap().is_none(),
+                "driver exited"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("intentional fixture unwind");
+    }));
+    let cleaned_up = !is_alive(pid) && compiler.is_some_and(|pid| !is_alive(pid));
+    // A failing regression must not leave the CPU burner behind itself.
+    if !cleaned_up {
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                "kill -KILL -\"$1\"",
+                "fixture-cleanup",
+                &pid.to_string(),
+            ])
+            .status()
+            .expect("fallback group cleanup runs");
+    }
+    let _ = driver.wait();
+    assert!(result.is_err(), "the fixture must unwind");
+    assert!(compiler.is_some(), "the busy child must have started");
+    assert!(
+        cleaned_up,
+        "fixture panic leaked driver {pid} or child {compiler:?}"
     );
 }
