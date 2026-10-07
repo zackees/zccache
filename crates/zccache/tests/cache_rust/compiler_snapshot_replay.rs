@@ -38,6 +38,11 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
         let exported = export_store_snapshot(source.as_path(), &compatibility, &snapshot).unwrap();
         assert!(exported.entries > 0);
         assert_eq!(exported, import_snapshot(&snapshot, &compatibility, destination.as_path()).unwrap());
+        // Diagnostic control only: determine whether persisted context is
+        // required in addition to the transported artifact store.
+        std::fs::create_dir_all(destination.join("depgraph")).unwrap();
+        std::fs::copy(source.join("depgraph/depgraph.bin"),
+                      destination.join("depgraph/depgraph.bin")).unwrap();
         std::fs::remove_dir_all(&original).unwrap();
         std::fs::remove_dir_all(workspace.join("target")).unwrap();
         std::env::set_var(zccache::core::config::CACHE_DIR_ENV, &fresh);
