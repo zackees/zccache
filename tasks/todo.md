@@ -1349,14 +1349,23 @@ Issue: https://github.com/zackees/zccache/issues/1578
 # Shared CI compiler-store snapshots (ci.yml#362)
 
 - [x] Observe an isolated RED test retaining multi-output metadata and verdicts.
-- [x] Export staged-v2 snapshots using the existing layout resolver (legacy support pending).
+- [x] Export staged-v2, pack and flat payloads using the existing layout resolver.
 - [x] Reject corrupt payloads and preserve prior committed snapshots (isolated test).
 - [x] Verify compatibility on import before any destination publication (isolated test).
+- [x] Import leaves its immutable source unchanged and rejects undecodable indexes.
+- [x] Two concurrent publishers install one complete, importable snapshot.
+- [x] Offline export excludes active writers using the daemon's canonical root lease.
+- [x] Qualify the thin `zccache cache export/import` CLI and its schema-1 output.
 - [ ] Run focused isolated tests, broader gates, and local review before pushing.
 - [ ] Integrate the backend API with cache transport; prove fresh-engine reuse.
 
-Current validation: intentional RED at the unimplemented export API; GREEN
-seven snapshot tests, the whole artifact crate (123 passed, one ignored), and
-warnings-denied artifact Clippy, all inside the existing Bosn gate stack.
-Timestamp/read-only retention is covered. Full repository qualification and
-review have not run; this is an unpublished API draft.
+Current validation: intentional RED controls for unimplemented export, mixed
+legacy stores, immutable import, strict index decode and active-writer exclusion.
+The corrected writer-exclusion run passed all 127 artifact tests (one ignored),
+six canonical writer-lease tests, and warnings-denied artifact Clippy inside
+the existing Bosn gate stack. Timestamp/read-only retention is covered.
+The corrected CLI run passed export/import in one process, wrong-context refusal,
+and warnings-denied Clippy for artifact, core and CLI crates. The focused run
+took 23.42 seconds inside the existing isolated stack; this is diagnostic, not
+a controlled performance comparison. Full repository qualification and review
+remain pending; this unpublished draft is not fresh-engine cache-hit proof.

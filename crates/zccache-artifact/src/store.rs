@@ -243,6 +243,15 @@ impl ArtifactStore {
         Ok(store)
     }
 
+    /// Strict immutable-snapshot decoding: no recovery or writes to its source.
+    pub(crate) fn from_snapshot(path: &Path, bytes: &[u8]) -> std::io::Result<Self> {
+        let rows = decode_index_rows(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let store = Self::open_empty(path);
+        store.insert_many(rows);
+        Ok(store)
+    }
+
     /// Construct an empty store rooted at `path` without touching disk.
     ///
     /// Issue #784 phase 2d: lets `DaemonServer::bind_with_cache_dir`

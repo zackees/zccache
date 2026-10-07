@@ -12,6 +12,7 @@ pub(crate) mod analyze;
 pub(crate) mod args;
 pub(crate) mod cache_ops;
 pub(crate) mod cargo_registry;
+pub(crate) mod compiler_snapshot;
 pub(crate) mod daemon;
 pub(crate) mod download;
 pub(crate) mod engine_profile;
@@ -537,6 +538,8 @@ fn dispatch(command: Commands, global_overrides: wrap::WrapperOverrides) -> Exit
             wrap::run_wrap(&wrap_args, global_overrides)
         }
         Commands::Cache { command } => match command {
+            args::CacheCommands::Export { snapshot } => compiler_snapshot::export(snapshot),
+            args::CacheCommands::Import { snapshot } => compiler_snapshot::import(snapshot),
             args::CacheCommands::Size { json } => cache_ops::cmd_cache_size(json),
             args::CacheCommands::List { json } => cache_ops::cmd_cache_list(json),
         },

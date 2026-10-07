@@ -284,7 +284,7 @@ impl AnalyzeReport {
         if self.slowest_entries.len() < 20 {
             self.slowest_entries.push(entry);
             self.slowest_entries
-                .sort_by(|a, b| b.latency_ns.cmp(&a.latency_ns));
+                .sort_by_key(|entry| std::cmp::Reverse(entry.latency_ns));
         } else if latency_ns
             > self
                 .slowest_entries
@@ -295,7 +295,7 @@ impl AnalyzeReport {
             self.slowest_entries.pop();
             self.slowest_entries.push(entry);
             self.slowest_entries
-                .sort_by(|a, b| b.latency_ns.cmp(&a.latency_ns));
+                .sort_by_key(|entry| std::cmp::Reverse(entry.latency_ns));
         }
     }
 
