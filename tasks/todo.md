@@ -1346,3 +1346,9 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Validate committed no-cook candidate e3b4520: full gate passed in 954 s, stamped e587de8e; all 3478 tests passed. Explicit ci-tests default serialized nextest, so restore num-cpus parallelism in the final slice.
 - [x] Add RED old-lock retention/bootstrap checks; retire measured Test and Integration generations, reserve the initial 1.2 GB without double-counting, and replay the captured 7.90 GB inventory at a 9.10 GB forecast below the unchanged 9.20 GB target.
 - [ ] Review and validate the final committed planner/parallelism slice before push.
+# #1036 explicitly authorized remote Docker campaign
+
+- [x] Verify the local quiet-host check rejects competing Cargo/clang/rustc builds.
+- [x] Add a manual option to the existing benchmark workflow for all three unchanged five-sample Docker campaigns and retained evidence.
+- [ ] Validate workflow/cache guards and complete committed-tree gate before push.
+- [ ] Merge the focused PR, run on the final source ref, download raw evidence, and inspect all correctness and performance results.
