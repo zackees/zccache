@@ -522,3 +522,6 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/worktree_variants.rs"]
 mod worktree_variants;
+#[cfg(test)]
+#[path = "tests/hash_precedence.rs"]
+mod hash_precedence_tests;
