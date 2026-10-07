@@ -18,6 +18,20 @@ use super::{
     CacheVerdict, ContextState, DepGraph,
 };
 
+fn input_matches(
+    path: &NormalizedPath,
+    recorded: &[(NormalizedPath, ContentHash)],
+    get_hash: &impl Fn(&Path) -> Option<ContentHash>,
+    is_fresh: &impl Fn(&Path) -> bool,
+) -> bool {
+    // A measured hash is stronger evidence than watcher silence. In
+    // particular, an event may still be queued when the caller hashes an edit.
+    match get_hash(path) {
+        Some(current) => recorded.iter().any(|(p, hash)| p == path && *hash == current),
+        None => is_fresh(path),
+    }
+}
+
 impl DepGraph {
     /// [`Self::check_rustc_metadata_compat_diagnostic_with_env`] without an
     /// env lookup. For contexts with recorded env-deps this conservatively
@@ -109,18 +123,8 @@ impl DepGraph {
             );
         };
 
-        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
-            if is_fresh(path) {
-                return true;
-            }
-            let current = match get_hash(path) {
-                Some(h) => h,
-                None => return false,
-            };
-            entry
-                .last_file_hashes
-                .iter()
-                .any(|(p, h)| p == path && *h == current)
+        let fresh_or_hash_match = |path: &NormalizedPath| {
+            input_matches(path, &entry.last_file_hashes, &get_hash, &is_fresh)
         };
 
         if !fresh_or_hash_match(&entry.context.source_file) {
@@ -284,18 +288,8 @@ impl DepGraph {
         // The journal is in-memory and starts empty after every daemon
         // restart; without this fallback, every cached header reports
         // "changed" and every Warm context degrades to HeadersChanged.
-        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
-            if is_fresh(path) {
-                return true;
-            }
-            let current = match get_hash(path) {
-                Some(h) => h,
-                None => return false,
-            };
-            entry
-                .last_file_hashes
-                .iter()
-                .any(|(p, h)| p == path && *h == current)
+        let fresh_or_hash_match = |path: &NormalizedPath| {
+            input_matches(path, &entry.last_file_hashes, &get_hash, &is_fresh)
         };
 
         // Check source file freshness.
@@ -510,18 +504,8 @@ impl DepGraph {
         // See `check()` above for the rationale — content-hash fallback
         // catches the post-restart empty-journal case where every header
         // would otherwise look "changed".
-        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
-            if is_fresh(path) {
-                return true;
-            }
-            let current = match get_hash(path) {
-                Some(h) => h,
-                None => return false,
-            };
-            entry
-                .last_file_hashes
-                .iter()
-                .any(|(p, h)| p == path && *h == current)
+        let fresh_or_hash_match = |path: &NormalizedPath| {
+            input_matches(path, &entry.last_file_hashes, &get_hash, &is_fresh)
         };
 
         // Check source file freshness.

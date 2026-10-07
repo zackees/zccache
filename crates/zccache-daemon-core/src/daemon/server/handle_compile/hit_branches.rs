@@ -160,12 +160,13 @@ pub(super) async fn try_request_cache_hit(probe: RequestCacheHitProbe<'_>) -> Op
     let same_root = req_entry.root.as_ref() == request_cache_key_root.as_ref();
     let t_cross_root_validate = Instant::now();
     let inputs_match = if same_root {
-        context_files_and_env_fresh(
+        context_artifact_is_fresh(
             state,
             &req_entry.context_key,
             &source_path,
             fh_entry.clock,
             client_env,
+            artifact_key_hex,
         )
     } else {
         request_cache_artifact_matches(
@@ -310,7 +311,8 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         (entry.artifact_key_hex.clone(), entry.clock, entry.cached_at)
     };
     if !cache_entry_fresh_at(compile_start, entry_cached_at, FAST_HIT_MAX_AGE)
-        || !context_files_and_env_fresh(state, &context_key, source_path, entry_clock, client_env)
+        || !context_artifact_is_fresh(state, &context_key, source_path, entry_clock, client_env,
+                                     &entry_artifact_key_hex)
     {
         return None;
     }
