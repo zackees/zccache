@@ -111,4 +111,4 @@ cmd = "soldr toolchain ensure --json && soldr rustup component add clippy && ZCC
 
 [task.compiler-snapshot-replay-test]
 stack = "gate"
-cmd = "CARGO_TARGET_DIR=/target soldr cargo test -p zccache --features test-support,daemon-entry --test cache_rust snapshot_restores_real_multi_output_hit --locked"
+cmd = "CARGO_TARGET_DIR=/target soldr cargo test -p zccache --features test-support --test cache_rust snapshot_restores_real_multi_output_hit --locked"

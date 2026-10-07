@@ -5,12 +5,11 @@ use zccache::artifact::snapshot::{export_store_snapshot, import_snapshot};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_original_store() {
-    let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).with_test_writer().try_init();
     let rustc = zccache::test_support::find_rustc().expect("rustc is required for snapshot replay");
     zccache::test_support::test_timeout(async move {
         let temp = tempfile::tempdir().unwrap();
         let original = temp.path().join("original");
-        let fresh = original.clone();
+        let fresh = temp.path().join("fresh");
         let workspace = temp.path().join("workspace");
         create_tiny_project(&workspace);
         // Require actual diagnostics rather than a vacuous empty-stream check.
@@ -38,15 +37,11 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
         let compatibility = "a".repeat(64);
         let exported = export_store_snapshot(source.as_path(), &compatibility, &snapshot).unwrap();
         assert!(exported.entries > 0);
-        let graph = std::fs::read(source.join("depgraph/depgraph.bin")).unwrap();
         let before = zccache::artifact::ArtifactStore::open(&source.join("index.bin")).unwrap();
         std::fs::remove_dir_all(&original).unwrap();
         assert_eq!(exported, import_snapshot(&snapshot, &compatibility, destination.as_path()).unwrap());
-        std::fs::create_dir_all(destination.join("depgraph")).unwrap();
-        std::fs::write(destination.join("depgraph/depgraph.bin"), graph).unwrap();
         let after = zccache::artifact::ArtifactStore::open(&destination.join("index.bin")).unwrap();
         for (key, meta) in before.load_all() {
-            eprintln!("snapshot row key={key} outputs={:?} sizes={:?} staged_env={:?}", meta.output_names, meta.output_sizes, std::env::var_os("ZCCACHE_STAGED_ARTIFACTS"));
             let restored = after.get(&key).expect("imported index must retain every row");
             assert_eq!(serde_json::to_value(&meta).unwrap(), serde_json::to_value(&restored).unwrap());
             assert!(zccache::artifact::resolve_artifact_payloads(
