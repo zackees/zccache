@@ -73,7 +73,10 @@ async fn fast_entry_checks_source_headers_force_includes_and_externs_without_eve
                 &expected,
             )
         };
+        let hits_before = graph.stats().hits;
         assert!(fresh(), "unchanged: {changed}");
+        assert_eq!(graph.stats().hits, hits_before + 1);
+        let accepted_hits = graph.stats().hits;
         let edited: NormalizedPath = dir.path().join(changed).into();
         std::fs::write(&edited, b"new").unwrap();
         assert!(!server
@@ -82,6 +85,11 @@ async fn fast_entry_checks_source_headers_force_includes_and_externs_without_eve
             .journal()
             .changed_since(&edited, clock));
         assert!(!fresh(), "pending event: {changed}");
+        assert_eq!(
+            graph.stats().hits,
+            accepted_hits,
+            "refused pending event: {changed}"
+        );
         // Even another request's updated metadata cannot prove the old key.
         server
             .state
@@ -89,8 +97,18 @@ async fn fast_entry_checks_source_headers_force_includes_and_externs_without_eve
             .lookup_since(&edited, Clock::ZERO)
             .unwrap();
         assert!(!fresh(), "updated metadata: {changed}");
+        assert_eq!(
+            graph.stats().hits,
+            accepted_hits,
+            "refused updated metadata: {changed}"
+        );
         // A newer depgraph key must not authorize an older fast-entry key.
         graph.update(&registration.map_key, scan, hash).unwrap();
         assert!(!fresh(), "updated context: {changed}");
+        assert_eq!(
+            graph.stats().hits,
+            accepted_hits,
+            "refused updated context: {changed}"
+        );
     }
 }
