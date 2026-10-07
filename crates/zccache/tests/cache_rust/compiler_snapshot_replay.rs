@@ -43,6 +43,12 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
         std::fs::create_dir_all(destination.join("depgraph")).unwrap();
         std::fs::copy(source.join("depgraph/depgraph.bin"),
                       destination.join("depgraph/depgraph.bin")).unwrap();
+        for name in ["metadata.bin", "compiler_hash.bin", "system_includes.bin"] {
+            let path = source.join(name);
+            if path.is_file() {
+                std::fs::copy(path, destination.join(name)).unwrap();
+            }
+        }
         std::fs::remove_dir_all(&original).unwrap();
         std::fs::remove_dir_all(workspace.join("target")).unwrap();
         std::env::set_var(zccache::core::config::CACHE_DIR_ENV, &fresh);
