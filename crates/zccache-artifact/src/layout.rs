@@ -412,7 +412,20 @@ fn publish_snapshot_pointer(
     let mut pointer_file = fs::File::create(&pointer)?;
     std::io::Write::write_all(&mut pointer_file, generation.as_bytes())?;
     pointer_file.sync_all()?;
-    resolve_staged_artifact_files(destination, key, sizes)?;
+    let (verified, _) = validated_staged_generation(destination, key, sizes)?
+        .ok_or_else(|| invalid_data("snapshot generation disappeared"))?;
+    // Runtime materialization requires durable integrity sidecars as well as
+    // the manifest. Derive them only from the just-verified copied outputs;
+    // never trust or transport a stale source sidecar. This destination is
+    // private until the containing snapshot is published.
+    for output in verified.outputs {
+        let blob = verified.dir.join(format!("output-{}", output.index));
+        let digest = kernal_api::hash::Blake3Digest::from_hex(&output.digest_hex)
+            .map_err(|error| invalid_data(error.to_string()))?;
+        let mut sidecar = fs::File::create(crate::blob_digest::sidecar_path(&blob))?;
+        std::io::Write::write_all(&mut sidecar, digest.as_bytes())?;
+        sidecar.sync_all()?;
+    }
     for directory in [&target, &key_dir, &root] {
         kernal_api::platform::fs::sync_directory_if_supported(directory)?;
     }

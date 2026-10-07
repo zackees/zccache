@@ -1348,6 +1348,13 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [ ] Review and validate the final committed planner/parallelism slice before push.
 # Shared CI compiler-store snapshots (ci.yml#362)
 
+- [x] Real compiler replay RED: imported manifest/payload/index validate, but
+      runtime evicts output-0 because transport omitted `.cowhash` sidecars.
+- [ ] Share the sidecar naming owner and regenerate sidecars from verified
+      manifest digests in private snapshot publication; qualify real replay.
+- [ ] Include dependency context through its owning API so a fresh imported
+      store can hit without the diagnostic test's manual depgraph copy.
+
 - [x] Observe an isolated RED test retaining multi-output metadata and verdicts.
 - [x] Export staged-v2, pack and flat payloads using the existing layout resolver.
 - [x] Reject corrupt payloads and preserve prior committed snapshots (isolated test).

@@ -17,4 +17,6 @@ Unpublished internal crate for zccache artifact storage and Rust artifact plan s
   (`zccache-daemon-core::daemon::server::index_reconcile`); this crate only
   supplies the scan.
 - `kv.rs` — the generic namespaced key/value store.
+- `blob_digest.rs` — the canonical durable integrity-sidecar naming shared
+  by runtime publication and immutable compiler-store transport.
 - `rust_plan.rs` — Rust artifact plan bundle save/restore.
