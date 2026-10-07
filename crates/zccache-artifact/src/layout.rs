@@ -339,6 +339,8 @@ pub(crate) fn copy_artifact_generation(
         &bincode::serialize(&manifest).map_err(|e| invalid_data(e.to_string()))?,
     )?;
     file.sync_all()?;
+    // Close the manifest before publishing its containing generation.
+    drop(file);
     kernal_api::platform::fs::sync_directory_if_supported(pending.path())?;
     let target = root.join(key).join(&generation_hex);
     fs::create_dir_all(root.join(key))?;

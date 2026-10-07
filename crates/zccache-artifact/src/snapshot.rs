@@ -128,6 +128,8 @@ fn publish_snapshot(
         &serde_json::to_vec(&manifest).map_err(invalid)?,
     )?;
     manifest_file.sync_all()?;
+    // Windows refuses a directory rename while a child file is still open.
+    drop(manifest_file);
     kernal_api::platform::fs::sync_directory_if_supported(&target)?;
     kernal_api::platform::fs::sync_directory_if_supported(pending.path())?;
     kernal_api::platform::fs::replacement::rename_generation(pending.path(), destination)?;
