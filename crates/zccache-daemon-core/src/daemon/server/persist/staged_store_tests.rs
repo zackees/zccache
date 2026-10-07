@@ -71,9 +71,7 @@ fn staged_generation_is_independent_and_hash_addressed() {
         !crate::platform::fs::identity::same_file(sources[0].as_path(), payloads[0].as_path())
             .unwrap()
     );
-    assert!(crate::platform::fs::permissions::is_sealed(
-        &fs::metadata(&payloads[0]).unwrap()
-    ));
+    assert!(crate::platform::fs::permissions::is_sealed(&payloads[0]).unwrap());
 
     fs::write(&sources[0], b"mutated compiler output").unwrap();
     assert_eq!(fs::read(&payloads[0]).unwrap(), b"first immutable payload");

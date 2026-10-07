@@ -1,3 +1,36 @@
+# #1779 final bug and performance burn-down
+
+- [x] Audit live issue, PR, release, worktree, and dependency state.
+- [x] Merge validated soldr PR #3441 and close #1792.
+- [x] Fix the upstream Windows ACL read-back failure, prove native Windows
+  behavior, merge its PR, and publish the exact validated dependency.
+- [ ] Complete #1791 through a pushed, validated, merged zccache PR;
+  prove wrapper-less rebuilds, owner-write refusal, and legacy upgrades.
+- [ ] Run the strict four-language standalone campaign for #1116 on a quiet
+  host, retain complete raw evidence, and merge the evidence/report PR.
+- [ ] Run the eight-cell Rust matrix and embedded mixed-language campaign;
+  report distributions, phase attribution, memory, cache behavior, and floors.
+- [ ] Re-measure kernal-api#366 with the resolved dependency and finish its
+  acceptance criteria without weakening ownership or admission semantics.
+- [ ] Publish the #1036 before/after report, reconcile #1778/#1779 against
+  proven results and the already-published 1.15.0 release, then close them.
+- [ ] Audit merged PRs and issue state; remove task-owned worktrees, branches,
+  scratch files, containers, and volumes after preserving required evidence.
+
+## Review — #1791 Windows write seals
+
+Static clud-review is clean (one primary reviewer). All 54 original cache
+delivery test/helper functions and their attributes survive the module split;
+the legacy-readonly upgrade test is additional. Unix 0464 sealing is preserved,
+and the Windows adapter matches the upstream ACL facade's contracts.
+
+Upstream PR kernal-api#426 is merged. Full native CI 37558933862 passed on
+`7623700c44a4590038043807c30802eb84e598f2`, including the Windows x86/ARM
+write-seal structural and facade tests. Release 37562892865 published 0.1.29;
+the exact registry dependency and lockfile now resolve that release.
+The zccache integration still requires isolated local gates and native Windows
+rebuild/write-refusal/legacy-upgrade/failure-cleanup execution before merge.
+
 # Link output permissions
 
 - [x] Reproduce a successful fresh link followed by a non-executable cache hit.

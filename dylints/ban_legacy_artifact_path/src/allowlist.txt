@@ -17,7 +17,6 @@ crates/zccache-daemon-core/src/daemon/server/tests/disk_maintenance.rs
 crates/zccache-daemon-core/src/daemon/server/tests/disk_maintenance_unit.rs
 crates/zccache-daemon-core/src/daemon/server/tests/embedded_flush.rs
 crates/zccache-daemon-core/src/daemon/server/tests/pack.rs
-crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs
 crates/zccache-daemon-core/src/daemon/server/persist/staged_store_tests.rs
 
 # Aggregate integration fixture seeds a flat-v1 artifact solely to prove the
