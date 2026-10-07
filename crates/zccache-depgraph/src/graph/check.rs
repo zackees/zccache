@@ -279,7 +279,7 @@ impl DepGraph {
         entry.last_accessed_unix_ms = now_unix_ms();
         self.mark_dirty();
 
-        if entry.state == ContextState::Cold {
+        if entry.state == ContextState::Cold || entry.artifact_key.is_none() {
             tracing::debug!(
                 key = %key.hash().to_hex(),
                 artifact_key = ?entry.artifact_key.map(|k| k.hash().to_hex()),
@@ -498,11 +498,11 @@ impl DepGraph {
         entry.last_accessed_unix_ms = now_unix_ms();
         self.mark_dirty();
 
-        if entry.state == ContextState::Cold {
+        if entry.state == ContextState::Cold || entry.artifact_key.is_none() {
             self.misses.fetch_add(1, Ordering::Relaxed);
             return (
                 CacheVerdict::Cold,
-                "context never updated (state=Cold)".to_string(),
+                "context cold or artifact key missing".to_string(),
             );
         }
 
