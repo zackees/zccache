@@ -40,6 +40,9 @@ def test_container_scenario_retains_evidence_and_exit_status(
     script.write_text(
         '#!/usr/bin/env bash\nset -euo pipefail\n'
         'echo "abort evidence" > "$1/../soldr-aborts-cold.jsonl"\n'
+        'native_logs="$1/../cache-cold/cache/zccache/daemon-state/embedded-v1-test/v1.15.1/logs"\n'
+        'mkdir -p "$native_logs"\n'
+        'echo \'{"outcome":"miss","miss_reason":"no_entry"}\' > "$native_logs/compile_journal.jsonl"\n'
         'echo "compiler unavailable" >&2\n'
         + (f'echo \'{{"guarded_command_status":{status}}}\'\n' if valid_json else 'echo broken-json\n')
         + f'exit {status}\n',
@@ -61,6 +64,8 @@ def test_container_scenario_retains_evidence_and_exit_status(
         assert json.loads((results / "result.json").read_text())["guarded_command_status"] == status
     assert (results / "soldr-aborts-cold.jsonl").read_text() == "abort evidence\n"
     assert (results / "scenario-stderr.log").read_text() == "compiler unavailable\n"
+    journal = results / "daemon-runtime/cache-cold/cache/zccache/daemon-state/embedded-v1-test/v1.15.1/logs/compile_journal.jsonl"
+    assert json.loads(journal.read_text()) == {"outcome": "miss", "miss_reason": "no_entry"}
 
 
 def test_soldr_builder_uses_runner_host_abi() -> None:

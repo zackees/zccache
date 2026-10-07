@@ -1421,3 +1421,14 @@ qualification remains required before publication.
   plus RED/GREEN simultaneous scenario/tee failures preserving the scenario status.
 - [ ] Review and commit the harness correction; rebuild images and retry all eight cells.
 - [ ] Qualify the final changed source through the complete local gate.
+
+### #1935 native compiler-journal evidence
+
+- [x] Confirm the GNU matrix's first restored medium cell is infrastructure-valid
+  but has zero warm hits and 171 misses; do not classify it as qualified reuse.
+- [x] Locate the real native journal under daemon-state/<instance>/<version>/logs
+  in the running owned container. The legacy logs copy omitted that journal.
+- [x] Reproduce missing journal retention across all six scenario/status cases.
+- [x] Extend the existing recursive evidence collector to retain native journals
+  with their original relative paths, including on failed scenarios.
+- [ ] Review and commit; qualify the final source with retained native miss evidence.

@@ -49,14 +49,16 @@ collect_scenario_evidence() {
     copy_if_exists "${scenario_root}/worktree-shutdown.json"
     copy_if_exists "${scenario_root}/save-report.json"
     copy_if_exists "${scenario_root}/load-report.json"
-    # Retain daemon startup evidence from every cache root. Startup failures are
-    # intermittent and may affect the cold, warm, A, or B side independently.
+    # Retain startup and compiler-outcome evidence from every cache root.
+    # Native embedded journals live below daemon-state/<instance>/<version>,
+    # outside the legacy zccache/logs directory copied below.
     while IFS= read -r -d '' daemon_log; do
         relative="${daemon_log#"${scenario_root}/"}"
         destination="${results_dir}/daemon-runtime/${relative}"
         mkdir -p "$(dirname -- "${destination}")" &&
             cp "${daemon_log}" "${destination}" || collection_status=$?
-    done < <(find "${scenario_root}" -type f -name daemon-spawn.log -print0)
+    done < <(find "${scenario_root}" -type f \
+        \( -name daemon-spawn.log -o -name compile_journal.jsonl \) -print0)
     find "${scenario_root}" -type d -path '*/cache/soldr-daemon' -print0 \
         | while IFS= read -r -d '' daemon_dir; do
             find "${daemon_dir}" -maxdepth 3 -printf '%y %p -> %l\n'
