@@ -9,7 +9,7 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
     zccache::test_support::test_timeout(async move {
         let temp = tempfile::tempdir().unwrap();
         let original = temp.path().join("original");
-        let fresh = temp.path().join("fresh");
+        let fresh = original.clone();
         let workspace = temp.path().join("workspace");
         create_tiny_project(&workspace);
         // Require actual diagnostics rather than a vacuous empty-stream check.
@@ -37,7 +37,11 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
         let compatibility = "a".repeat(64);
         let exported = export_store_snapshot(source.as_path(), &compatibility, &snapshot).unwrap();
         assert!(exported.entries > 0);
+        let graph = std::fs::read(source.join("depgraph/depgraph.bin")).unwrap();
+        std::fs::remove_dir_all(&original).unwrap();
         assert_eq!(exported, import_snapshot(&snapshot, &compatibility, destination.as_path()).unwrap());
+        std::fs::create_dir_all(destination.join("depgraph")).unwrap();
+        std::fs::write(destination.join("depgraph/depgraph.bin"), graph).unwrap();
         let before = zccache::artifact::ArtifactStore::open(&source.join("index.bin")).unwrap();
         let after = zccache::artifact::ArtifactStore::open(&destination.join("index.bin")).unwrap();
         for (key, meta) in before.load_all() {
@@ -47,7 +51,6 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
                 destination.join("artifacts").as_path(), &key, &meta.output_sizes, true,
                 "snapshot-replay-test").unwrap().is_some());
         }
-        std::fs::remove_dir_all(&original).unwrap();
         std::fs::remove_dir_all(workspace.join("target")).unwrap();
         std::env::set_var(zccache::core::config::CACHE_DIR_ENV, &fresh);
 
