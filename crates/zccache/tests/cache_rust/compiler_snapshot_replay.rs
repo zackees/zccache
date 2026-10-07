@@ -107,16 +107,19 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
             "pub fn answer() -> i32 { 399 }\nfn unused_snapshot_warning() {}\n",
         )
         .unwrap();
-        let session = start_session(&mut client, &workspace).await;
+        let changed_log = temp.path().join("changed.log");
+        let session = start_session_with_log(&mut client, &workspace,
+            Some(NormalizedPath::from(&changed_log))).await;
         let changed =
             compile_rustc(&mut client, &session, rustc.as_path(), &args, &workspace).await;
+        end_session(&mut client, session).await;
         assert_eq!(changed.exit_code, 0);
         assert!(
             !changed.cached,
-            "an imported context must not authorize stale source bytes"
+            "an imported context must not authorize stale source bytes: {}",
+            std::fs::read_to_string(&changed_log).unwrap_or_default()
         );
         assert_ne!(std::fs::read(&outputs[0]).unwrap(), bytes[0]);
-        end_session(&mut client, session).await;
         shutdown_daemon(client, handle).await;
     })
     .await;
