@@ -38,22 +38,35 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
         let exported = export_store_snapshot(source.as_path(), &compatibility, &snapshot).unwrap();
         assert!(exported.entries > 0);
         assert_eq!(exported, import_snapshot(&snapshot, &compatibility, destination.as_path()).unwrap());
+        let before = zccache::artifact::ArtifactStore::open(&source.join("index.bin")).unwrap();
+        let after = zccache::artifact::ArtifactStore::open(&destination.join("index.bin")).unwrap();
+        for (key, meta) in before.load_all() {
+            let restored = after.get(&key).expect("imported index must retain every row");
+            assert_eq!(serde_json::to_value(&meta).unwrap(), serde_json::to_value(&restored).unwrap());
+            assert!(zccache::artifact::resolve_artifact_payloads(
+                destination.join("artifacts").as_path(), &key, &meta.output_sizes, true,
+                "snapshot-replay-test").unwrap().is_some());
+        }
         std::fs::remove_dir_all(&original).unwrap();
         std::fs::remove_dir_all(workspace.join("target")).unwrap();
         std::env::set_var(zccache::core::config::CACHE_DIR_ENV, &fresh);
 
         let (endpoint, handle) = start_daemon_like_zccache_daemon().await;
         let mut client = connect(&endpoint).await;
-        let session = start_session(&mut client, &workspace).await;
+        let log = temp.path().join("replay.log");
+        let session = start_session_with_log(&mut client, &workspace,
+                                             Some(NormalizedPath::from(&log))).await;
         let second = compile_rustc(&mut client, &session, rustc.as_path(), &args, &workspace).await;
         assert_eq!(second.exit_code, first.exit_code);
-        assert!(second.cached, "first replay from the imported store must be a hit");
+        let status = get_status(&mut client).await;
+        end_session(&mut client, session).await;
+        assert!(second.cached, "first replay must hit: status={status:?}; log={}",
+                std::fs::read_to_string(&log).unwrap_or_default());
         assert_eq!(second.stdout, first.stdout);
         assert_eq!(second.stderr, first.stderr);
         for (output, expected) in outputs.iter().zip(&bytes) {
             assert_eq!(&std::fs::read(output).unwrap(), expected, "{}", output.display());
         }
-        end_session(&mut client, session).await;
         shutdown_daemon(client, handle).await;
     }).await;
 }
