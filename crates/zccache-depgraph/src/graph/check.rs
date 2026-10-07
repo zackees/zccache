@@ -27,7 +27,9 @@ fn input_matches(
     // A measured hash is stronger evidence than watcher silence. In
     // particular, an event may still be queued when the caller hashes an edit.
     match get_hash(path) {
-        Some(current) => recorded.iter().any(|(p, hash)| p == path && *hash == current),
+        Some(current) => recorded
+            .iter()
+            .any(|(p, hash)| p == path && *hash == current),
         None => is_fresh(path),
     }
 }

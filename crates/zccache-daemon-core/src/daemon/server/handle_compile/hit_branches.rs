@@ -311,8 +311,14 @@ pub(super) async fn try_fast_hit(probe: FastHitProbe<'_>) -> Option<Response> {
         (entry.artifact_key_hex.clone(), entry.clock, entry.cached_at)
     };
     if !cache_entry_fresh_at(compile_start, entry_cached_at, FAST_HIT_MAX_AGE)
-        || !context_artifact_is_fresh(state, &context_key, source_path, entry_clock, client_env,
-                                     &entry_artifact_key_hex)
+        || !context_artifact_is_fresh(
+            state,
+            &context_key,
+            source_path,
+            entry_clock,
+            client_env,
+            &entry_artifact_key_hex,
+        )
     {
         return None;
     }

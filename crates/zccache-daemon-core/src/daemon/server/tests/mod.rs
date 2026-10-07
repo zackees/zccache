@@ -29,6 +29,7 @@ mod fingerprint_encoding;
 mod fs_matrix;
 mod ignored_input_freshness;
 mod index_writer_gone;
+mod input_freshness;
 mod link_cache;
 mod link_env_1806;
 mod metadata_deferred;

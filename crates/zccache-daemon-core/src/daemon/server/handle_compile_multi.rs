@@ -117,8 +117,14 @@ fn check_unit_cache(
         let entry = owned_fast_hit_entry(&state.fast_hit_cache, &context_key);
         if let Some(entry) = entry {
             if cache_entry_fresh_at(cache_now, entry.cached_at, FAST_HIT_MAX_AGE)
-                && context_artifact_is_fresh(state, &context_key, &source_path, entry.clock,
-                                            None, &entry.artifact_key_hex)
+                && context_artifact_is_fresh(
+                    state,
+                    &context_key,
+                    &source_path,
+                    entry.clock,
+                    None,
+                    &entry.artifact_key_hex,
+                )
             {
                 let artifact_key_hex = &entry.artifact_key_hex;
                 // Write outputs directly from the resolved payload Arc — no

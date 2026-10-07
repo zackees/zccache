@@ -1348,6 +1348,18 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [ ] Review and validate the final committed planner/parallelism slice before push.
 # Shared CI compiler-store snapshots (ci.yml#362)
 
+## Freshness prerequisite — zccache#1935
+
+- [x] Retain real compiler RED for immediate same-size edits, both imported
+      and ordinary stores; classify the false hit as `HIT_REQUEST`.
+- [x] Retain depgraph RED where measured hashes contradict journal silence.
+- [x] Share hash precedence across the three verdict paths; require the
+      metadata alias's candidate artifact key to still match its inputs.
+- [ ] Qualify stat-checked fast-entry inputs for source, headers, force-includes
+      and externs with watcher events absent; preserve original artifact identity.
+- [ ] Qualify real imported replay plus immediate source-edit miss, affected
+      suites, full local gate and the existing performance matrix before release.
+
 - [x] Real compiler replay RED: imported manifest/payload/index validate, but
       runtime evicts output-0 because transport omitted `.cowhash` sidecars.
 - [ ] Share the sidecar naming owner and regenerate sidecars from verified

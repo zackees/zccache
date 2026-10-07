@@ -115,4 +115,4 @@ cmd = "CARGO_TARGET_DIR=/target soldr cargo test -p zccache --features test-supp
 
 [task.compiler-freshness-test]
 stack = "gate"
-cmd = "CARGO_TARGET_DIR=/target soldr cargo test -p zccache-depgraph --lib hash_precedence --locked"
+cmd = "CARGO_TARGET_DIR=/target soldr cargo test -p zccache-depgraph --lib --locked && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-daemon-core --features test-support --lib input_freshness --locked"

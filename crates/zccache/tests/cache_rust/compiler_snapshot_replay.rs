@@ -108,8 +108,12 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
         )
         .unwrap();
         let changed_log = temp.path().join("changed.log");
-        let session = start_session_with_log(&mut client, &workspace,
-            Some(NormalizedPath::from(&changed_log))).await;
+        let session = start_session_with_log(
+            &mut client,
+            &workspace,
+            Some(NormalizedPath::from(&changed_log)),
+        )
+        .await;
         let changed =
             compile_rustc(&mut client, &session, rustc.as_path(), &args, &workspace).await;
         end_session(&mut client, session).await;

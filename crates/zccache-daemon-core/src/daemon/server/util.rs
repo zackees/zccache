@@ -202,11 +202,18 @@ pub(super) fn context_artifact_is_fresh(
     }
     let graph = state.dep_graph.load();
     let includes = graph.get_includes(context_key).unwrap_or_default();
-    graph.try_fast_hit_with_env(
-        context_key,
-        |path| state.cache_system.metadata().get_cached_hash_if_stat_valid(&path.into()),
-        |name| rustc_env_dep_cache_value(client_env, name, source_path, &includes),
-    ).is_some_and(|key| key.to_hex() == expected_artifact)
+    graph
+        .try_fast_hit_with_env(
+            context_key,
+            |path| {
+                state
+                    .cache_system
+                    .metadata()
+                    .get_cached_hash_if_stat_valid(&path.into())
+            },
+            |name| rustc_env_dep_cache_value(client_env, name, source_path, &includes),
+        )
+        .is_some_and(|key| key.to_hex() == expected_artifact)
 }
 
 /// Look up an artifact by key, falling through to the on-disk
