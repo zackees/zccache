@@ -190,13 +190,16 @@ pub fn import_snapshot(
         return Err(invalid("snapshot index digest mismatch"));
     }
     let store = ArtifactStore::from_snapshot(&index, &bytes)?;
-    let depgraph = manifest.depgraph_digest.map(|expected| {
-        let bytes = fs::read(source.join("depgraph/depgraph.bin"))?;
-        if kernal_api::hash::blake3_bytes(&bytes).to_hex().as_str() != expected.as_str() {
-            return Err(invalid("snapshot dependency-context digest mismatch"));
-        }
-        Ok(bytes)
-    }).transpose()?;
+    let depgraph = manifest
+        .depgraph_digest
+        .map(|expected| {
+            let bytes = fs::read(source.join("depgraph/depgraph.bin"))?;
+            if kernal_api::hash::blake3_bytes(&bytes).to_hex().as_str() != expected.as_str() {
+                return Err(invalid("snapshot dependency-context digest mismatch"));
+            }
+            Ok(bytes)
+        })
+        .transpose()?;
     // Completed transport snapshots are immutable and have no maintenance
     // writer. Do not create/open a writable store lock in the source snapshot.
     publish_snapshot(
@@ -252,6 +255,45 @@ mod tests {
             &ArtifactIndex::new(vec!["unit.o".into()], vec![3], vec![], vec![], 0),
         );
         (temp, store, key)
+    }
+
+    #[test]
+    fn store_context_corruption_is_refused_without_publication_or_source_mutation() {
+        for mode in ["digest", "missing", "format"] {
+            let (temp, store, _) = fixture();
+            let root = temp.path().join("source");
+            store.flush().unwrap();
+            fs::create_dir(root.join("depgraph")).unwrap();
+            zccache_depgraph::save_to_file(
+                &zccache_depgraph::DepGraph::new(),
+                &root.join("depgraph/depgraph.bin"),
+            )
+            .unwrap();
+            let snapshot = temp.path().join("snapshot");
+            let compatibility = "b".repeat(64);
+            export_store_snapshot(&root, &compatibility, &snapshot).unwrap();
+            let graph = snapshot.join("depgraph/depgraph.bin");
+            if mode == "missing" {
+                fs::remove_file(&graph).unwrap();
+            } else {
+                fs::write(&graph, b"invalid dependency context").unwrap();
+                if mode == "format" {
+                    let path = snapshot.join("snapshot.json");
+                    let mut manifest: SnapshotManifest =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    manifest.depgraph_digest = Some(index_digest(&graph).unwrap());
+                    fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+                }
+            }
+            let before = file_identity(&snapshot);
+            let destination = temp.path().join("restored");
+            assert!(
+                import_snapshot(&snapshot, &compatibility, &destination).is_err(),
+                "{mode}"
+            );
+            assert!(!destination.exists(), "{mode}");
+            assert_eq!(file_identity(&snapshot), before, "{mode}");
+        }
     }
 
     fn file_identity(root: &Path) -> BTreeMap<String, Vec<u8>> {

@@ -15,6 +15,12 @@ as a daemon, so it refuses an active writer until shutdown/flush completes.
 The existing lease lives in `zccache-core` and both callers share it.
 This snapshot is cache data; it does not attest that tests ran.
 
+`export_store_snapshot` also carries a present `depgraph/depgraph.bin`, bound
+by an optional manifest digest and validated by `zccache-depgraph`'s decoder.
+Missing context remains supported for artifact-only stores; those stores
+cannot promise an immediate dependency-context hit. The lower-level
+`export_snapshot` exports the supplied artifact index and payloads only.
+
 Export holds the staged eviction read guard, resolves a captured generation
 through the existing layout validator, and copies independent payloads and its
 manifest. It does not re-read a mutable current pointer after capture. Copied
@@ -27,6 +33,12 @@ daemon's corrupt-index recovery. It uses the shared publication path to validate
 and install a fresh private store before daemon startup. Schema-1 import requires
 staged generations and refuses a missing pointer before legacy resolution, so
 even corrupt input never creates a lock or lifecycle event in its source.
+
+Each copied output receives a durable `.cowhash` sidecar derived from its
+verified manifest digest. Its naming is owned by `zccache-artifact::blob_digest`
+and shared with runtime publication. Source sidecars and process-local inode
+registries are never trusted. Omitting these sidecars makes the runtime evict
+otherwise valid imported outputs during materialization.
 
 Publication uses a temporary sibling directory, synced files/directories, and
 the canonical native generation rename. A completed prior snapshot is never
