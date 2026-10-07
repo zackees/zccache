@@ -10,6 +10,7 @@ pub mod kv;
 mod layout;
 mod reconcile;
 mod rust_plan;
+pub mod snapshot;
 pub mod staged_lock;
 mod store;
 

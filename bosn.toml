@@ -103,3 +103,8 @@ repo = { source = ".", destination = "/work" }
 [task.gate-test]
 stack = "gate"
 cmd = "bash ci/docker/gate/run_gate_tests.sh"
+
+# Focused backend transport checks use the existing isolated gate stack.
+[task.compiler-snapshot-test]
+stack = "gate"
+cmd = "soldr toolchain ensure --json && soldr rustup component add clippy && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-artifact --lib --locked && CARGO_TARGET_DIR=/target soldr cargo clippy -p zccache-artifact --all-targets --locked -- -D warnings"

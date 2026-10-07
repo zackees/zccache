@@ -236,6 +236,14 @@ pub fn resolve_staged_artifact_files(
     key_hex: &str,
     expected_sizes: &[u64],
 ) -> io::Result<Option<Vec<NormalizedPath>>> {
+    Ok(validated_staged_generation(artifact_dir, key_hex, expected_sizes)?.map(|(_, paths)| paths))
+}
+
+fn validated_staged_generation(
+    artifact_dir: &Path,
+    key_hex: &str,
+    expected_sizes: &[u64],
+) -> io::Result<Option<(PublishedGeneration, Vec<NormalizedPath>)>> {
     let Some(generation) = load_published_generation(artifact_dir, key_hex)? else {
         return Ok(None);
     };
@@ -251,7 +259,61 @@ pub fn resolve_staged_artifact_files(
             ));
         }
     }
-    Ok(Some(verify_generation_outputs(&generation)?))
+    let paths = verify_generation_outputs(&generation)?;
+    Ok(Some((generation, paths)))
+}
+
+/// Copy one captured, verified generation without re-reading its mutable
+/// current pointer. The caller holds the staged read guard during copying.
+pub(crate) fn copy_staged_generation(
+    source: &Path,
+    key: &str,
+    sizes: &[u64],
+    destination: &Path,
+) -> io::Result<bool> {
+    let Some((generation, paths)) = validated_staged_generation(source, key, sizes)? else {
+        return Ok(false);
+    };
+    let generation_name = generation
+        .dir
+        .file_name()
+        .ok_or_else(|| invalid_data("staged generation has no name"))?;
+    let root = destination.join(STAGED_ROOT);
+    let key_dir = root.join(key);
+    let target = key_dir.join(generation_name);
+    fs::create_dir_all(&target)?;
+    let manifest = generation.dir.join("manifest.bin");
+    for path in paths
+        .iter()
+        .map(AsRef::<Path>::as_ref)
+        .chain(std::iter::once(manifest.as_ref()))
+    {
+        let name = path
+            .file_name()
+            .ok_or_else(|| invalid_data("staged file has no name"))?;
+        let copied = target.join(name);
+        let metadata = fs::metadata(path)?;
+        let mut input = fs::File::open(path)?;
+        let mut output = fs::File::create(&copied)?;
+        io::copy(&mut input, &mut output)?;
+        zccache_core::mtime::stamp_mtime(
+            &copied,
+            zccache_core::mtime::FileTime::from_last_modification_time(&metadata),
+        )?;
+        fs::set_permissions(&copied, metadata.permissions())?;
+        output.sync_all()?;
+    }
+    // Revalidate copied bytes; an unsupported concurrent payload mutation must
+    // fail publication, never produce a ready snapshot with an invalid digest.
+    let pointer = root.join(format!("{key}.current"));
+    let mut pointer_file = fs::File::create(&pointer)?;
+    std::io::Write::write_all(&mut pointer_file, generation_name.as_encoded_bytes())?;
+    pointer_file.sync_all()?;
+    resolve_staged_artifact_files(destination, key, sizes)?;
+    for directory in [&target, &key_dir, &root] {
+        kernal_api::platform::fs::sync_directory_if_supported(directory)?;
+    }
+    Ok(true)
 }
 
 /// Every artifact key that currently has a published staged-v2 generation

@@ -1346,3 +1346,17 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Validate committed no-cook candidate e3b4520: full gate passed in 954 s, stamped e587de8e; all 3478 tests passed. Explicit ci-tests default serialized nextest, so restore num-cpus parallelism in the final slice.
 - [x] Add RED old-lock retention/bootstrap checks; retire measured Test and Integration generations, reserve the initial 1.2 GB without double-counting, and replay the captured 7.90 GB inventory at a 9.10 GB forecast below the unchanged 9.20 GB target.
 - [ ] Review and validate the final committed planner/parallelism slice before push.
+# Shared CI compiler-store snapshots (ci.yml#362)
+
+- [x] Observe an isolated RED test retaining multi-output metadata and verdicts.
+- [x] Export staged-v2 snapshots using the existing layout resolver (legacy support pending).
+- [x] Reject corrupt payloads and preserve prior committed snapshots (isolated test).
+- [x] Verify compatibility on import before any destination publication (isolated test).
+- [ ] Run focused isolated tests, broader gates, and local review before pushing.
+- [ ] Integrate the backend API with cache transport; prove fresh-engine reuse.
+
+Current validation: intentional RED at the unimplemented export API; GREEN
+seven snapshot tests, the whole artifact crate (123 passed, one ignored), and
+warnings-denied artifact Clippy, all inside the existing Bosn gate stack.
+Timestamp/read-only retention is covered. Full repository qualification and
+review have not run; this is an unpublished API draft.

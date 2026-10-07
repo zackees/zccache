@@ -4,6 +4,35 @@ The artifact store persists compiled output files on disk, keyed by content-addr
 
 For how cache keys are computed see [overview.md](overview.md) (section 2.8). For crash recovery see [runtime.md](runtime.md).
 
+## Compiler-store transport snapshots (ci.yml#362)
+
+The `zccache_artifact::snapshot` API owns compiler-store export and import.
+Callers supply the authoritative `ArtifactStore`, its artifact directory, an
+opaque 64-character lowercase-hex compatibility identity, and a new destination.
+The backend retains the full index: output names, sizes, modes, compiler streams,
+and Rust verdicts. This snapshot is cache data; it does not attest that tests ran.
+
+Export holds the staged eviction read guard, resolves a captured generation
+through the existing layout validator, and copies independent payloads and its
+manifest. It does not re-read a mutable current pointer after capture. Copied
+payloads are checked again before publication. The snapshot manifest binds the
+schema, caller-provided compatibility identity, and index digest. Import checks
+that identity and digest, then uses the same export path to validate and install
+a fresh private store before daemon startup.
+
+Publication uses a temporary sibling directory, synced files/directories, and
+the canonical native generation rename. A completed prior snapshot is never
+replaced. Paths and their parent must be caller-controlled; this is not a secure
+filesystem transaction against an attacker mutating the source or parent.
+Concurrent publishers to the same completed destination cannot overwrite it;
+portable exclusive reservation of an empty destination is not provided.
+
+This first API supports staged-v2 payloads and empty stores. A missing or legacy
+payload returns an error, never a silently incomplete snapshot. Legacy pack/flat
+support, daemon/CLI integration, and local/hosted cache transport remain pending.
+Local and hosted runners will publish their own snapshots independently. This
+API alone does not prove fresh-engine cache durability or reduced compiler misses.
+
 ---
 
 ## Immutable staged-output rollout
