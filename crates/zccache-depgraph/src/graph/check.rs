@@ -205,7 +205,18 @@ impl DepGraph {
             }
         }
 
-        self.hits.fetch_add(1, Ordering::Relaxed);
+        // Comparing current and candidate externs is insufficient when both
+        // name the same file that changed since the candidate was compiled.
+        // Reuse the canonical artifact-key proof, releasing this DashMap
+        // guard before that helper queries the context again.
+        drop(entry);
+        if self.try_fast_hit_with_env(&actual_key, &get_hash, &env_value) != Some(artifact_key) {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility candidate inputs changed".to_string(),
+                Some(actual_key),
+            );
+        }
         (
             CacheVerdict::Hit { artifact_key },
             "rustc metadata compatibility hit".to_string(),
