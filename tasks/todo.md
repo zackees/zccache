@@ -1369,3 +1369,17 @@ and warnings-denied Clippy for artifact, core and CLI crates. The focused run
 took 23.42 seconds inside the existing isolated stack; this is diagnostic, not
 a controlled performance comparison. Full repository qualification and review
 remain pending; this unpublished draft is not fresh-engine cache-hit proof.
+
+The sole primary review found that a missing staged pointer on import reached
+legacy resolution and could write a source lifecycle event. The isolated RED
+reproduced that mutation with legacy validation enabled (127 passed, one failed,
+one ignored). Import now requires staged generations through the shared copier;
+export alone normalizes legacy layouts. The added regression also refuses a
+healthy legacy fallback, preserving the schema-1 transport boundary. Full gate
+attempt on 78fd40e8 passed lint and Python lanes; its MSRV replay was deliberately
+cancelled for this source correction and no complete gate pass is claimed.
+
+The review correction passed 128 artifact tests (one ignored), six writer
+lease tests, one CLI test and focused warnings-denied Clippy in isolation.
+The same primary reviewer confirmed the fix and returned clean. Full repository
+qualification remains required before publication.

@@ -33,7 +33,13 @@ pub fn export_snapshot(
 ) -> io::Result<SnapshotReceipt> {
     validate_compatibility(compatibility)?;
     let _guard = StagedReadGuard::acquire_if_present(artifact_dir)?;
-    publish_snapshot(store, artifact_dir, compatibility, destination)
+    publish_snapshot(
+        store,
+        artifact_dir,
+        compatibility,
+        destination,
+        crate::layout::SnapshotLayout::NormalizeLegacy,
+    )
 }
 
 /// Export a flushed store from disk, refusing a live daemon's writer lease.
@@ -59,6 +65,7 @@ fn publish_snapshot(
     artifact_dir: &Path,
     compatibility: &str,
     destination: &Path,
+    layout: crate::layout::SnapshotLayout,
 ) -> io::Result<SnapshotReceipt> {
     crate::staged_lock::validate_staged_root_path(
         crate::staged_lock::staged_root(artifact_dir).as_path(),
@@ -93,7 +100,13 @@ fn publish_snapshot(
         {
             return Err(invalid("compiler output metadata count mismatch"));
         }
-        crate::layout::copy_artifact_generation(artifact_dir, key, &meta.output_sizes, &target)?;
+        crate::layout::copy_artifact_generation(
+            artifact_dir,
+            key,
+            &meta.output_sizes,
+            &target,
+            &layout,
+        )?;
         copied.insert(key, meta);
         outputs += meta.output_sizes.len();
     }
@@ -152,6 +165,7 @@ pub fn import_snapshot(
         &source.join("artifacts"),
         compatibility,
         destination,
+        crate::layout::SnapshotLayout::StagedOnly,
     )
 }
 
@@ -239,6 +253,36 @@ mod tests {
         let before = file_identity(&snapshot);
         import_snapshot(&snapshot, &compatibility, &temp.path().join("restored")).unwrap();
         assert_eq!(file_identity(&snapshot), before);
+    }
+
+    #[test]
+    fn import_rejects_missing_staged_pointer_without_mutating_source() {
+        let (temp, store, key) = fixture();
+        let compatibility = "b".repeat(64);
+        for legacy_payload in [false, true] {
+            let snapshot = temp.path().join(format!("snapshot-{legacy_payload}"));
+            export_snapshot(
+                &store,
+                &temp.path().join("source/artifacts"),
+                &compatibility,
+                &snapshot,
+            )
+            .unwrap();
+            fs::remove_file(
+                snapshot
+                    .join("artifacts/.staged-v2")
+                    .join(format!("{key}.current")),
+            )
+            .unwrap();
+            if legacy_payload {
+                fs::write(snapshot.join("artifacts").join(format!("{key}_0")), b"obj").unwrap();
+            }
+            let before = file_identity(&snapshot);
+            let destination = temp.path().join(format!("restored-{legacy_payload}"));
+            assert!(import_snapshot(&snapshot, &compatibility, &destination).is_err());
+            assert!(!destination.exists());
+            assert_eq!(file_identity(&snapshot), before);
+        }
     }
 
     #[test]

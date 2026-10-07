@@ -263,6 +263,11 @@ fn validated_staged_generation(
     Ok(Some((generation, paths)))
 }
 
+pub(crate) enum SnapshotLayout {
+    NormalizeLegacy,
+    StagedOnly,
+}
+
 /// Snapshot all supported layouts into verified staged generations. Legacy
 /// decoding stays in the shared resolver; no transport-specific parser exists.
 pub(crate) fn copy_artifact_generation(
@@ -270,9 +275,15 @@ pub(crate) fn copy_artifact_generation(
     key: &str,
     sizes: &[u64],
     destination: &Path,
+    layout: &SnapshotLayout,
 ) -> io::Result<()> {
     if copy_staged_generation(source, key, sizes, destination)? {
         return Ok(());
+    }
+    if matches!(layout, SnapshotLayout::StagedOnly) {
+        return Err(invalid_data(
+            "transport snapshot is missing its staged generation",
+        ));
     }
     let payloads = resolve_artifact_payloads(source, key, sizes, false, "snapshot::export")?
         .ok_or_else(|| invalid_data("snapshot payload is missing or invalid"))?;

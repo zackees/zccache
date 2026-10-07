@@ -24,8 +24,9 @@ snapshot; transport never parses their legacy layouts. The snapshot manifest bin
 schema, caller-provided compatibility identity, and index digest. Import checks
 that identity and digest and strictly decodes the index without the normal
 daemon's corrupt-index recovery. It uses the shared publication path to validate
-and install a fresh private store before daemon startup. Import never creates a
-lock or corruption event in its immutable source snapshot.
+and install a fresh private store before daemon startup. Schema-1 import requires
+staged generations and refuses a missing pointer before legacy resolution, so
+even corrupt input never creates a lock or lifecycle event in its source.
 
 Publication uses a temporary sibling directory, synced files/directories, and
 the canonical native generation rename. A completed prior snapshot is never
