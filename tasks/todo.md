@@ -30,6 +30,18 @@ write-seal structural and facade tests. Release 37562892865 published 0.1.29;
 the exact registry dependency and lockfile now resolve that release.
 The zccache integration still requires isolated local gates and native Windows
 rebuild/write-refusal/legacy-upgrade/failure-cleanup execution before merge.
+# #1116 container summary handoff
+
+- [x] Reproduce the real Linux campaign failure: root-owned 0644 summary,
+  host-owned parent directory, non-root host enrichment gets PermissionDenied.
+- [x] Observe RED for summary enrichment without file write permission.
+- [x] Publish a JSON replacement through the owned directory; preserve
+  existing metric values and failed performance status.
+- [x] Split artifact helpers to keep the touched source below 1,000 lines.
+- [x] Run standalone campaign infrastructure tests: 41 passed.
+- [x] Review, run the complete isolated local gate, push and merge PR #1931.
+- [ ] Collect fresh full campaign evidence on the fixed committed runner;
+  retain the pre-fix sample separately without mixing commit identities.
 
 # Link output permissions
 

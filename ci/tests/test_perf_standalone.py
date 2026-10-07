@@ -1,10 +1,40 @@
 import json
+import os
 import subprocess
 from argparse import Namespace
 
 import pytest
 
 from ci import benchmark_stats, perf_sample_monitor, perf_standalone
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="POSIX non-root permissions are required to reproduce the handoff",
+)
+def test_host_enriches_a_container_summary_without_file_write_permission(tmp_path):
+    summary_path = tmp_path / "perf-guard-summary.json"
+    summary_path.write_text(json.dumps({"passed": False, "statuses": []}))
+    summary_path.chmod(0o444)
+    # The Linux Docker runner produces a root-owned 0644 file in a directory
+    # owned by the invoking user. A non-root caller likewise cannot open this
+    # fixture for writing, but owns the directory and can replace the entry.
+    with pytest.raises(PermissionError):
+        with summary_path.open("w"):
+            pass
+    identity = {
+        "commit": "a" * 40,
+        "ref": "main",
+        "dirty": False,
+        "image_digest": "sha256:image",
+        "host_fingerprint": "host-a",
+    }
+    enriched = perf_standalone._enrich_summary(
+        summary_path, 0, identity, ["docker", "run"], {"rows": []}
+    )
+    assert enriched["passed"] is False, "handoff must retain a failed perf floor"
+    assert enriched["metadata"]["git_sha"] == identity["commit"]
+    assert json.loads(summary_path.read_text()) == enriched
 
 
 def test_campaign_inventory_matches_registered_benchmarks():
