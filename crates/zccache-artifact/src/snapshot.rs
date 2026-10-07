@@ -13,6 +13,8 @@ struct SnapshotManifest {
     schema: u32,
     compatibility: String,
     index_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    depgraph_digest: Option<String>,
 }
 
 /// Completed backend publication, separate from test-result evidence.
@@ -39,6 +41,7 @@ pub fn export_snapshot(
         compatibility,
         destination,
         crate::layout::SnapshotLayout::NormalizeLegacy,
+        None,
     )
 }
 
@@ -52,11 +55,20 @@ pub fn export_store_snapshot(
     let _writer = zccache_core::cache_root_lock::CacheRootWriterLock::acquire(cache_root)?;
     let index = cache_root.join("index.bin");
     let store = ArtifactStore::from_snapshot(&index, &fs::read(&index)?)?;
-    export_snapshot(
+    let graph = match fs::read(cache_root.join("depgraph/depgraph.bin")) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let artifacts = cache_root.join("artifacts");
+    let _guard = StagedReadGuard::acquire_if_present(&artifacts)?;
+    publish_snapshot(
         &store,
-        &cache_root.join("artifacts"),
+        &artifacts,
         compatibility,
         destination,
+        crate::layout::SnapshotLayout::NormalizeLegacy,
+        graph.as_deref(),
     )
 }
 
@@ -66,6 +78,7 @@ fn publish_snapshot(
     compatibility: &str,
     destination: &Path,
     layout: crate::layout::SnapshotLayout,
+    depgraph: Option<&[u8]>,
 ) -> io::Result<SnapshotReceipt> {
     crate::staged_lock::validate_staged_root_path(
         crate::staged_lock::staged_root(artifact_dir).as_path(),
@@ -89,6 +102,22 @@ fn publish_snapshot(
     let pending = tempfile::Builder::new()
         .prefix(".compiler-snapshot-")
         .tempdir_in(parent)?;
+    let depgraph_digest = if let Some(bytes) = depgraph {
+        let directory = pending.path().join("depgraph");
+        fs::create_dir(&directory)?;
+        let path = directory.join("depgraph.bin");
+        let mut file = fs::File::create(&path)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()?;
+        drop(file);
+        // The dependency-graph owner validates its format. Transport does
+        // not duplicate its decoder, version handling or context semantics.
+        zccache_depgraph::load_from_file(&path).map_err(invalid)?;
+        kernal_api::platform::fs::sync_directory_if_supported(&directory)?;
+        Some(kernal_api::hash::blake3_bytes(bytes).to_hex().to_string())
+    } else {
+        None
+    };
     let rows = store.load_all();
     let copied = ArtifactStore::open_empty(&pending.path().join("index.bin"));
     let target = pending.path().join("artifacts");
@@ -120,6 +149,7 @@ fn publish_snapshot(
         schema: 1,
         compatibility: compatibility.into(),
         index_digest: index_digest(&index)?,
+        depgraph_digest,
     };
     let manifest_path = pending.path().join("snapshot.json");
     let mut manifest_file = fs::File::create(&manifest_path)?;
@@ -160,6 +190,13 @@ pub fn import_snapshot(
         return Err(invalid("snapshot index digest mismatch"));
     }
     let store = ArtifactStore::from_snapshot(&index, &bytes)?;
+    let depgraph = manifest.depgraph_digest.map(|expected| {
+        let bytes = fs::read(source.join("depgraph/depgraph.bin"))?;
+        if kernal_api::hash::blake3_bytes(&bytes).to_hex().as_str() != expected.as_str() {
+            return Err(invalid("snapshot dependency-context digest mismatch"));
+        }
+        Ok(bytes)
+    }).transpose()?;
     // Completed transport snapshots are immutable and have no maintenance
     // writer. Do not create/open a writable store lock in the source snapshot.
     publish_snapshot(
@@ -168,6 +205,7 @@ pub fn import_snapshot(
         compatibility,
         destination,
         crate::layout::SnapshotLayout::StagedOnly,
+        depgraph.as_deref(),
     )
 }
 

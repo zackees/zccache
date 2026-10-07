@@ -3944,6 +3944,7 @@ dependencies = [
  "tokio",
  "tracing",
  "zccache-core",
+ "zccache-depgraph",
  "zccache-gha",
  "zccache-hash",
 ]
