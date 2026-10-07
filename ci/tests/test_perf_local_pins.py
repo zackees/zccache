@@ -75,3 +75,60 @@ def test_pin_soldr_source_aligns_shared_exact_pins(tmp_path: Path, monkeypatch) 
         manifest.read_text(encoding="utf-8")
         == f'[dependencies]\nkernal-api = "={wanted}"\n'
     )
+
+
+def test_pin_soldr_source_aligns_locked_transitive_exact_pin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#1935: kernal-api's running-process pin must resolve with patched zccache."""
+    checkout = tmp_path / "zccache"
+    checkout.mkdir()
+    (checkout / "Cargo.toml").write_text(
+        '[workspace.package]\nversion = "1.0.0"\n'
+        '[workspace.dependencies]\nkernal-api = "=0.1.26"\n',
+        encoding="utf-8",
+    )
+    (checkout / "Cargo.lock").write_text(
+        '[[package]]\nname = "running-process"\nversion = "4.10.16"\n'
+        'source = "registry+https://github.com/rust-lang/crates.io-index"\n',
+        encoding="utf-8",
+    )
+    soldr = tmp_path / "soldr"
+    soldr.mkdir()
+    manifest = soldr / "Cargo.toml"
+    manifest.write_text(
+        '[dependencies]\nrunning-process = "=4.10.14"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(perf_local, "REPO_ROOT", checkout)
+    monkeypatch.setattr(perf_local, "git_is_dirty", lambda _repo: False)
+
+    perf_local.pin_soldr_zccache_source(soldr)
+
+    assert 'running-process = "=4.10.16"' in manifest.read_text(encoding="utf-8")
+
+
+def test_checkout_pins_exclude_ambiguous_and_nonregistry_packages(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace.dependencies]\nexplicit = "=2.0.0"\n', encoding="utf-8"
+    )
+    entries = [
+        ("explicit", "1.0.0", "registry+https://example.test/index"),
+        ("explicit", "2.0.0", "registry+https://example.test/index"),
+        ("ambiguous", "1.0.0", "registry+https://example.test/index"),
+        ("ambiguous", "2.0.0", "registry+https://example.test/index"),
+        ("mixed-source", "1.0.0", "registry+https://example.test/index"),
+        ("mixed-source", "1.0.0", "git+https://example.test/repo"),
+        ("git-only", "1.0.0", "git+https://example.test/repo"),
+        ("path-only", "1.0.0", None),
+    ]
+    (tmp_path / "Cargo.lock").write_text(
+        "".join(
+            f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+            + (f'source = "{source}"\n' if source else "")
+            for name, version, source in entries
+        ),
+        encoding="utf-8",
+    )
+    assert perf_local_pins.exact_checkout_pins(tmp_path) == {"explicit": "2.0.0"}

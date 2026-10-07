@@ -6,10 +6,11 @@ consumer pins one published release). When zccache moves such a pin ahead of
 soldr (zccache `=0.1.22`, soldr `=0.1.20`), cargo cannot resolve the pair and
 the soldr builder fails before any cell runs, which blocks the whole gate.
 
-The checkout under test is the side being measured, so soldr's exact pins on
-crates zccache also pins exactly are rewritten to zccache's version, the same
-way `align_soldr_zccache_requirement` handles soldr's pin on zccache itself.
-Only exact (`=`) pins on both sides are touched.
+The checkout under test is the side being measured, so soldr's exact pins are
+aligned with its explicit workspace pins and unambiguous registry versions in
+its lockfile. The latter include transitive exact dependencies such as
+kernal-api's running-process pin. Non-exact Soldr requirements are untouched;
+multiple locked versions or sources never imply a version to choose.
 """
 
 from __future__ import annotations
@@ -35,6 +36,26 @@ def exact_workspace_pins(repo_root: Path) -> dict[str, str]:
         version = spec if isinstance(spec, str) else spec.get("version")
         if isinstance(version, str) and version.startswith("="):
             pins[name] = version[1:]
+    return pins
+
+
+def exact_checkout_pins(repo_root: Path) -> dict[str, str]:
+    """Explicit pins plus uniquely resolved registry dependencies, including transitives."""
+    lockfile = repo_root / "Cargo.lock"
+    resolved: dict[str, set[tuple[str, str]]] = {}
+    if lockfile.is_file():
+        lock = tomllib.loads(lockfile.read_text(encoding="utf-8"))
+        for package in lock.get("package", []):
+            resolved.setdefault(package["name"], set()).add(
+                (package["version"], package.get("source", ""))
+            )
+    pins: dict[str, str] = {}
+    for name, candidates in resolved.items():
+        if len(candidates) == 1:
+            version, source = next(iter(candidates))
+            if source.startswith("registry+"):
+                pins[name] = version
+    pins.update(exact_workspace_pins(repo_root))
     return pins
 
 

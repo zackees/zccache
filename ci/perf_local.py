@@ -487,7 +487,7 @@ def pin_soldr_zccache_source(soldr_src: Path, *, initialize_submodules: bool = T
             f"(zccache ={version} in {aligned} manifest(s))"
         )
         for change in perf_local_pins.align_soldr_exact_pins(
-            soldr_src, perf_local_pins.exact_workspace_pins(REPO_ROOT)
+            soldr_src, perf_local_pins.exact_checkout_pins(REPO_ROOT)
         ):
             print(f"[perf-local] soldr exact pin aligned with the checkout: {change}")
         return

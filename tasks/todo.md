@@ -1402,3 +1402,14 @@ The review correction passed 128 artifact tests (one ignored), six writer
 lease tests, one CLI test and focused warnings-denied Clippy in isolation.
 The same primary reviewer confirmed the fix and returned clean. Full repository
 qualification remains required before publication.
+
+### #1935 performance qualification: transitive dependency alignment
+
+- [x] Confirm matrix attempt on 7f14c3e4 stopped before cells: kernal-api
+  requires running-process =4.10.16, while Soldr pins =4.10.14.
+- [x] Reproduce missing transitive alignment in the existing harness tests.
+- [x] Extend the existing pin owner to use unique registry lockfile versions;
+  preserve non-exact requirements and refuse to infer ambiguous versions/sources.
+- [x] Pass all 73 pinning and local performance harness tests.
+- [ ] Review, commit, and retry all eight sanctioned matrix cells.
+- [ ] Qualify the final changed source through the complete local gate.
