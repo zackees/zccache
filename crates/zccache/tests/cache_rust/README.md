@@ -37,3 +37,7 @@ cargo nextest run --test cache_rust -E 'test(/^<file_stem>::/)'
 - `daemon_rustc_restore_test`
 - `daemon_workspace_pin_747`
 - `reflink_worktree_e2e` — `ZCCACHE_MODE` on a real reflink volume: parent/child worktree hits per mode (needs `ZCCACHE_REFLINK_E2E_ROOT`; run by the `reflink-e2e` CI job)
+
+`compiler_snapshot_replay.rs` extends the restore fixture with real compiler
+output and diagnostic replay from a transported snapshot after deleting the
+original store and target tree. It links into the existing cache_rust target.
