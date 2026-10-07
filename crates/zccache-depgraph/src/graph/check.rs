@@ -294,13 +294,9 @@ impl DepGraph {
             return CacheVerdict::NeedsPreprocessor;
         }
 
-        // Helper: a measured content hash takes precedence over journal
-        // since `since` OR — when the journal has no opinion (post-restart
-        // cold journal, the watcher dropped events, etc.) — if its current
-        // content hash matches the hash we stored at last `update()`.
-        // The journal is in-memory and starts empty after every daemon
-        // restart; without this fallback, every cached header reports
-        // "changed" and every Warm context degrades to HeadersChanged.
+        // A measured hash takes precedence. Journal evidence is used only
+        // when no hash was supplied. Matching hashes also preserve warm reuse
+        // after restart, when the in-memory journal has no history.
         let fresh_or_hash_match = |path: &NormalizedPath| {
             input_matches(path, &entry.last_file_hashes, &get_hash, &is_fresh)
         };

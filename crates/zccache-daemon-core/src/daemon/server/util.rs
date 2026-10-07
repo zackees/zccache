@@ -213,7 +213,7 @@ pub(super) fn context_artifact_is_fresh(
             },
             |name| rustc_env_dep_cache_value(client_env, name, source_path, &includes),
         )
-        .is_some_and(|key| key.to_hex() == expected_artifact)
+        .is_some_and(|key| key.hash().to_hex() == expected_artifact)
 }
 
 /// Look up an artifact by key, falling through to the on-disk

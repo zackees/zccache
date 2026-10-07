@@ -60,6 +60,7 @@ async fn fast_entry_checks_source_headers_force_includes_and_externs_without_eve
         let expected = graph
             .update(&registration.map_key, scan.clone(), hash)
             .unwrap()
+            .hash()
             .to_hex();
         let clock = server.state.cache_system.current_clock();
         let fresh = || {
