@@ -4,6 +4,10 @@ Python scripts for development tooling. Rust commands go through `soldr <tool>` 
 
 ## Top-Level Scripts
 
+- **`ci/perf_standalone.py`** — Runs the pinned four-language Docker campaign.
+  `perf_standalone_artifacts.py` validates its evidence and publishes host-side
+  JSON replacements, including summaries created by root in the container.
+
 - **`ci/check_cache_footprint.py`** — Guards measured cache families and the published setup-soldr save contract: global `auto`, current-main pre-prune permission in `save-cache-remote`, and explicit global `false` for read-only consumers. Rejects ACT-only overrides and unsupported remote-permission refs.
 
 - **`uv run --no-project python ci/incremental_build.py --samples 5 --output incremental-build.json`** - Measures warm rebuilds after touching compile, link, exec, connection, and shared-state surfaces. Records timing distributions, rebuilt packages, and aggregate process-tree RSS.

@@ -1,3 +1,16 @@
+# #1116 container summary handoff
+
+- [x] Reproduce the real Linux campaign failure: root-owned 0644 summary,
+  host-owned parent directory, non-root host enrichment gets PermissionDenied.
+- [x] Observe RED for summary enrichment without file write permission.
+- [x] Publish a JSON replacement through the owned directory; preserve
+  existing metric values and failed performance status.
+- [x] Split artifact helpers to keep the touched source below 1,000 lines.
+- [x] Run standalone campaign infrastructure tests: 41 passed.
+- [ ] Review, run the complete isolated local gate, push and merge the PR.
+- [ ] Collect fresh full campaign evidence on the fixed committed runner;
+  retain the pre-fix sample separately without mixing commit identities.
+
 # Link output permissions
 
 - [x] Reproduce a successful fresh link followed by a non-executable cache hit.
