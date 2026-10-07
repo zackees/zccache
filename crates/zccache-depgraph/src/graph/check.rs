@@ -283,7 +283,7 @@ impl DepGraph {
             tracing::debug!(
                 key = %key.hash().to_hex(),
                 artifact_key = ?entry.artifact_key.map(|k| k.hash().to_hex()),
-                "check: cold (entry state is Cold)"
+                "check: cold (entry state is Cold or artifact key missing)"
             );
             self.misses.fetch_add(1, Ordering::Relaxed);
             return CacheVerdict::Cold;
@@ -294,7 +294,7 @@ impl DepGraph {
             return CacheVerdict::NeedsPreprocessor;
         }
 
-        // Helper: a file is fresh if the journal hasn't seen it change
+        // Helper: a measured content hash takes precedence over journal
         // since `since` OR — when the journal has no opinion (post-restart
         // cold journal, the watcher dropped events, etc.) — if its current
         // content hash matches the hash we stored at last `update()`.
