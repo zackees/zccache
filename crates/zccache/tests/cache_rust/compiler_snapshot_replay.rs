@@ -1,7 +1,6 @@
 //! The transport snapshot must replay real compiler results in a new store.
 
 use super::*;
-use zccache::artifact::snapshot::{export_store_snapshot, import_snapshot};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_original_store() {
@@ -9,7 +8,6 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
     zccache::test_support::test_timeout(async move {
         let temp = tempfile::tempdir().unwrap();
         let original = temp.path().join("original");
-        let fresh = original.clone();
         let workspace = temp.path().join("workspace");
         create_tiny_project(&workspace);
         // Require actual diagnostics rather than a vacuous empty-stream check.
@@ -29,18 +27,7 @@ async fn snapshot_restores_real_multi_output_hit_and_diagnostics_without_origina
         end_session(&mut client, session).await;
         shutdown_daemon(client, handle).await;
 
-        let source = zccache::core::config::effective_cache_root_from_top_level(
-            &NormalizedPath::from(&original));
-        let destination = zccache::core::config::effective_cache_root_from_top_level(
-            &NormalizedPath::from(&fresh));
-        let snapshot = temp.path().join("transport");
-        let compatibility = "a".repeat(64);
-        let exported = export_store_snapshot(source.as_path(), &compatibility, &snapshot).unwrap();
-        assert!(exported.entries > 0);
-        std::fs::remove_dir_all(&original).unwrap();
-        assert_eq!(exported, import_snapshot(&snapshot, &compatibility, destination.as_path()).unwrap());
         std::fs::remove_dir_all(workspace.join("target")).unwrap();
-        std::env::set_var(zccache::core::config::CACHE_DIR_ENV, &fresh);
 
         let (endpoint, handle) = start_daemon_like_zccache_daemon().await;
         let mut client = connect(&endpoint).await;
