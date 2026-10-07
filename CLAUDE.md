@@ -55,6 +55,12 @@ soldr cargo bench -p zccache            # criterion benches live in crates/zccac
 
 ## Local gate (before every push)
 
+When the user explicitly requests remote CI because the local host is busy or
+Bosn cannot produce a valid receipt, push the committed branch without local
+attestation and require the full remote PR checks before merge. Do not retry
+heavy local lanes in that mode or claim a failed local gate passed. Apply the
+`ci-full` label to the PR so prior attestations cannot skip remote checks.
+
 ```bash
 uvx --from git+https://github.com/zackees/ci.yml@<CI_LINT_REF> ci-lint local-gate run   # pin: ci/local_gate.py CI_LINT_REF
 ```
