@@ -1411,5 +1411,13 @@ qualification remains required before publication.
 - [x] Extend the existing pin owner to use unique registry lockfile versions;
   preserve non-exact requirements and refuse to infer ambiguous versions/sources.
 - [x] Pass all 73 pinning and local performance harness tests.
-- [ ] Review, commit, and retry all eight sanctioned matrix cells.
+- [x] Review, commit, and retry all eight sanctioned matrix cells on 6b6022cf.
+  All eight failed setup: musl-built Soldr selected unsupported managed LLVM
+  inside the Debian GNU runner. These are invalid samples, not timing regressions.
+- [x] Reproduce builder/runner ABI mismatch and lost failed-cell evidence.
+- [x] Align the Soldr builder with the GNU runner and retain stderr, final JSON,
+  and reports even on failure, preserving the original scenario exit status.
+- [x] Pass 85 harness tests, including failed/successful and malformed JSON cases,
+  plus RED/GREEN simultaneous scenario/tee failures preserving the scenario status.
+- [ ] Review and commit the harness correction; rebuild images and retry all eight cells.
 - [ ] Qualify the final changed source through the complete local gate.

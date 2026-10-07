@@ -10,9 +10,67 @@ import shutil
 import subprocess
 from functools import cache
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON_SH = ROOT / "perf" / "lib" / "common.sh"
+
+
+@pytest.mark.parametrize("status,valid_json,tee_status", [
+    (23, True, 0), (23, False, 0), (0, True, 0), (0, False, 0),
+    (23, True, 17), (0, True, 17),
+])
+def test_container_scenario_retains_evidence_and_exit_status(
+    tmp_path: Path, status: int, valid_json: bool, tee_status: int,
+) -> None:
+    scenario_root = tmp_path / "work"
+    scenario_root.mkdir()
+    (scenario_root / "fixture").mkdir()
+    results = tmp_path / "results"
+    results.mkdir()
+    env = os.environ.copy()
+    if tee_status:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        tee = bin_dir / "tee"
+        tee.write_text(f'#!/usr/bin/env bash\ncat > "$1"\nexit {tee_status}\n')
+        tee.chmod(0o755)
+        env["PATH"] = str(bin_dir) + os.pathsep + env["PATH"]
+    script = tmp_path / "scenario.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\nset -euo pipefail\n'
+        'echo "abort evidence" > "$1/../soldr-aborts-cold.jsonl"\n'
+        'echo "compiler unavailable" >&2\n'
+        + (f'echo \'{{"guarded_command_status":{status}}}\'\n' if valid_json else 'echo broken-json\n')
+        + f'exit {status}\n',
+        encoding="utf-8",
+    )
+    with (tmp_path / "stdout").open("w") as stdout, (tmp_path / "stderr").open("w") as stderr:
+        completed = subprocess.run(
+            [bash_executable(), "-c",
+             'source "$1"; SCENARIO=cold-tar-untar-warm; run_scenario_and_collect "$2" "$3" "$4" "$5"',
+             "test", str(ROOT / "ci/docker/perf_entrypoint.sh"), str(script),
+             str(scenario_root / "fixture"), str(scenario_root), str(results)],
+            stdout=stdout, stderr=stderr, env=env, check=False,
+        )
+    if status or valid_json:
+        assert completed.returncode == (status or tee_status), (tmp_path / "stderr").read_text()
+    else:
+        assert completed.returncode != 0
+    if valid_json:
+        assert json.loads((results / "result.json").read_text())["guarded_command_status"] == status
+    assert (results / "soldr-aborts-cold.jsonl").read_text() == "abort evidence\n"
+    assert (results / "scenario-stderr.log").read_text() == "compiler unavailable\n"
+
+
+def test_soldr_builder_uses_runner_host_abi() -> None:
+    builder = (ROOT / "ci/docker/soldr-builder.Dockerfile").read_text()
+    runner = (ROOT / "ci/docker/runner.Dockerfile").read_text()
+    builder_base = next(line for line in builder.splitlines() if line.startswith("FROM "))
+    runner_base = next(line for line in runner.splitlines() if line.startswith("FROM "))
+    assert builder_base == runner_base
+    assert "--target x86_64-unknown-linux-gnu" in builder
+    assert "/x86_64-unknown-linux-gnu/release/soldr" in builder
 
 
 @cache
