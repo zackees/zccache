@@ -212,7 +212,15 @@ impl DepGraph {
         // Reuse the canonical artifact-key proof, releasing this DashMap
         // guard before that helper queries the context again.
         drop(entry);
-        if self.try_fast_hit_with_env(&actual_key, &get_hash, &env_value) != Some(artifact_key) {
+        if self
+            .try_fast_hit_for_artifact_with_env(
+                &actual_key,
+                &artifact_key.hash().to_hex(),
+                &get_hash,
+                &env_value,
+            )
+            .is_none()
+        {
             return (
                 CacheVerdict::Cold,
                 "rustc metadata compatibility candidate inputs changed".to_string(),
@@ -738,6 +746,36 @@ impl DepGraph {
         G: Fn(&Path) -> Option<ContentHash>,
         E: Fn(&str) -> Option<String>,
     {
+        self.try_fast_hit_expected_with_env(key, None, get_hash, env_value)
+    }
+
+    /// Prove reuse of a particular fast entry's artifact, rather than just
+    /// the graph's current artifact. Refused entries never count as hits.
+    pub fn try_fast_hit_for_artifact_with_env<G, E>(
+        &self,
+        key: &ContextKey,
+        expected_artifact: &str,
+        get_hash: G,
+        env_value: E,
+    ) -> Option<ArtifactKey>
+    where
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
+    {
+        self.try_fast_hit_expected_with_env(key, Some(expected_artifact), get_hash, env_value)
+    }
+
+    fn try_fast_hit_expected_with_env<G, E>(
+        &self,
+        key: &ContextKey,
+        expected_artifact: Option<&str>,
+        get_hash: G,
+        env_value: E,
+    ) -> Option<ArtifactKey>
+    where
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
+    {
         let key = self.resolve_instance_key(key)?;
         let rustc_externs = self.rustc_extern_inputs(&key);
         let entry = self.contexts.get(&key)?;
@@ -747,6 +785,11 @@ impl DepGraph {
         }
 
         let stored_key = entry.artifact_key.as_ref()?;
+        // Hold the shared context guard across identity and input validation.
+        // A newer graph artifact cannot authorize an older fast entry.
+        if expected_artifact.is_some_and(|expected| stored_key.hash().to_hex() != expected) {
+            return None;
+        }
 
         // Build file_hashes using references — zero NormalizedPath clones.
         let cap = 1 + entry.resolved_includes.len() + entry.context.force_includes.len();

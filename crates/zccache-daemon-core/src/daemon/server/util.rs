@@ -203,8 +203,9 @@ pub(super) fn context_artifact_is_fresh(
     let graph = state.dep_graph.load();
     let includes = graph.get_includes(context_key).unwrap_or_default();
     graph
-        .try_fast_hit_with_env(
+        .try_fast_hit_for_artifact_with_env(
             context_key,
+            expected_artifact,
             |path| {
                 state
                     .cache_system
@@ -213,7 +214,7 @@ pub(super) fn context_artifact_is_fresh(
             },
             |name| rustc_env_dep_cache_value(client_env, name, source_path, &includes),
         )
-        .is_some_and(|key| key.hash().to_hex() == expected_artifact)
+        .is_some()
 }
 
 /// Look up an artifact by key, falling through to the on-disk
