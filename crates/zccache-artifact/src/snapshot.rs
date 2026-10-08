@@ -258,6 +258,78 @@ mod tests {
     }
 
     #[test]
+    fn repeated_import_preserves_existing_rows_and_adds_new_artifacts() {
+        let (temp, source, key) = fixture();
+        let compatibility = "b".repeat(64);
+        let first = temp.path().join("first-snapshot");
+        let destination = temp.path().join("restored");
+        let artifacts = temp.path().join("source/artifacts");
+        export_snapshot(&source, &artifacts, &compatibility, &first).unwrap();
+        import_snapshot(&first, &compatibility, &destination).unwrap();
+
+        let existing = ArtifactStore::open_empty(&destination.join("index.bin"));
+        existing.load_from_disk().unwrap();
+        let local_key = "c".repeat(64);
+        layout_fixtures::seed_staged_generation(
+            &destination.join("artifacts"), &local_key, &[b"local"],
+        );
+        existing.insert(&local_key, &ArtifactIndex::new(
+            vec!["local.o".into()], vec![5], vec![], vec![], 0,
+        ));
+        existing.flush().unwrap();
+        let before = fs::read(resolve_staged_artifact_files(
+            &destination.join("artifacts"), &key, &[3],
+        ).unwrap().unwrap()[0].as_path()).unwrap();
+
+        let added_key = "d".repeat(64);
+        layout_fixtures::seed_staged_generation(&artifacts, &added_key, &[b"new"]);
+        source.insert(&added_key, &ArtifactIndex::new(
+            vec!["new.o".into()], vec![3], vec![], vec![], 0,
+        ));
+        // An older imported record must not replace a locally retained key.
+        layout_fixtures::seed_staged_generation(&artifacts, &key, &[b"old"]);
+        let second = temp.path().join("second-snapshot");
+        export_snapshot(&source, &artifacts, &compatibility, &second).unwrap();
+        let source_before = file_identity(&second);
+        import_snapshot(&second, &compatibility, &destination).unwrap();
+        import_snapshot(&second, &compatibility, &destination).unwrap();
+        let restored = ArtifactStore::open_empty(&destination.join("index.bin"));
+        restored.load_from_disk().unwrap();
+        let mut keys: Vec<_> = restored.load_all().into_iter().map(|(key, _)| key).collect();
+        keys.sort();
+        assert_eq!(keys, vec![key.clone(), local_key.clone(), added_key.clone()]);
+        for (key, size, expected) in [
+            (key, 3, before.as_slice()),
+            (local_key, 5, b"local".as_slice()),
+            (added_key, 3, b"new".as_slice()),
+        ] {
+            let paths = resolve_staged_artifact_files(
+                &destination.join("artifacts"), &key, &[size],
+            ).unwrap().unwrap();
+            assert_eq!(fs::read(paths[0].as_path()).unwrap(), expected);
+        }
+        assert_eq!(file_identity(&second), source_before);
+    }
+
+    #[test]
+    fn import_refuses_an_existing_store_writer_without_changing_its_files() {
+        let (temp, source, _) = fixture();
+        let compatibility = "b".repeat(64);
+        let snapshot = temp.path().join("snapshot");
+        let destination = temp.path().join("restored");
+        export_snapshot(&source, &temp.path().join("source/artifacts"),
+            &compatibility, &snapshot).unwrap();
+        import_snapshot(&snapshot, &compatibility, &destination).unwrap();
+        let _writer = zccache_core::cache_root_lock::CacheRootWriterLock::acquire(
+            &destination,
+        ).unwrap();
+        let before = file_identity(&destination);
+        assert_eq!(import_snapshot(&snapshot, &compatibility, &destination)
+            .unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(file_identity(&destination), before);
+    }
+
+    #[test]
     fn store_context_corruption_is_refused_without_publication_or_source_mutation() {
         for mode in ["digest", "missing", "format"] {
             let (temp, store, _) = fixture();
