@@ -170,9 +170,9 @@ fn publish_snapshot(
     })
 }
 
-/// Validate compatibility and every staged payload before publishing a new
-/// private store. Import must precede daemon startup; it never merges a live
-/// mutable store. Local and hosted callers use their own transport and stores.
+/// Validate every incoming payload before importing into a quiesced store.
+/// Local rows win collisions. A writer lease excludes daemons; publication
+/// adds payloads first, the union graph second, and the union index last.
 pub fn import_snapshot(
     source: &Path,
     compatibility: &str,
@@ -202,14 +202,95 @@ pub fn import_snapshot(
         .transpose()?;
     // Completed transport snapshots are immutable and have no maintenance
     // writer. Do not create/open a writable store lock in the source snapshot.
-    publish_snapshot(
+    let parent = destination.parent().filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let destination_root = match fs::symlink_metadata(destination) {
+        Ok(meta) if meta.is_dir() => fs::canonicalize(destination)?,
+        Ok(_) => return Err(invalid("compiler store destination is not a directory")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::canonicalize(parent)?
+            .join(destination.file_name().ok_or_else(|| invalid("missing store directory name"))?),
+        Err(error) => return Err(error),
+    };
+    let source_root = fs::canonicalize(source)?;
+    if destination_root.starts_with(&source_root) || source_root.starts_with(&destination_root) {
+        return Err(invalid("snapshot source and compiler store overlap"));
+    }
+    let pending = tempfile::Builder::new().prefix(".compiler-import-").tempdir_in(parent)?;
+    let validated = pending.path().join("validated");
+    let receipt = publish_snapshot(
         &store,
         &source.join("artifacts"),
         compatibility,
-        destination,
+        &validated,
         crate::layout::SnapshotLayout::StagedOnly,
         depgraph.as_deref(),
-    )
+    )?;
+    let _writer = zccache_core::cache_root_lock::CacheRootWriterLock::acquire(destination)?;
+    let index = destination.join("index.bin");
+    let local = match fs::read(&index) {
+        Ok(bytes) => ArtifactStore::from_snapshot(&index, &bytes)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ArtifactStore::open_empty(&index),
+        Err(error) => return Err(error),
+    };
+    let existing: std::collections::HashSet<_> = local.load_all().into_iter()
+        .map(|(key, _)| key).collect();
+    let added: Vec<_> = store.load_all().into_iter()
+        .filter(|(key, _)| !existing.contains(key)).collect();
+    if added.is_empty() {
+        return Ok(receipt);
+    }
+    let graph_path = destination.join("depgraph/depgraph.bin");
+    let graph = merge_store_graph(&validated, &graph_path, &added)?;
+    let artifacts = destination.join("artifacts");
+    let _staged = StagedReadGuard::acquire(&artifacts)?;
+    for (key, meta) in &added {
+        crate::layout::copy_artifact_generation(
+            &validated.join("artifacts"), key, &meta.output_sizes, &artifacts,
+            &crate::layout::SnapshotLayout::StagedOnly,
+        )?;
+        local.insert(key, meta);
+    }
+    if let Some(graph) = graph {
+        let prepared = pending.path().join("union-graph.bin");
+        let options = zccache_depgraph::snapshot::SaveOptions {
+            ttl: std::time::Duration::MAX,
+            budget_bytes: u64::MAX,
+            ..Default::default()
+        };
+        zccache_depgraph::snapshot::save_to_file_with(&graph, &prepared, &options).map_err(invalid)?;
+        fs::OpenOptions::new().write(true).open(&prepared)?.sync_all()?;
+        fs::create_dir_all(graph_path.parent().unwrap())?;
+        kernal_api::platform::fs::replacement::atomic_replace(&prepared, &graph_path)?;
+        kernal_api::platform::fs::sync_directory_if_supported(graph_path.parent().unwrap())?;
+    }
+    // Until this atomic index commit, interrupted imports leave the old
+    // indexed objects and contexts intact. Unindexed additions only miss.
+    local.flush()?;
+    Ok(receipt)
+}
+
+fn merge_store_graph(
+    source: &Path,
+    destination: &Path,
+    added: &[(String, crate::ArtifactIndex)],
+) -> io::Result<Option<zccache_depgraph::DepGraph>> {
+    use zccache_depgraph::{snapshot::{load_from_file_with, LoadOptions}, DepGraph};
+    let options = LoadOptions { ttl: std::time::Duration::MAX, ..Default::default() };
+    let incoming_path = source.join("depgraph/depgraph.bin");
+    if !incoming_path.exists() {
+        return Ok(None);
+    }
+    let incoming = load_from_file_with(&incoming_path, &options).map_err(invalid)?;
+    let local = if destination.exists() {
+        load_from_file_with(destination, &options).map_err(invalid)?
+    } else {
+        DepGraph::new()
+    };
+    let keys: std::collections::HashSet<_> = added.iter().map(|(key, _)| key.as_str()).collect();
+    Ok(Some(local.merge_missing(&incoming, |key| {
+        keys.contains(zccache_hash::ContentHash::from_bytes(*key).to_hex().as_str())
+    })))
 }
 
 fn validate_compatibility(identity: &str) -> io::Result<()> {
@@ -326,7 +407,14 @@ mod tests {
         let before = file_identity(&destination);
         assert_eq!(import_snapshot(&snapshot, &compatibility, &destination)
             .unwrap_err().kind(), io::ErrorKind::WouldBlock);
-        assert_eq!(file_identity(&destination), before);
+        let after = file_identity(&destination);
+        // Writer contention is recorded in the store's lifecycle log.
+        // The committed compiler data must remain byte-identical.
+        for (path, bytes) in before {
+            if !path.starts_with("logs/") {
+                assert_eq!(after.get(&path), Some(&bytes), "{path}");
+            }
+        }
     }
 
     #[test]

@@ -18,6 +18,38 @@ use super::super::super::snapshot::{load_from_file, save_to_file, strings_to_pat
 use super::{always_fresh, dummy_hash, make_ctx, test_path};
 
 #[test]
+fn offline_merge_preserves_local_contexts_and_admits_only_installed_artifacts() {
+    let local = DepGraph::new();
+    let retained = local.register(make_ctx("/retained.cpp"));
+    local.update(&retained, ScanResult {
+        resolved: vec![], unresolved: vec![], has_computed: false,
+    }, dummy_hash);
+    let before = local.to_snapshot().contexts;
+
+    let incoming = DepGraph::new();
+    incoming.register(make_ctx("/retained.cpp")); // cold older duplicate
+    let added = incoming.register(make_ctx("/added.cpp"));
+    incoming.update(&added, ScanResult {
+        resolved: vec![], unresolved: vec![], has_computed: false,
+    }, dummy_hash);
+    let rejected = incoming.register(make_ctx("/rejected.cpp"));
+    incoming.update(&rejected, ScanResult {
+        resolved: vec![], unresolved: vec![], has_computed: false,
+    }, dummy_hash);
+    let admitted_key = incoming.to_snapshot().contexts.into_iter()
+        .find(|context| context.context_key == *added.hash().as_bytes())
+        .unwrap().artifact_key.unwrap();
+    let merged = local.merge_missing(&incoming, |key| *key == admitted_key);
+    assert_eq!(merged.stats().context_count, 2);
+    let retained_after = merged.to_snapshot().contexts.into_iter()
+        .find(|context| context.context_key == *retained.hash().as_bytes()).unwrap();
+    assert_eq!(bincode::serialize(&retained_after).unwrap(),
+        bincode::serialize(&before[0]).unwrap());
+    assert!(matches!(merged.check(&added, always_fresh, dummy_hash), CacheVerdict::Hit { .. }));
+    assert!(!matches!(merged.check(&rejected, always_fresh, dummy_hash), CacheVerdict::Hit { .. }));
+}
+
+#[test]
 fn gc_trims_old_entries() {
     let graph = DepGraph::new();
     graph.register(make_ctx("/old.cpp"));
