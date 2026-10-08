@@ -275,6 +275,9 @@ fn import_snapshot_before_commit(
 }
 
 fn validate_import_destination(source: &Path, destination: &Path) -> io::Result<()> {
+    if destination.components().any(|component| matches!(component, std::path::Component::ParentDir)) {
+        return Err(invalid("compiler store destination contains a parent component"));
+    }
     let source = fs::canonicalize(source)?;
     let mut ancestor = destination;
     loop {
