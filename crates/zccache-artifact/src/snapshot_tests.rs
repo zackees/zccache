@@ -32,6 +32,12 @@ fn overlapping_nested_destination_does_not_create_directories_in_source() {
     assert!(import_snapshot(&snapshot, &compatibility, &parent.join("store")).is_err());
     assert!(!parent.exists());
     assert_eq!(file_identity(&snapshot), before);
+    let unresolved = temp.path().join("missing");
+    let escaped = unresolved.join("../snapshot/new-store");
+    assert!(import_snapshot(&snapshot, &compatibility, &escaped).is_err());
+    assert!(!unresolved.exists());
+    assert!(!snapshot.join("new-store").exists());
+    assert_eq!(file_identity(&snapshot), before);
 }
 
 #[test]
