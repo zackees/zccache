@@ -47,6 +47,31 @@ fn offline_merge_preserves_local_contexts_and_admits_only_installed_artifacts() 
 }
 
 #[test]
+fn offline_merge_conflicting_scan_cannot_authorize_any_hit_path() {
+    use super::super::{FileEntrySnapshot, IncludeDirectiveSnapshot};
+    let graph = DepGraph::new();
+    let key = graph.register(make_ctx("/conflict.cpp"));
+    graph.update(&key, ScanResult {
+        resolved: vec![], unresolved: vec![], has_computed: false,
+    }, dummy_hash).unwrap();
+    let mut incoming = graph.to_snapshot();
+    incoming.files.push(FileEntrySnapshot {
+        path: "/conflict.cpp".into(),
+        includes: vec![IncludeDirectiveSnapshot { kind: 0, path: "old.h".into(), line: 1 }],
+    });
+    let mut local = DepGraph::new().to_snapshot();
+    local.files.push(FileEntrySnapshot {
+        path: "/conflict.cpp".into(),
+        includes: vec![IncludeDirectiveSnapshot { kind: 0, path: "local.h".into(), line: 1 }],
+    });
+    let merged = DepGraph::from_snapshot(local)
+        .merge_missing(&DepGraph::from_snapshot(incoming), |_| true);
+    assert!(matches!(merged.check(&key, always_fresh, dummy_hash), CacheVerdict::Cold));
+    assert!(matches!(merged.check_diagnostic(&key, always_fresh, dummy_hash).0, CacheVerdict::Cold));
+    assert!(merged.try_fast_hit(&key, dummy_hash).is_none());
+}
+
+#[test]
 fn gc_trims_old_entries() {
     let graph = DepGraph::new();
     graph.register(make_ctx("/old.cpp"));
