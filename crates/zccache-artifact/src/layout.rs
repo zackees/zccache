@@ -367,7 +367,22 @@ fn copy_staged_generation(
     let root = destination.join(STAGED_ROOT);
     let key_dir = root.join(key);
     let target = key_dir.join(generation_name);
-    fs::create_dir_all(&target)?;
+    fs::create_dir_all(&key_dir)?;
+    if target.exists() {
+        // An earlier import may have published this immutable generation
+        // before its index commit. Validate and reuse it, including read-only
+        // outputs, instead of truncating already committed payload files.
+        let manifest = load_manifest(&target.join("manifest.bin"), key, generation_name)?;
+        if generation_digest(key, &manifest.outputs) != generation_name {
+            return Err(invalid_data("existing generation manifest digest mismatch"));
+        }
+        verify_generation_outputs(&PublishedGeneration {
+            dir: target.into(), outputs: manifest.outputs,
+        })?;
+        publish_snapshot_pointer(destination, key, generation_name, sizes)?;
+        return Ok(true);
+    }
+    let pending = tempfile::Builder::new().prefix(".snapshot-generation-").tempdir_in(&key_dir)?;
     let manifest = generation.dir.join("manifest.bin");
     for path in paths
         .iter()
@@ -377,9 +392,14 @@ fn copy_staged_generation(
         let name = path
             .file_name()
             .ok_or_else(|| invalid_data("staged file has no name"))?;
-        let copied = target.join(name);
+        let copied = pending.path().join(name);
         copy_snapshot_file(path, &copied)?;
     }
+    // Never expose a partially copied generation. A crash before rename
+    // leaves only an unreferenced temporary directory; a retry uses a new one.
+    kernal_api::platform::fs::sync_directory_if_supported(pending.path())?;
+    kernal_api::platform::fs::replacement::rename_generation(pending.path(), &target)?;
+    kernal_api::platform::fs::sync_directory_if_supported(&key_dir)?;
     publish_snapshot_pointer(destination, key, generation_name, sizes)?;
     Ok(true)
 }

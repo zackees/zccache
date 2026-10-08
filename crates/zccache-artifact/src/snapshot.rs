@@ -237,6 +237,9 @@ fn import_snapshot_before_commit(
     let added: Vec<_> = store.load_all().into_iter()
         .filter(|(key, _)| !existing.contains(key)).collect();
     if added.is_empty() {
+        if !index.exists() {
+            local.flush()?;
+        }
         return Ok(receipt);
     }
     let graph_dir = destination.join("depgraph");

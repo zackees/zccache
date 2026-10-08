@@ -199,7 +199,7 @@ impl DepGraph {
                 continue;
             }
             if context.last_file_hashes.iter().any(|(path, _)| conflicts.contains(path)) {
-                context.state = 2;
+                context.state = 0;
             }
             local.contexts.push(context);
         }
