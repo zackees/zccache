@@ -29,20 +29,17 @@ fn offline_merge_preserves_local_contexts_and_admits_only_installed_artifacts() 
     let incoming = DepGraph::new();
     incoming.register(make_ctx("/retained.cpp")); // cold older duplicate
     let added = incoming.register(make_ctx("/added.cpp"));
-    incoming.update(&added, ScanResult {
+    let admitted_key = incoming.update(&added, ScanResult {
         resolved: vec![], unresolved: vec![], has_computed: false,
-    }, dummy_hash);
+    }, dummy_hash).unwrap();
     let rejected = incoming.register(make_ctx("/rejected.cpp"));
     incoming.update(&rejected, ScanResult {
         resolved: vec![], unresolved: vec![], has_computed: false,
     }, dummy_hash);
-    let admitted_key = incoming.to_snapshot().contexts.into_iter()
-        .find(|context| context.context_key == *added.hash().as_bytes())
-        .unwrap().artifact_key.unwrap();
-    let merged = local.merge_missing(&incoming, |key| *key == admitted_key);
+    let merged = local.merge_missing(&incoming, |key| key == admitted_key.hash().as_bytes());
     assert_eq!(merged.stats().context_count, 2);
     let retained_after = merged.to_snapshot().contexts.into_iter()
-        .find(|context| context.context_key == *retained.hash().as_bytes()).unwrap();
+        .find(|context| context.context_key == before[0].context_key).unwrap();
     assert_eq!(bincode::serialize(&retained_after).unwrap(),
         bincode::serialize(&before[0]).unwrap());
     assert!(matches!(merged.check(&added, always_fresh, dummy_hash), CacheVerdict::Hit { .. }));
