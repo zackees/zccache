@@ -211,11 +211,15 @@ fn import_snapshot_before_commit(
         .transpose()?;
     // Completed transport snapshots are immutable and have no maintenance
     // writer. Do not create/open a writable store lock in the source snapshot.
-    let parent = destination.parent().filter(|p| !p.as_os_str().is_empty())
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     validate_import_destination(source, destination)?;
     fs::create_dir_all(parent)?;
-    let pending = tempfile::Builder::new().prefix(".compiler-import-").tempdir_in(parent)?;
+    let pending = tempfile::Builder::new()
+        .prefix(".compiler-import-")
+        .tempdir_in(parent)?;
     let validated = pending.path().join("validated");
     let receipt = publish_snapshot(
         &store,
@@ -232,10 +236,13 @@ fn import_snapshot_before_commit(
         Err(error) if error.kind() == io::ErrorKind::NotFound => ArtifactStore::open_empty(&index),
         Err(error) => return Err(error),
     };
-    let existing: std::collections::HashSet<_> = local.load_all().into_iter()
-        .map(|(key, _)| key).collect();
-    let added: Vec<_> = store.load_all().into_iter()
-        .filter(|(key, _)| !existing.contains(key)).collect();
+    let existing: std::collections::HashSet<_> =
+        local.load_all().into_iter().map(|(key, _)| key).collect();
+    let added: Vec<_> = store
+        .load_all()
+        .into_iter()
+        .filter(|(key, _)| !existing.contains(key))
+        .collect();
     if added.is_empty() {
         if !index.exists() {
             local.flush()?;
@@ -249,7 +256,10 @@ fn import_snapshot_before_commit(
     let _staged = StagedReadGuard::acquire(&artifacts)?;
     for (key, meta) in &added {
         crate::layout::copy_artifact_generation(
-            &validated.join("artifacts"), key, &meta.output_sizes, &artifacts,
+            &validated.join("artifacts"),
+            key,
+            &meta.output_sizes,
+            &artifacts,
             &crate::layout::SnapshotLayout::StagedOnly,
         )?;
         local.insert(key, meta);
@@ -261,8 +271,12 @@ fn import_snapshot_before_commit(
             budget_bytes: u64::MAX,
             ..Default::default()
         };
-        zccache_depgraph::snapshot::save_to_file_with(&graph, &prepared, &options).map_err(invalid)?;
-        fs::OpenOptions::new().write(true).open(&prepared)?.sync_all()?;
+        zccache_depgraph::snapshot::save_to_file_with(&graph, &prepared, &options)
+            .map_err(invalid)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&prepared)?
+            .sync_all()?;
         fs::create_dir_all(&graph_dir)?;
         kernal_api::platform::fs::replacement::atomic_replace(&prepared, &graph_path)?;
         kernal_api::platform::fs::sync_directory_if_supported(&graph_dir)?;
@@ -275,8 +289,13 @@ fn import_snapshot_before_commit(
 }
 
 fn validate_import_destination(source: &Path, destination: &Path) -> io::Result<()> {
-    if destination.components().any(|component| matches!(component, std::path::Component::ParentDir)) {
-        return Err(invalid("compiler store destination contains a parent component"));
+    if destination
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(invalid(
+            "compiler store destination contains a parent component",
+        ));
     }
     let source = fs::canonicalize(source)?;
     let mut ancestor = destination;
@@ -295,7 +314,9 @@ fn validate_import_destination(source: &Path, destination: &Path) -> io::Result<
                 return Ok(());
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                ancestor = ancestor.parent().filter(|p| !p.as_os_str().is_empty())
+                ancestor = ancestor
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
                     .unwrap_or_else(|| Path::new("."));
             }
             Err(error) => return Err(error),
@@ -308,8 +329,14 @@ fn merge_store_graph(
     destination: &Path,
     added: &[(String, crate::ArtifactIndex)],
 ) -> io::Result<Option<zccache_depgraph::DepGraph>> {
-    use zccache_depgraph::{snapshot::{load_from_file_with, LoadOptions}, DepGraph};
-    let options = LoadOptions { ttl: std::time::Duration::MAX, ..Default::default() };
+    use zccache_depgraph::{
+        snapshot::{load_from_file_with, LoadOptions},
+        DepGraph,
+    };
+    let options = LoadOptions {
+        ttl: std::time::Duration::MAX,
+        ..Default::default()
+    };
     let incoming_path = source.join("depgraph/depgraph.bin");
     if !incoming_path.exists() {
         return Ok(None);
@@ -322,7 +349,11 @@ fn merge_store_graph(
     };
     let keys: std::collections::HashSet<_> = added.iter().map(|(key, _)| key.as_str()).collect();
     Ok(Some(local.merge_missing(&incoming, |key| {
-        keys.contains(zccache_hash::ContentHash::from_bytes(*key).to_hex().as_str())
+        keys.contains(
+            zccache_hash::ContentHash::from_bytes(*key)
+                .to_hex()
+                .as_str(),
+        )
     })))
 }
 

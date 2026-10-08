@@ -377,12 +377,15 @@ fn copy_staged_generation(
             return Err(invalid_data("existing generation manifest digest mismatch"));
         }
         verify_generation_outputs(&PublishedGeneration {
-            dir: target.into(), outputs: manifest.outputs,
+            dir: target.into(),
+            outputs: manifest.outputs,
         })?;
         publish_snapshot_pointer(destination, key, generation_name, sizes)?;
         return Ok(true);
     }
-    let pending = tempfile::Builder::new().prefix(".snapshot-generation-").tempdir_in(&key_dir)?;
+    let pending = tempfile::Builder::new()
+        .prefix(".snapshot-generation-")
+        .tempdir_in(&key_dir)?;
     let manifest = generation.dir.join("manifest.bin");
     for path in paths
         .iter()

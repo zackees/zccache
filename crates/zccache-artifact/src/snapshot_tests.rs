@@ -7,11 +7,7 @@ use std::{collections::BTreeMap, fs, sync::Arc};
 fn fixture() -> (tempfile::TempDir, ArtifactStore, String) {
     let temp = tempfile::tempdir().unwrap();
     let key = "a".repeat(64);
-    layout_fixtures::seed_staged_generation(
-        &temp.path().join("source/artifacts"),
-        &key,
-        &[b"obj"],
-    );
+    layout_fixtures::seed_staged_generation(&temp.path().join("source/artifacts"), &key, &[b"obj"]);
     let store = ArtifactStore::open_empty(&temp.path().join("source/index.bin"));
     store.insert(
         &key,
@@ -25,8 +21,13 @@ fn overlapping_nested_destination_does_not_create_directories_in_source() {
     let (temp, store, _) = fixture();
     let compatibility = "b".repeat(64);
     let snapshot = temp.path().join("snapshot");
-    export_snapshot(&store, &temp.path().join("source/artifacts"),
-        &compatibility, &snapshot).unwrap();
+    export_snapshot(
+        &store,
+        &temp.path().join("source/artifacts"),
+        &compatibility,
+        &snapshot,
+    )
+    .unwrap();
     let before = file_identity(&snapshot);
     let parent = snapshot.join("new-parent");
     assert!(import_snapshot(&snapshot, &compatibility, &parent.join("store")).is_err());
@@ -52,24 +53,31 @@ fn interrupted_import_preserves_index_and_retries_readonly_generations() {
     let before = fs::read(destination.join("index.bin")).unwrap();
     let key = "c".repeat(64);
     layout_fixtures::seed_staged_generation(&artifacts, &key, &[b"readonly"]);
-    let files = resolve_staged_artifact_files(&artifacts, &key, &[8]).unwrap().unwrap();
+    let files = resolve_staged_artifact_files(&artifacts, &key, &[8])
+        .unwrap()
+        .unwrap();
     let mut permissions = fs::metadata(&files[0]).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(&files[0], permissions).unwrap();
-    store.insert(&key, &ArtifactIndex::new(
-        vec!["readonly.o".into()], vec![8], vec![], vec![], 0,
-    ));
+    store.insert(
+        &key,
+        &ArtifactIndex::new(vec!["readonly.o".into()], vec![8], vec![], vec![], 0),
+    );
     let update = temp.path().join("update");
     export_snapshot(&store, &artifacts, &compatibility, &update).unwrap();
     let error = import_snapshot_before_commit(&update, &compatibility, &destination, || {
-        Err(io::Error::new(io::ErrorKind::Interrupted, "publication interrupted"))
-    }).unwrap_err();
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "publication interrupted",
+        ))
+    })
+    .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(fs::read(destination.join("index.bin")).unwrap(), before);
     import_snapshot(&update, &compatibility, &destination).unwrap();
-    let files = resolve_staged_artifact_files(
-        &destination.join("artifacts"), &key, &[8],
-    ).unwrap().unwrap();
+    let files = resolve_staged_artifact_files(&destination.join("artifacts"), &key, &[8])
+        .unwrap()
+        .unwrap();
     assert_eq!(fs::read(&files[0]).unwrap(), b"readonly");
     assert!(fs::metadata(&files[0]).unwrap().permissions().readonly());
 }
@@ -88,21 +96,29 @@ fn repeated_import_preserves_existing_rows_and_adds_new_artifacts() {
     existing.load_from_disk().unwrap();
     let local_key = "c".repeat(64);
     layout_fixtures::seed_staged_generation(
-        &destination.join("artifacts"), &local_key, &[b"local"],
+        &destination.join("artifacts"),
+        &local_key,
+        &[b"local"],
     );
-    existing.insert(&local_key, &ArtifactIndex::new(
-        vec!["local.o".into()], vec![5], vec![], vec![], 0,
-    ));
+    existing.insert(
+        &local_key,
+        &ArtifactIndex::new(vec!["local.o".into()], vec![5], vec![], vec![], 0),
+    );
     existing.flush().unwrap();
-    let before = fs::read(resolve_staged_artifact_files(
-        &destination.join("artifacts"), &key, &[3],
-    ).unwrap().unwrap()[0].as_path()).unwrap();
+    let before = fs::read(
+        resolve_staged_artifact_files(&destination.join("artifacts"), &key, &[3])
+            .unwrap()
+            .unwrap()[0]
+            .as_path(),
+    )
+    .unwrap();
 
     let added_key = "d".repeat(64);
     layout_fixtures::seed_staged_generation(&artifacts, &added_key, &[b"new"]);
-    source.insert(&added_key, &ArtifactIndex::new(
-        vec!["new.o".into()], vec![3], vec![], vec![], 0,
-    ));
+    source.insert(
+        &added_key,
+        &ArtifactIndex::new(vec!["new.o".into()], vec![3], vec![], vec![], 0),
+    );
     // An older imported record must not replace a locally retained key.
     layout_fixtures::seed_staged_generation(&artifacts, &key, &[b"old"]);
     let second = temp.path().join("second-snapshot");
@@ -112,17 +128,24 @@ fn repeated_import_preserves_existing_rows_and_adds_new_artifacts() {
     import_snapshot(&second, &compatibility, &destination).unwrap();
     let restored = ArtifactStore::open_empty(&destination.join("index.bin"));
     restored.load_from_disk().unwrap();
-    let mut keys: Vec<_> = restored.load_all().into_iter().map(|(key, _)| key).collect();
+    let mut keys: Vec<_> = restored
+        .load_all()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
     keys.sort();
-    assert_eq!(keys, vec![key.clone(), local_key.clone(), added_key.clone()]);
+    assert_eq!(
+        keys,
+        vec![key.clone(), local_key.clone(), added_key.clone()]
+    );
     for (key, size, expected) in [
         (key, 3, before.as_slice()),
         (local_key, 5, b"local".as_slice()),
         (added_key, 3, b"new".as_slice()),
     ] {
-        let paths = resolve_staged_artifact_files(
-            &destination.join("artifacts"), &key, &[size],
-        ).unwrap().unwrap();
+        let paths = resolve_staged_artifact_files(&destination.join("artifacts"), &key, &[size])
+            .unwrap()
+            .unwrap();
         assert_eq!(fs::read(paths[0].as_path()).unwrap(), expected);
     }
     assert_eq!(file_identity(&second), source_before);
@@ -134,15 +157,23 @@ fn import_refuses_an_existing_store_writer_without_changing_its_files() {
     let compatibility = "b".repeat(64);
     let snapshot = temp.path().join("snapshot");
     let destination = temp.path().join("restored");
-    export_snapshot(&source, &temp.path().join("source/artifacts"),
-        &compatibility, &snapshot).unwrap();
+    export_snapshot(
+        &source,
+        &temp.path().join("source/artifacts"),
+        &compatibility,
+        &snapshot,
+    )
+    .unwrap();
     import_snapshot(&snapshot, &compatibility, &destination).unwrap();
-    let _writer = zccache_core::cache_root_lock::CacheRootWriterLock::acquire(
-        &destination,
-    ).unwrap();
+    let _writer =
+        zccache_core::cache_root_lock::CacheRootWriterLock::acquire(&destination).unwrap();
     let before = file_identity(&destination);
-    assert_eq!(import_snapshot(&snapshot, &compatibility, &destination)
-        .unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(
+        import_snapshot(&snapshot, &compatibility, &destination)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
     let after = file_identity(&destination);
     // Writer contention is recorded in the store's lifecycle log.
     // The committed compiler data must remain byte-identical.

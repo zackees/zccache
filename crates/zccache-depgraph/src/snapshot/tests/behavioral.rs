@@ -21,29 +21,61 @@ use super::{always_fresh, dummy_hash, make_ctx, test_path};
 fn offline_merge_preserves_local_contexts_and_admits_only_installed_artifacts() {
     let local = DepGraph::new();
     let retained = local.register(make_ctx("/retained.cpp"));
-    local.update(&retained, ScanResult {
-        resolved: vec![], unresolved: vec![], has_computed: false,
-    }, dummy_hash);
+    local.update(
+        &retained,
+        ScanResult {
+            resolved: vec![],
+            unresolved: vec![],
+            has_computed: false,
+        },
+        dummy_hash,
+    );
     let before = local.to_snapshot().contexts;
 
     let incoming = DepGraph::new();
     incoming.register(make_ctx("/retained.cpp")); // cold older duplicate
     let added = incoming.register(make_ctx("/added.cpp"));
-    let admitted_key = incoming.update(&added, ScanResult {
-        resolved: vec![], unresolved: vec![], has_computed: false,
-    }, dummy_hash).unwrap();
+    let admitted_key = incoming
+        .update(
+            &added,
+            ScanResult {
+                resolved: vec![],
+                unresolved: vec![],
+                has_computed: false,
+            },
+            dummy_hash,
+        )
+        .unwrap();
     let rejected = incoming.register(make_ctx("/rejected.cpp"));
-    incoming.update(&rejected, ScanResult {
-        resolved: vec![], unresolved: vec![], has_computed: false,
-    }, dummy_hash);
+    incoming.update(
+        &rejected,
+        ScanResult {
+            resolved: vec![],
+            unresolved: vec![],
+            has_computed: false,
+        },
+        dummy_hash,
+    );
     let merged = local.merge_missing(&incoming, |key| key == admitted_key.hash().as_bytes());
     assert_eq!(merged.stats().context_count, 2);
-    let retained_after = merged.to_snapshot().contexts.into_iter()
-        .find(|context| context.context_key == before[0].context_key).unwrap();
-    assert_eq!(bincode::serialize(&retained_after).unwrap(),
-        bincode::serialize(&before[0]).unwrap());
-    assert!(matches!(merged.check(&added, always_fresh, dummy_hash), CacheVerdict::Hit { .. }));
-    assert!(!matches!(merged.check(&rejected, always_fresh, dummy_hash), CacheVerdict::Hit { .. }));
+    let retained_after = merged
+        .to_snapshot()
+        .contexts
+        .into_iter()
+        .find(|context| context.context_key == before[0].context_key)
+        .unwrap();
+    assert_eq!(
+        bincode::serialize(&retained_after).unwrap(),
+        bincode::serialize(&before[0]).unwrap()
+    );
+    assert!(matches!(
+        merged.check(&added, always_fresh, dummy_hash),
+        CacheVerdict::Hit { .. }
+    ));
+    assert!(!matches!(
+        merged.check(&rejected, always_fresh, dummy_hash),
+        CacheVerdict::Hit { .. }
+    ));
 }
 
 #[test]
@@ -51,23 +83,45 @@ fn offline_merge_conflicting_scan_cannot_authorize_any_hit_path() {
     use super::super::{FileEntrySnapshot, IncludeDirectiveSnapshot};
     let graph = DepGraph::new();
     let key = graph.register(make_ctx("/conflict.cpp"));
-    graph.update(&key, ScanResult {
-        resolved: vec![], unresolved: vec![], has_computed: false,
-    }, dummy_hash).unwrap();
+    graph
+        .update(
+            &key,
+            ScanResult {
+                resolved: vec![],
+                unresolved: vec![],
+                has_computed: false,
+            },
+            dummy_hash,
+        )
+        .unwrap();
     let mut incoming = graph.to_snapshot();
     incoming.files.push(FileEntrySnapshot {
         path: "/conflict.cpp".into(),
-        includes: vec![IncludeDirectiveSnapshot { kind: 0, path: "old.h".into(), line: 1 }],
+        includes: vec![IncludeDirectiveSnapshot {
+            kind: 0,
+            path: "old.h".into(),
+            line: 1,
+        }],
     });
     let mut local = DepGraph::new().to_snapshot();
     local.files.push(FileEntrySnapshot {
         path: "/conflict.cpp".into(),
-        includes: vec![IncludeDirectiveSnapshot { kind: 0, path: "local.h".into(), line: 1 }],
+        includes: vec![IncludeDirectiveSnapshot {
+            kind: 0,
+            path: "local.h".into(),
+            line: 1,
+        }],
     });
-    let merged = DepGraph::from_snapshot(local)
-        .merge_missing(&DepGraph::from_snapshot(incoming), |_| true);
-    assert!(matches!(merged.check(&key, always_fresh, dummy_hash), CacheVerdict::Cold));
-    assert!(matches!(merged.check_diagnostic(&key, always_fresh, dummy_hash).0, CacheVerdict::Cold));
+    let merged =
+        DepGraph::from_snapshot(local).merge_missing(&DepGraph::from_snapshot(incoming), |_| true);
+    assert!(matches!(
+        merged.check(&key, always_fresh, dummy_hash),
+        CacheVerdict::Cold
+    ));
+    assert!(matches!(
+        merged.check_diagnostic(&key, always_fresh, dummy_hash).0,
+        CacheVerdict::Cold
+    ));
     assert!(merged.try_fast_hit(&key, dummy_hash).is_none());
 }
 
