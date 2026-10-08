@@ -8,7 +8,7 @@ For how cache keys are computed see [overview.md](overview.md) (section 2.8). Fo
 
 The `zccache_artifact::snapshot` API owns compiler-store export and import.
 Embedded callers quiesce writers and supply the authoritative `ArtifactStore`, its artifact directory, an
-opaque 64-character lowercase-hex compatibility identity, and a new destination.
+opaque 64-character lowercase-hex compatibility identity, and a new export destination.
 The backend retains the full index: output names, sizes, modes, compiler streams,
 and Rust verdicts. Disk export takes the same exclusive cache-root writer lease
 as a daemon, so it refuses an active writer until shutdown/flush completes.
@@ -30,9 +30,29 @@ snapshot; transport never parses their legacy layouts. The snapshot manifest bin
 schema, caller-provided compatibility identity, and index digest. Import checks
 that identity and digest and strictly decodes the index without the normal
 daemon's corrupt-index recovery. It uses the shared publication path to validate
-and install a fresh private store before daemon startup. Schema-1 import requires
+an immutable incoming copy before touching the destination. Import accepts a new
+or populated private store, takes its existing cache-root writer lease, and
+refuses an active daemon. Schema-1 import requires
 staged generations and refuses a missing pointer before legacy resolution, so
 even corrupt input never creates a lock or lifecycle event in its source.
+
+Existing artifact rows and context records win duplicate keys. Only missing
+objects are copied; imported contexts are admitted only for those installed
+objects. The dependency-graph owner combines context state and file scans;
+conflicting imported scans make their contexts cold across ordinary, diagnostic
+and fast hit paths. Existing context timestamps are retained. Overlapping source
+and destination paths, including destination `..` components, are refused before
+directory creation.
+
+Import publishes complete immutable object generations first, a union dependency
+graph through native atomic replacement second, and the union index last. A
+failure before index commit retains the old indexed objects and their contexts;
+new unindexed objects cannot authorize hits. Generations already installed by an
+interrupted import are verified and reused without rewriting read-only outputs.
+The isolated interruption/retry, duplicate/local/new-object preservation, writer
+contention, conflicting-context and source-overlap regressions pass. This is
+not a single atomic swap of the entire store: an interrupted import can leave
+extra objects or contexts for a later retry.
 
 Each copied output receives a durable `.cowhash` sidecar derived from its
 verified manifest digest. Its naming is owned by `zccache-artifact::blob_digest`
@@ -51,12 +71,16 @@ portable exclusive reservation of an empty destination is not provided.
 The API supports staged-v2, pack, flat and empty stores. Missing or corrupt
 payloads return errors, never silently incomplete snapshots. Its CLI adapter is
 `zccache cache export|import --root <store> --snapshot <snapshot> --compatibility <hash>`:
-`root` is the source on export and a new destination on import; `snapshot` is
+`root` is the source on export and the quiesced destination on import; `snapshot` is
 the new destination on export and immutable source on import. Successful output
 is schema-1 JSON with `entries` and `outputs`; errors return nonzero.
-The isolated CLI round-trip and wrong-context refusal tests pass. Full
-repository qualification, managed-daemon shutdown coordination, and
-local/hosted cache transport integration remain pending.
+The isolated CLI round-trip and wrong-context refusal tests pass. The Soldr
+development adapter also passes a real compiler cold-miss/warm-hit check followed
+by a second restore into the same quiesced store. Its retained native journals
+show the same compiler context on the cold and warm invocation. This is one
+managed task with explicit unpublished backend dependency overrides; full
+qualification of the extended importer, publication, and fresh-private-engine
+local/hosted transport remain pending.
 Local and hosted runners will publish their own snapshots independently. This
 API alone does not prove fresh-engine cache durability or reduced compiler misses.
 

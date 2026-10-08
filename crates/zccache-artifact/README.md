@@ -19,4 +19,7 @@ Unpublished internal crate for zccache artifact storage and Rust artifact plan s
 - `kv.rs` — the generic namespaced key/value store.
 - `blob_digest.rs` — the canonical durable integrity-sidecar naming shared
   by runtime publication and immutable compiler-store transport.
+- `snapshot.rs` — immutable compiler-store export and validated import into a
+  new or quiesced populated store, using the shared writer lease and graph owner.
+  Preservation and interruption controls live in `snapshot_tests.rs`.
 - `rust_plan.rs` — Rust artifact plan bundle save/restore.
