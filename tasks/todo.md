@@ -1346,3 +1346,40 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [x] Validate committed no-cook candidate e3b4520: full gate passed in 954 s, stamped e587de8e; all 3478 tests passed. Explicit ci-tests default serialized nextest, so restore num-cpus parallelism in the final slice.
 - [x] Add RED old-lock retention/bootstrap checks; retire measured Test and Integration generations, reserve the initial 1.2 GB without double-counting, and replay the captured 7.90 GB inventory at a 9.10 GB forecast below the unchanged 9.20 GB target.
 - [ ] Review and validate the final committed planner/parallelism slice before push.
+# Shared CI compiler-store snapshots (ci.yml#362)
+
+- [x] Observe an isolated RED test retaining multi-output metadata and verdicts.
+- [x] Export staged-v2, pack and flat payloads using the existing layout resolver.
+- [x] Reject corrupt payloads and preserve prior committed snapshots (isolated test).
+- [x] Verify compatibility on import before any destination publication (isolated test).
+- [x] Import leaves its immutable source unchanged and rejects undecodable indexes.
+- [x] Two concurrent publishers install one complete, importable snapshot.
+- [x] Offline export excludes active writers using the daemon's canonical root lease.
+- [x] Qualify the thin `zccache cache export/import` CLI and its schema-1 output.
+- [ ] Run focused isolated tests, broader gates, and local review before pushing.
+- [ ] Integrate the backend API with cache transport; prove fresh-engine reuse.
+
+Current validation: intentional RED controls for unimplemented export, mixed
+legacy stores, immutable import, strict index decode and active-writer exclusion.
+The corrected writer-exclusion run passed all 127 artifact tests (one ignored),
+six canonical writer-lease tests, and warnings-denied artifact Clippy inside
+the existing Bosn gate stack. Timestamp/read-only retention is covered.
+The corrected CLI run passed export/import in one process, wrong-context refusal,
+and warnings-denied Clippy for artifact, core and CLI crates. The focused run
+took 23.42 seconds inside the existing isolated stack; this is diagnostic, not
+a controlled performance comparison. Full repository qualification and review
+remain pending; this unpublished draft is not fresh-engine cache-hit proof.
+
+The sole primary review found that a missing staged pointer on import reached
+legacy resolution and could write a source lifecycle event. The isolated RED
+reproduced that mutation with legacy validation enabled (127 passed, one failed,
+one ignored). Import now requires staged generations through the shared copier;
+export alone normalizes legacy layouts. The added regression also refuses a
+healthy legacy fallback, preserving the schema-1 transport boundary. Full gate
+attempt on 78fd40e8 passed lint and Python lanes; its MSRV replay was deliberately
+cancelled for this source correction and no complete gate pass is claimed.
+
+The review correction passed 128 artifact tests (one ignored), six writer
+lease tests, one CLI test and focused warnings-denied Clippy in isolation.
+The same primary reviewer confirmed the fix and returned clean. Full repository
+qualification remains required before publication.

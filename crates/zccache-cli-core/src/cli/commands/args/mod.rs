@@ -12,7 +12,7 @@ use std::path::PathBuf;
 mod subcommands;
 
 pub(crate) use subcommands::{
-    CacheCommands, CargoRegistryCommands, DaemonCommands, DaemonProfileCommands,
+    CacheCommands, CacheSnapshotArgs, CargoRegistryCommands, DaemonCommands, DaemonProfileCommands,
     DefenderExclusionsCommands, FpCommands, GhaCacheCommands, KvCommands, MesonCommands,
     RustPlanBackendArg, RustPlanCommands, SymbolsCommands,
 };

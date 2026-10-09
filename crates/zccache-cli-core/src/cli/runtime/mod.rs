@@ -337,7 +337,7 @@ pub(crate) fn classify_wait_tick(
 pub async fn wait_for_daemon_ready(endpoint: &str) -> Result<(), String> {
     wait_for_daemon_ready_with(
         endpoint,
-        |ep| crate::ipc::check_running_daemon_for(ep),
+        crate::ipc::check_running_daemon_for,
         AdaptiveWaitConfig::default(),
     )
     .await

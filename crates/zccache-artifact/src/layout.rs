@@ -236,6 +236,14 @@ pub fn resolve_staged_artifact_files(
     key_hex: &str,
     expected_sizes: &[u64],
 ) -> io::Result<Option<Vec<NormalizedPath>>> {
+    Ok(validated_staged_generation(artifact_dir, key_hex, expected_sizes)?.map(|(_, paths)| paths))
+}
+
+fn validated_staged_generation(
+    artifact_dir: &Path,
+    key_hex: &str,
+    expected_sizes: &[u64],
+) -> io::Result<Option<(PublishedGeneration, Vec<NormalizedPath>)>> {
     let Some(generation) = load_published_generation(artifact_dir, key_hex)? else {
         return Ok(None);
     };
@@ -251,7 +259,164 @@ pub fn resolve_staged_artifact_files(
             ));
         }
     }
-    Ok(Some(verify_generation_outputs(&generation)?))
+    let paths = verify_generation_outputs(&generation)?;
+    Ok(Some((generation, paths)))
+}
+
+pub(crate) enum SnapshotLayout {
+    NormalizeLegacy,
+    StagedOnly,
+}
+
+/// Snapshot all supported layouts into verified staged generations. Legacy
+/// decoding stays in the shared resolver; no transport-specific parser exists.
+pub(crate) fn copy_artifact_generation(
+    source: &Path,
+    key: &str,
+    sizes: &[u64],
+    destination: &Path,
+    layout: &SnapshotLayout,
+) -> io::Result<()> {
+    if copy_staged_generation(source, key, sizes, destination)? {
+        return Ok(());
+    }
+    if matches!(layout, SnapshotLayout::StagedOnly) {
+        return Err(invalid_data(
+            "transport snapshot is missing its staged generation",
+        ));
+    }
+    let payloads = resolve_artifact_payloads(source, key, sizes, false, "snapshot::export")?
+        .ok_or_else(|| invalid_data("snapshot payload is missing or invalid"))?;
+    let root = destination.join(STAGED_ROOT);
+    fs::create_dir_all(&root)?;
+    let pending = tempfile::Builder::new()
+        .prefix(".snapshot-generation-")
+        .tempdir_in(&root)?;
+    let pack_mtime = if payloads
+        .iter()
+        .any(|p| matches!(p, ResolvedArtifactPayload::Bytes(_)))
+    {
+        Some(zccache_core::mtime::FileTime::from_last_modification_time(
+            &fs::metadata(source.join(format!("{key}.pack")))?,
+        ))
+    } else {
+        None
+    };
+    let mut outputs = Vec::with_capacity(payloads.len());
+    for (index, payload) in payloads.iter().enumerate() {
+        let target = pending.path().join(format!("output-{index}"));
+        match payload {
+            ResolvedArtifactPayload::File(path) => copy_snapshot_file(path, &target)?,
+            ResolvedArtifactPayload::Bytes(bytes) => {
+                let mut file = fs::File::create(&target)?;
+                std::io::Write::write_all(&mut file, bytes)?;
+                if let Some(mtime) = pack_mtime {
+                    zccache_core::mtime::stamp_mtime(&target, mtime)?;
+                }
+                file.sync_all()?;
+            }
+        }
+        let (size, digest_hex) = digest_file(&target)?;
+        if size != sizes[index] {
+            return Err(invalid_data("snapshot payload changed size"));
+        }
+        outputs.push(StagedOutput {
+            index,
+            size,
+            digest_hex,
+        });
+    }
+    let generation_hex = generation_digest(key, &outputs);
+    let manifest = StagedManifest {
+        version: STAGED_MANIFEST_VERSION,
+        key_hex: key.into(),
+        generation_hex: generation_hex.clone(),
+        outputs,
+    };
+    let mut file = fs::File::create(pending.path().join("manifest.bin"))?;
+    std::io::Write::write_all(
+        &mut file,
+        &bincode::serialize(&manifest).map_err(|e| invalid_data(e.to_string()))?,
+    )?;
+    file.sync_all()?;
+    // Close the manifest before publishing its containing generation.
+    drop(file);
+    kernal_api::platform::fs::sync_directory_if_supported(pending.path())?;
+    let target = root.join(key).join(&generation_hex);
+    fs::create_dir_all(root.join(key))?;
+    kernal_api::platform::fs::replacement::rename_generation(pending.path(), &target)?;
+    publish_snapshot_pointer(destination, key, &generation_hex, sizes)
+}
+
+/// Copy one captured, verified generation without re-reading its mutable
+/// current pointer. The caller holds the staged read guard during copying.
+fn copy_staged_generation(
+    source: &Path,
+    key: &str,
+    sizes: &[u64],
+    destination: &Path,
+) -> io::Result<bool> {
+    let Some((generation, paths)) = validated_staged_generation(source, key, sizes)? else {
+        return Ok(false);
+    };
+    let generation_name = generation
+        .dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid_data("staged generation has no name"))?;
+    let root = destination.join(STAGED_ROOT);
+    let key_dir = root.join(key);
+    let target = key_dir.join(generation_name);
+    fs::create_dir_all(&target)?;
+    let manifest = generation.dir.join("manifest.bin");
+    for path in paths
+        .iter()
+        .map(AsRef::<Path>::as_ref)
+        .chain(std::iter::once(manifest.as_ref()))
+    {
+        let name = path
+            .file_name()
+            .ok_or_else(|| invalid_data("staged file has no name"))?;
+        let copied = target.join(name);
+        copy_snapshot_file(path, &copied)?;
+    }
+    publish_snapshot_pointer(destination, key, generation_name, sizes)?;
+    Ok(true)
+}
+
+fn copy_snapshot_file(source: &Path, destination: &Path) -> io::Result<()> {
+    let metadata = fs::metadata(source)?;
+    let mut input = fs::File::open(source)?;
+    let mut output = fs::File::create(destination)?;
+    io::copy(&mut input, &mut output)?;
+    zccache_core::mtime::stamp_mtime(
+        destination,
+        zccache_core::mtime::FileTime::from_last_modification_time(&metadata),
+    )?;
+    fs::set_permissions(destination, metadata.permissions())?;
+    output.sync_all()
+}
+
+fn publish_snapshot_pointer(
+    destination: &Path,
+    key: &str,
+    generation: &str,
+    sizes: &[u64],
+) -> io::Result<()> {
+    let root = destination.join(STAGED_ROOT);
+    let key_dir = root.join(key);
+    let target = key_dir.join(generation);
+    // Revalidate copied bytes; an unsupported concurrent payload mutation must
+    // fail publication, never produce a ready snapshot with an invalid digest.
+    let pointer = root.join(format!("{key}.current"));
+    let mut pointer_file = fs::File::create(&pointer)?;
+    std::io::Write::write_all(&mut pointer_file, generation.as_bytes())?;
+    pointer_file.sync_all()?;
+    resolve_staged_artifact_files(destination, key, sizes)?;
+    for directory in [&target, &key_dir, &root] {
+        kernal_api::platform::fs::sync_directory_if_supported(directory)?;
+    }
+    Ok(())
 }
 
 /// Every artifact key that currently has a published staged-v2 generation
@@ -466,6 +631,35 @@ pub mod fixtures {
     use std::fs;
     use std::path::Path;
 
+    /// Seed the existing pack encoding for shared layout-conformance tests.
+    pub fn seed_pack(artifact_dir: &Path, key: &str, payloads: &[&[u8]]) {
+        fs::create_dir_all(artifact_dir).expect("create pack fixture directory");
+        fs::write(
+            artifact_dir.join(format!("{key}.pack")),
+            build_pack(payloads),
+        )
+        .expect("write pack fixture");
+    }
+
+    pub(super) fn build_pack(payloads: &[&[u8]]) -> Vec<u8> {
+        let header_size = 8 + payloads.len() * 16;
+        let mut data = Vec::with_capacity(
+            header_size + payloads.iter().map(|payload| payload.len()).sum::<usize>(),
+        );
+        data.extend_from_slice(super::PACK_MAGIC);
+        data.extend_from_slice(&(payloads.len() as u32).to_le_bytes());
+        let mut offset = header_size as u64;
+        for payload in payloads {
+            data.extend_from_slice(&offset.to_le_bytes());
+            data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            offset += payload.len() as u64;
+        }
+        for payload in payloads {
+            data.extend_from_slice(payload);
+        }
+        data
+    }
+
     /// Write a complete, self-consistent staged-v2 generation for `key_hex`
     /// under `artifact_dir` and publish it via the `.current` pointer.
     /// Returns the generation hex.
@@ -526,24 +720,7 @@ mod tests {
         }
     }
 
-    fn build_pack(payloads: &[&[u8]]) -> Vec<u8> {
-        let header_size = 8 + payloads.len() * 16;
-        let mut data = Vec::with_capacity(
-            header_size + payloads.iter().map(|payload| payload.len()).sum::<usize>(),
-        );
-        data.extend_from_slice(PACK_MAGIC);
-        data.extend_from_slice(&(payloads.len() as u32).to_le_bytes());
-        let mut offset = header_size as u64;
-        for payload in payloads {
-            data.extend_from_slice(&offset.to_le_bytes());
-            data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-            offset += payload.len() as u64;
-        }
-        for payload in payloads {
-            data.extend_from_slice(payload);
-        }
-        data
-    }
+    use super::fixtures::build_pack;
 
     use super::fixtures::seed_staged_generation as seed_staged;
 

@@ -44,6 +44,7 @@ failed cache-root audit retain its diagnostic JSONL evidence.
 - **soldr target artifact contract** → [rust-artifact-plan.md](architecture/rust-artifact-plan.md)
 - **Embedded soldr/fbuild service integration** → [embedded-service.md](architecture/embedded-service.md)
 - **Shared embedded host-work admission** → [embedded-service.md § Shared host-work admission](architecture/embedded-service.md#shared-host-work-admission)
+- **Compiler-store transport snapshots** → [artifact-store.md](architecture/artifact-store.md#compiler-store-transport-snapshots-ciyml362)
 - **Embedded heap snapshots** → [embedded-service.md § Heap snapshots](architecture/embedded-service.md#heap-snapshots)
 - **Embedded maintenance limits and shutdown reporting** → [embedded-service.md § Maintenance limits and task ownership](architecture/embedded-service.md#maintenance-limits-and-task-ownership)
 - **Embedded snapshots and interrupted flushes** → [embedded-service.md § Persisted state and interrupted flushes](architecture/embedded-service.md#persisted-state-and-interrupted-flushes-1719)

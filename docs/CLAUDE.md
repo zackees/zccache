@@ -13,6 +13,7 @@ Architecture docs are split by subsystem. Read only what's relevant to your curr
 | `zccache-fscache` | [metadata-cache.md](architecture/metadata-cache.md) |
 | `zccache-watcher` | [metadata-cache.md](architecture/metadata-cache.md) (watcher section) |
 | `zccache-artifact` | [artifact-store.md](architecture/artifact-store.md) |
+| Compiler-store snapshot export/import and writer exclusion | [artifact-store.md](architecture/artifact-store.md#compiler-store-transport-snapshots-ciyml362) |
 | Cross-filesystem COW materialization | [artifact-store.md](architecture/artifact-store.md), [portability.md](architecture/portability.md) |
 | `ZCCACHE_MODE` materialization modes (#1683) | [artifact-store.md](architecture/artifact-store.md#materialization-mode-zccache_mode-1683), [embedded-service.md](architecture/embedded-service.md) |
 | Private compiler staging paths | [artifact-store.md](architecture/artifact-store.md), [portability.md](architecture/portability.md) |

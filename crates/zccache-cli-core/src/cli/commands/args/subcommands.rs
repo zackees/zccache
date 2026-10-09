@@ -53,6 +53,16 @@ pub(crate) enum DaemonProfileCommands {
 /// `zccache cache` subcommands (#695).
 #[derive(Debug, Subcommand)]
 pub(crate) enum CacheCommands {
+    /// Export a flushed compiler store; refuses an active daemon writer.
+    Export {
+        #[command(flatten)]
+        snapshot: CacheSnapshotArgs,
+    },
+    /// Validate a completed snapshot and install a fresh private compiler store.
+    Import {
+        #[command(flatten)]
+        snapshot: CacheSnapshotArgs,
+    },
     /// Report the total on-disk size of the resolved cache root.
     ///
     /// Walks the same root that `zccache cache-root` prints and sums the
@@ -79,6 +89,20 @@ pub(crate) enum CacheCommands {
         #[arg(long)]
         json: bool,
     },
+}
+
+/// Explicit compiler-store snapshot transport; no ambient daemon discovery.
+#[derive(Debug, clap::Args)]
+pub(crate) struct CacheSnapshotArgs {
+    /// Source store for export; new private store for import.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) root: crate::core::NormalizedPath,
+    /// New snapshot for export; completed snapshot for import.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) snapshot: crate::core::NormalizedPath,
+    /// Expected compiler/target/ABI/profile compatibility identity (64 hex).
+    #[arg(long, value_name = "HASH")]
+    pub(crate) compatibility: String,
 }
 
 /// `zccache meson` subcommands.

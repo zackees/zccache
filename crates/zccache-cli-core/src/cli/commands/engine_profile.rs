@@ -234,11 +234,7 @@ fn u64_field(map: &serde_json::Map<String, Value>, field: &str) -> u64 {
 }
 
 fn average_ns(total_ns: u64, count: u64) -> u64 {
-    if count == 0 {
-        0
-    } else {
-        total_ns / count
-    }
+    total_ns.checked_div(count).unwrap_or(0)
 }
 
 fn ns_to_ms(ns: u64) -> f64 {
