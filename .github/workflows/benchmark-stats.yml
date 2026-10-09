@@ -2,6 +2,11 @@ name: Benchmark Stats
 
 on:
   workflow_dispatch:
+    inputs:
+      docker-campaign:
+        description: Run the complete five-sample Docker campaigns instead of publishing stats
+        type: boolean
+        default: false
   schedule:
     - cron: "17 9 * * *"
 
@@ -16,6 +21,7 @@ permissions:
 
 jobs:
   benchmark:
+    if: ${{ !inputs.docker-campaign }}
     name: Generate benchmark stats
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -136,3 +142,43 @@ jobs:
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  docker-campaign:
+    name: Full Docker campaign
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.docker-campaign }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Record runner and source identity
+        run: |
+          mkdir -p .perf-standalone/campaign-provenance
+          git rev-parse HEAD > .perf-standalone/campaign-provenance/commit.txt
+          git status --porcelain > .perf-standalone/campaign-provenance/dirty.txt
+          uname -a > .perf-standalone/campaign-provenance/kernel.txt
+          lscpu > .perf-standalone/campaign-provenance/cpu.txt
+          df -h > .perf-standalone/campaign-provenance/storage.txt
+          docker info > .perf-standalone/campaign-provenance/docker.txt
+      - name: Standalone four-language campaign
+        run: uv run --no-project python -m ci.perf_standalone --attempts 5 --keep-going
+      - name: Rust eight-cell campaign
+        if: ${{ always() && !cancelled() }}
+        run: uv run --no-project ci/perf_local.py --matrix --repeat 5
+      - name: Embedded four-language campaign
+        if: ${{ always() && !cancelled() }}
+        run: uv run --no-project ci/perf_local.py --embedded-matrix --repeat 5
+      - name: Retain complete campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-campaign-${{ github.sha }}
+          retention-days: 90
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .perf-standalone/campaign-provenance
+            .perf-standalone/results
+            .perf-local/results

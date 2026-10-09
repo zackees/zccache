@@ -232,6 +232,23 @@ dossiers are retained under `.perf-local/results/embedded-mixed/`.
 
 ## Cross-platform responsibility
 
+### Explicitly authorized remote Docker fallback
+
+When the local host fails the quiet-host check and the campaign owner
+authorizes remote execution, dispatch the existing `benchmark-stats.yml`
+workflow on the exact source ref with `docker-campaign=true`. This manual
+option runs the same standalone, eight-cell Rust, and embedded harnesses
+sequentially on one Linux Docker host, with five samples and unchanged gates.
+It does not publish the scheduled benchmark report. Failed steps remain
+failed while subsequent campaigns collect evidence.
+
+Download the `docker-campaign-<sha>` artifact before its 90-day expiry and
+retain it with the final report. Runner provenance and each harness's image,
+fixture, host, and source identities must be inspected before using timings.
+Hosted variability does not justify relaxing budgets. Causal before/after
+claims still require paired, alternated samples on the same host; separate
+workflow runs are not a paired comparison.
+
 Linux Docker is the sanctioned timing environment. Native Windows, macOS, and
 special filesystems still gate correctness through focused tests:
 
