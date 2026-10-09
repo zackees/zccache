@@ -84,9 +84,9 @@ sevenz-rust = { package = "sevenz-rust2", version = "0.22.2" }
 # slice adds only the feature it needs.
 #
 # Exact pin: kernal-api is below 1.0, so every consumer pins the same published
-# release (kernal-api COMPATIBILITY.md). 0.1.26 adds automatic APE loading
-# for compiler spawns; no local path or patch override remains.
-kernal-api = { version = "=0.1.26", default-features = false }
+# release (kernal-api COMPATIBILITY.md). 0.1.29 adds Windows write seals
+# compatible with output replacement; no local path or patch override remains.
+kernal-api = { version = "=0.1.29", default-features = false }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }

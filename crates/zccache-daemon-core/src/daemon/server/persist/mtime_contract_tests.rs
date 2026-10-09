@@ -5,7 +5,7 @@
 //! Pinned elsewhere, and unchanged by this contract: #599 (a rustc hit is
 //! freshened, `tests.rs::batch_floor_freshens_*`) and iter7 (no `now()` on the
 //! single-file hardlink fast path,
-//! `tests/write_cached.rs::write_cached_output_preserves_cache_mtime_on_hardlink`
+//! `tests/write_cached/mtime.rs::write_cached_output_preserves_cache_mtime_on_hardlink`
 //! and `..._preserves_mtime_on_existing_hardlink`).
 
 use super::*;

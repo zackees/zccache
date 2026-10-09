@@ -52,7 +52,7 @@ pub(in crate::daemon::server) fn set_materialized_mtime(
     path: &Path,
     mtime: FileTime,
 ) -> std::io::Result<()> {
-    let readonly = crate::platform::fs::permissions::is_sealed(&std::fs::metadata(path)?);
+    let readonly = crate::platform::fs::permissions::is_sealed(path)?;
     if readonly {
         crate::platform::fs::permissions::make_writable(path)?;
     }

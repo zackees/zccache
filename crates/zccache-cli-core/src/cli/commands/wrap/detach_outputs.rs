@@ -1,13 +1,15 @@
 //! #1791: copy-detach read-only rustc outputs before a `ZCCACHE_DISABLE=1`
 //! passthrough.
 //!
-//! A cache hit under a hardlinking mode can leave a read-only output at a path
-//! rustc is about to write. rustc refuses to replace an output whose
-//! `Permissions::readonly()` is true (`check_file_is_writeable`). On Unix
-//! zccache seals blobs `r--rw-r--` so that is never true, but Windows has no
-//! such mode and the seal is the `READONLY` attribute. The bypassed wrapper
-//! therefore replaces each read-only output the invocation will write with a
-//! private writable copy first; the shared cache blob is never written.
+//! A cache hit under a hardlinking mode can leave an output at a path rustc
+//! is about to write that rustc's `check_file_is_writeable` would refuse:
+//! `Permissions::readonly()` must be false before rustc renames over the
+//! output. Sealing keeps it false — `r--rw-r--` on Unix, a deny ACE on
+//! Windows since kernal-api 0.1.29 (#1791) — but a blob sealed by an older
+//! build can still carry the Windows `READONLY` attribute. The bypassed
+//! wrapper therefore replaces each read-only output the invocation will
+//! write with a private writable copy first, as defense in depth; the
+//! shared cache blob is never written.
 //!
 //! Only the `ZCCACHE_DISABLE` passthrough calls this. It adds nothing to the
 //! hit path (no daemon, no IPC) and touches no file that is not read-only.

@@ -727,9 +727,7 @@ pub(in crate::daemon::server) fn unregister_blob_id(id: FileIdentity) {
 
 pub(in crate::daemon::server) fn remove_registered_blob(blob_path: &Path) -> std::io::Result<()> {
     let registration = registered_blob_id(blob_path);
-    let was_readonly = std::fs::metadata(blob_path)
-        .map(|metadata| crate::platform::fs::permissions::is_sealed(&metadata))
-        .unwrap_or(false);
+    let was_readonly = crate::platform::fs::permissions::is_sealed(blob_path).unwrap_or(false);
     let restore_readonly = was_readonly || readonly_enabled();
     crate::platform::fs::permissions::make_writable(blob_path)?;
     if let Err(error) = remove_output_file(blob_path) {

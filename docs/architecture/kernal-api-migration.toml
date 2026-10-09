@@ -232,4 +232,12 @@ contract = "frozen frame bytes, payload protocol 0x7A63, and single-round-trip p
 tests = ["crates/zccache/tests/wire/daemon_wire_frame_v1_test.rs", "crates/zccache/tests/wire/daemon_wire_prost_roundtrip.rs"]
 [[characterization]]
 contract = "filesystem identity, links, permissions, replacement, stored mtimes, and hardlink-safe materialization"
-tests = ["crates/zccache-daemon-core/src/daemon/server/persist/tests.rs", "crates/zccache-daemon-core/src/daemon/server/tests/write_cached.rs", "crates/zccache-artifact/src/rust_plan/tests/restore_errors.rs"]
+tests = [
+  "crates/zccache-daemon-core/src/daemon/server/persist/tests.rs",
+  "crates/zccache-daemon-core/src/daemon/server/tests/write_cached/delivery.rs",
+  "crates/zccache-daemon-core/src/daemon/server/tests/write_cached/integrity.rs",
+  "crates/zccache-daemon-core/src/daemon/server/tests/write_cached/failures.rs",
+  "crates/zccache-daemon-core/src/daemon/server/tests/write_cached/mtime.rs",
+  "crates/zccache-daemon-core/src/daemon/server/tests/write_cached/modes.rs",
+  "crates/zccache-artifact/src/rust_plan/tests/restore_errors.rs",
+]
