@@ -227,9 +227,32 @@ fn rustc_primary_output_filename(shape: &RustcOutputShape<'_>) -> String {
         return rustc_bin_filename(name, suffix, target, host);
     }
     if is_staticlib {
-        return format!("lib{name}{suffix}.a");
+        return rustc_staticlib_filename(name, suffix, target, host);
     }
     format!("lib{name}{suffix}.rlib")
+}
+
+/// Static-archive file-name pattern for `--crate-type staticlib`, keyed on
+/// the *target* (zccache#1937). rustc takes `staticlib_prefix`/`suffix` from
+/// the target spec: MSVC-like targets (`*-windows-msvc`, `*-unknown-uefi`)
+/// write `<name>.lib`; every other target, `*-windows-gnu` included, writes
+/// `lib<name>.a`. With no `--target` the compile is host-native and a Windows
+/// host is taken to be MSVC (rustup's default), matching the daemon's
+/// `msvc_target_writes_pdb` policy.
+fn rustc_staticlib_filename(
+    crate_name: &str,
+    extra: &str,
+    target: Option<&str>,
+    host: RustcHost,
+) -> String {
+    let msvc_like = target
+        .map(|triple| triple.ends_with("-msvc") || triple.split('-').any(|part| part == "uefi"))
+        .unwrap_or(host == RustcHost::Windows);
+    if msvc_like {
+        format!("{crate_name}{extra}.lib")
+    } else {
+        format!("lib{crate_name}{extra}.a")
+    }
 }
 
 fn rustc_bin_filename(
@@ -715,7 +738,7 @@ pub fn parse_rustc_plan_with_syntax(
     // - `--emit metadata` (no link) → rmeta sidecar
     // - `proc-macro` → host-side dylib (.so/.dylib/.dll, lib prefix on unix)
     // - `bin` → executable (no extension on unix, .exe on Windows)
-    // - `staticlib` → static archive (.a)
+    // - `staticlib` → static archive (.lib on MSVC targets, .a elsewhere)
     // - everything else cacheable → rlib
     let has_link_emit = emit_types.iter().any(|t| t == "link");
     let is_proc_macro = crate_types.iter().any(|t| t == "proc-macro");

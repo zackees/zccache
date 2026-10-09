@@ -87,3 +87,51 @@ fn portable_detection_and_test_cache_opt_in() {
         RustcPlan::Cacheable { .. }
     ));
 }
+
+/// zccache#1937: a `staticlib` is named by the *target's* archive convention,
+/// not the Unix `lib<name>.a`. MSVC-like targets (`*-windows-msvc`, UEFI)
+/// write `<name><extra>.lib` with no `lib` prefix; everything else, including
+/// `*-windows-gnu`, writes `lib<name><extra>.a`. With no `--target` the
+/// compile is host-native, and a Windows host is taken to be MSVC (rustup's
+/// default Windows toolchain).
+#[test]
+fn staticlib_filename_follows_target_archive_convention() {
+    let staticlib = |host: RustcHost, target: Option<&str>| {
+        let mut args = vec![
+            "src/lib.rs".to_owned(),
+            "--crate-name".to_owned(),
+            "libobs_rust".to_owned(),
+            "--crate-type".to_owned(),
+            "staticlib".to_owned(),
+            "--out-dir".to_owned(),
+            "deps".to_owned(),
+            "-C".to_owned(),
+            "extra-filename=-d170041734f5a224".to_owned(),
+        ];
+        if let Some(triple) = target {
+            args.push(format!("--target={triple}"));
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match output(plan(host, RustcPathSyntax::Unix, &args, false)) {
+            RustcOutputPlan::InDirectory { filename, .. } => filename,
+            other => panic!("unexpected output plan: {other:?}"),
+        }
+    };
+
+    let msvc = "libobs_rust-d170041734f5a224.lib";
+    let unix = "liblibobs_rust-d170041734f5a224.a";
+    for host in [RustcHost::Linux, RustcHost::Macos, RustcHost::Windows] {
+        assert_eq!(staticlib(host, Some("x86_64-pc-windows-msvc")), msvc);
+        assert_eq!(staticlib(host, Some("aarch64-pc-windows-msvc")), msvc);
+        assert_eq!(staticlib(host, Some("i686-win7-windows-msvc")), msvc);
+        assert_eq!(staticlib(host, Some("x86_64-unknown-uefi")), msvc);
+        assert_eq!(staticlib(host, Some("x86_64-pc-windows-gnu")), unix);
+        assert_eq!(staticlib(host, Some("x86_64-pc-windows-gnullvm")), unix);
+        assert_eq!(staticlib(host, Some("x86_64-unknown-linux-gnu")), unix);
+        assert_eq!(staticlib(host, Some("aarch64-apple-darwin")), unix);
+        assert_eq!(staticlib(host, Some("wasm32-unknown-unknown")), unix);
+    }
+    assert_eq!(staticlib(RustcHost::Windows, None), msvc);
+    assert_eq!(staticlib(RustcHost::Linux, None), unix);
+    assert_eq!(staticlib(RustcHost::Macos, None), unix);
+}
