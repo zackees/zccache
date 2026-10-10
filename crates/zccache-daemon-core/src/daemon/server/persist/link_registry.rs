@@ -6,6 +6,7 @@ use crate::platform::fs::FileIdentity;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use zccache_artifact::blob_digest::sidecar_path as digest_path;
 
 /// Cheap change signal for a registered blob: the `(mtime_ns, size)` pair
 /// observed at the moment its `expected_hash` was computed. Writing through
@@ -64,19 +65,6 @@ fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
         hasher.update(&buffer[..read]);
     }
     Ok(*hasher.finalize().as_bytes())
-}
-
-fn digest_path(blob_path: &Path) -> NormalizedPath {
-    let name = blob_path.file_name().unwrap_or_default().to_string_lossy();
-    let sidecar_name = format!(
-        ".cowhash-{}",
-        kernal_api::hash::blake3_bytes(name.as_bytes()).to_hex()
-    );
-    blob_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(sidecar_name)
-        .into()
 }
 
 /// Writes the digest sidecar keyed by `named_as`'s digest path, but hashes

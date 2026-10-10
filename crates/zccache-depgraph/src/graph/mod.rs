@@ -518,6 +518,9 @@ impl Default for DepGraph {
 #[path = "tests/dirty_flag.rs"]
 mod dirty_flag_tests;
 #[cfg(test)]
+#[path = "tests/hash_precedence.rs"]
+mod hash_precedence_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 #[path = "tests/worktree_variants.rs"]

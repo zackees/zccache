@@ -18,6 +18,22 @@ use super::{
     CacheVerdict, ContextState, DepGraph,
 };
 
+fn input_matches(
+    path: &NormalizedPath,
+    recorded: &[(NormalizedPath, ContentHash)],
+    get_hash: &impl Fn(&Path) -> Option<ContentHash>,
+    is_fresh: &impl Fn(&Path) -> bool,
+) -> bool {
+    // A measured hash is stronger evidence than watcher silence. In
+    // particular, an event may still be queued when the caller hashes an edit.
+    match get_hash(path) {
+        Some(current) => recorded
+            .iter()
+            .any(|(p, hash)| p == path && *hash == current),
+        None => is_fresh(path),
+    }
+}
+
 impl DepGraph {
     /// [`Self::check_rustc_metadata_compat_diagnostic_with_env`] without an
     /// env lookup. For contexts with recorded env-deps this conservatively
@@ -109,18 +125,8 @@ impl DepGraph {
             );
         };
 
-        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
-            if is_fresh(path) {
-                return true;
-            }
-            let current = match get_hash(path) {
-                Some(h) => h,
-                None => return false,
-            };
-            entry
-                .last_file_hashes
-                .iter()
-                .any(|(p, h)| p == path && *h == current)
+        let fresh_or_hash_match = |path: &NormalizedPath| {
+            input_matches(path, &entry.last_file_hashes, &get_hash, &is_fresh)
         };
 
         if !fresh_or_hash_match(&entry.context.source_file) {
@@ -201,7 +207,26 @@ impl DepGraph {
             }
         }
 
-        self.hits.fetch_add(1, Ordering::Relaxed);
+        // Comparing current and candidate externs is insufficient when both
+        // name the same file that changed since the candidate was compiled.
+        // Reuse the canonical artifact-key proof, releasing this DashMap
+        // guard before that helper queries the context again.
+        drop(entry);
+        if self
+            .try_fast_hit_for_artifact_with_env(
+                &actual_key,
+                &artifact_key.hash().to_hex(),
+                &get_hash,
+                &env_value,
+            )
+            .is_none()
+        {
+            return (
+                CacheVerdict::Cold,
+                "rustc metadata compatibility candidate inputs changed".to_string(),
+                Some(actual_key),
+            );
+        }
         (
             CacheVerdict::Hit { artifact_key },
             "rustc metadata compatibility hit".to_string(),
@@ -262,11 +287,11 @@ impl DepGraph {
         entry.last_accessed_unix_ms = now_unix_ms();
         self.mark_dirty();
 
-        if entry.state == ContextState::Cold {
+        if entry.state == ContextState::Cold || entry.artifact_key.is_none() {
             tracing::debug!(
                 key = %key.hash().to_hex(),
                 artifact_key = ?entry.artifact_key.map(|k| k.hash().to_hex()),
-                "check: cold (entry state is Cold)"
+                "check: cold (entry state is Cold or artifact key missing)"
             );
             self.misses.fetch_add(1, Ordering::Relaxed);
             return CacheVerdict::Cold;
@@ -277,25 +302,11 @@ impl DepGraph {
             return CacheVerdict::NeedsPreprocessor;
         }
 
-        // Helper: a file is fresh if the journal hasn't seen it change
-        // since `since` OR — when the journal has no opinion (post-restart
-        // cold journal, the watcher dropped events, etc.) — if its current
-        // content hash matches the hash we stored at last `update()`.
-        // The journal is in-memory and starts empty after every daemon
-        // restart; without this fallback, every cached header reports
-        // "changed" and every Warm context degrades to HeadersChanged.
-        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
-            if is_fresh(path) {
-                return true;
-            }
-            let current = match get_hash(path) {
-                Some(h) => h,
-                None => return false,
-            };
-            entry
-                .last_file_hashes
-                .iter()
-                .any(|(p, h)| p == path && *h == current)
+        // A measured hash takes precedence. Journal evidence is used only
+        // when no hash was supplied. Matching hashes also preserve warm reuse
+        // after restart, when the in-memory journal has no history.
+        let fresh_or_hash_match = |path: &NormalizedPath| {
+            input_matches(path, &entry.last_file_hashes, &get_hash, &is_fresh)
         };
 
         // Check source file freshness.
@@ -491,11 +502,11 @@ impl DepGraph {
         entry.last_accessed_unix_ms = now_unix_ms();
         self.mark_dirty();
 
-        if entry.state == ContextState::Cold {
+        if entry.state == ContextState::Cold || entry.artifact_key.is_none() {
             self.misses.fetch_add(1, Ordering::Relaxed);
             return (
                 CacheVerdict::Cold,
-                "context never updated (state=Cold)".to_string(),
+                "context cold or artifact key missing".to_string(),
             );
         }
 
@@ -510,18 +521,8 @@ impl DepGraph {
         // See `check()` above for the rationale — content-hash fallback
         // catches the post-restart empty-journal case where every header
         // would otherwise look "changed".
-        let fresh_or_hash_match = |path: &NormalizedPath| -> bool {
-            if is_fresh(path) {
-                return true;
-            }
-            let current = match get_hash(path) {
-                Some(h) => h,
-                None => return false,
-            };
-            entry
-                .last_file_hashes
-                .iter()
-                .any(|(p, h)| p == path && *h == current)
+        let fresh_or_hash_match = |path: &NormalizedPath| {
+            input_matches(path, &entry.last_file_hashes, &get_hash, &is_fresh)
         };
 
         // Check source file freshness.
@@ -745,6 +746,36 @@ impl DepGraph {
         G: Fn(&Path) -> Option<ContentHash>,
         E: Fn(&str) -> Option<String>,
     {
+        self.try_fast_hit_expected_with_env(key, None, get_hash, env_value)
+    }
+
+    /// Prove reuse of a particular fast entry's artifact, rather than just
+    /// the graph's current artifact. Refused entries never count as hits.
+    pub fn try_fast_hit_for_artifact_with_env<G, E>(
+        &self,
+        key: &ContextKey,
+        expected_artifact: &str,
+        get_hash: G,
+        env_value: E,
+    ) -> Option<ArtifactKey>
+    where
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
+    {
+        self.try_fast_hit_expected_with_env(key, Some(expected_artifact), get_hash, env_value)
+    }
+
+    fn try_fast_hit_expected_with_env<G, E>(
+        &self,
+        key: &ContextKey,
+        expected_artifact: Option<&str>,
+        get_hash: G,
+        env_value: E,
+    ) -> Option<ArtifactKey>
+    where
+        G: Fn(&Path) -> Option<ContentHash>,
+        E: Fn(&str) -> Option<String>,
+    {
         let key = self.resolve_instance_key(key)?;
         let rustc_externs = self.rustc_extern_inputs(&key);
         let entry = self.contexts.get(&key)?;
@@ -754,6 +785,11 @@ impl DepGraph {
         }
 
         let stored_key = entry.artifact_key.as_ref()?;
+        // Hold the shared context guard across identity and input validation.
+        // A newer graph artifact cannot authorize an older fast entry.
+        if expected_artifact.is_some_and(|expected| stored_key.hash().to_hex() != expected) {
+            return None;
+        }
 
         // Build file_hashes using references — zero NormalizedPath clones.
         let cap = 1 + entry.resolved_includes.len() + entry.context.force_includes.len();
