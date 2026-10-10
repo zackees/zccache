@@ -22,6 +22,7 @@ gha = ["dep:zccache-gha", "dep:flate2", "dep:tar"]
 [dependencies]
 kernal-api = { workspace = true, features = ["fs"] }
 zccache-core = { workspace = true }
+zccache-depgraph = { workspace = true }
 zccache-hash = { workspace = true }
 zccache-gha = { workspace = true, optional = true }
 

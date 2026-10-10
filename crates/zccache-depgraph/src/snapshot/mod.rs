@@ -74,7 +74,7 @@ pub struct FileEntrySnapshot {
     pub includes: Vec<IncludeDirectiveSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncludeDirectiveSnapshot {
     /// 0=Quoted, 1=AngleBracket, 2=Computed, 3=QuotedNext, 4=AngleBracketNext
     pub kind: u8,
@@ -173,6 +173,64 @@ pub fn now_unix_ms() -> u64 {
 // ---------------------------------------------------------------------------
 
 impl DepGraph {
+    /// Combine offline graphs without replacing local context or file state.
+    /// The artifact owner admits only contexts whose payloads it installed.
+    /// Conflicting include scans force imported contexts to rescan.
+    pub fn merge_missing(
+        &self,
+        incoming: &Self,
+        accepts_artifact: impl Fn(&[u8; 32]) -> bool,
+    ) -> Self {
+        use std::collections::{HashMap, HashSet};
+
+        let mut local = self.to_snapshot();
+        let incoming = incoming.to_snapshot();
+        let local_files: HashMap<_, _> = local
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.includes.clone()))
+            .collect();
+        let conflicts: HashSet<_> = incoming
+            .files
+            .iter()
+            .filter(|file| {
+                local_files
+                    .get(&file.path)
+                    .is_some_and(|includes| includes != &file.includes)
+            })
+            .map(|file| file.path.clone())
+            .collect();
+        let existing: HashSet<_> = local
+            .contexts
+            .iter()
+            .map(|context| context.context_key)
+            .collect();
+        for mut context in incoming.contexts {
+            if existing.contains(&context.context_key)
+                || !context.artifact_key.as_ref().is_some_and(&accepts_artifact)
+            {
+                continue;
+            }
+            if context
+                .last_file_hashes
+                .iter()
+                .any(|(path, _)| conflicts.contains(path))
+            {
+                context.state = 0;
+            }
+            local.contexts.push(context);
+        }
+        local.files.extend(
+            incoming
+                .files
+                .into_iter()
+                .filter(|file| !local_files.contains_key(&file.path)),
+        );
+        local.stats.file_count = local.files.len() as u64;
+        local.stats.context_count = local.contexts.len() as u64;
+        Self::from_snapshot(local)
+    }
+
     /// Create a serializable snapshot of the current graph state.
     pub fn to_snapshot(&self) -> DepGraphSnapshot {
         self.to_snapshot_at(now_unix_ms())

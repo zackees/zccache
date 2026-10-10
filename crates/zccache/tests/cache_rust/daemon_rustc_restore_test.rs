@@ -183,6 +183,7 @@ async fn end_session(client: &mut ClientConn, session_id: String) {
 
 struct CompileOutcome {
     exit_code: i32,
+    stdout: Vec<u8>,
     stderr: Vec<u8>,
     cached: bool,
 }
@@ -214,12 +215,14 @@ async fn compile_rustc(
             Some(Response::CompileProgress { .. }) => continue,
             Some(Response::CompileResult {
                 exit_code,
+                stdout,
                 stderr,
                 cached,
                 ..
             }) => {
                 break CompileOutcome {
                     exit_code,
+                    stdout: (*stdout).clone(),
                     stderr: (*stderr).clone(),
                     cached,
                 }
@@ -858,3 +861,6 @@ async fn first_compile_waits_for_background_depgraph_load_before_cold_skip() {
     })
     .await;
 }
+
+#[path = "compiler_snapshot_replay.rs"]
+mod compiler_snapshot_replay;

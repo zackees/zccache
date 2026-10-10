@@ -105,6 +105,18 @@ stack = "gate"
 cmd = "bash ci/docker/gate/run_gate_tests.sh"
 
 # Focused backend transport checks use the existing isolated gate stack.
+[task.compiler-snapshot-format]
+stack = "gate"
+cmd = "soldr cargo fmt --all"
+
 [task.compiler-snapshot-test]
 stack = "gate"
-cmd = "soldr toolchain ensure --json && soldr rustup component add clippy && ZCCACHE_LEGACY_PATH_VALIDATE=1 CARGO_TARGET_DIR=/target soldr cargo test -p zccache-artifact --lib --locked && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-daemon-core --features test-support --lib cache_root_writer_tests --locked && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-cli-core --features cli --lib compiler_snapshot --locked && CARGO_TARGET_DIR=/target soldr cargo clippy -p zccache-artifact -p zccache-core --all-targets --locked -- -D warnings && CARGO_TARGET_DIR=/target soldr cargo clippy -p zccache-cli-core --features cli --all-targets --locked -- -D warnings"
+cmd = "soldr toolchain ensure --json && soldr rustup component add clippy && ZCCACHE_LEGACY_PATH_VALIDATE=1 CARGO_TARGET_DIR=/target soldr cargo test -p zccache-artifact --lib --locked && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-depgraph --lib offline_merge --locked && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-daemon-core --features test-support --lib cache_root_writer_tests --locked && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-cli-core --features cli --lib compiler_snapshot --locked && CARGO_TARGET_DIR=/target soldr cargo clippy -p zccache-artifact -p zccache-core --all-targets --locked -- -D warnings && CARGO_TARGET_DIR=/target soldr cargo clippy -p zccache-cli-core --features cli --all-targets --locked -- -D warnings"
+
+[task.compiler-snapshot-replay-test]
+stack = "gate"
+cmd = "CARGO_TARGET_DIR=/target soldr cargo test -p zccache --features test-support --test cache_rust snapshot_restores_real_multi_output_hit --locked"
+
+[task.compiler-freshness-test]
+stack = "gate"
+cmd = "CARGO_TARGET_DIR=/target soldr cargo test -p zccache-depgraph --lib --locked && CARGO_TARGET_DIR=/target soldr cargo test -p zccache-daemon-core --features test-support --lib input_freshness --locked"

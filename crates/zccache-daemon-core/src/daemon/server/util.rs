@@ -187,44 +187,34 @@ pub(super) fn context_files_fresh(
     true
 }
 
-/// [`context_files_fresh`] plus the rustc env-dep gate (zccache#1021):
-/// the zero-hash fast paths must also decline when a recorded
-/// `env!()`/`option_env!()` value differs from the current request env —
-/// env values have no mtime, so the journal can't see them change.
-pub(super) fn context_files_and_env_fresh(
+/// Validate the fast entry's artifact against stat-checked input hashes and
+/// current Rust env-deps. Watcher silence alone cannot prove unchanged bytes.
+pub(super) fn context_artifact_is_fresh(
     state: &SharedState,
     context_key: &ContextKey,
     source_path: &Path,
     since: Clock,
     client_env: Option<&[(String, String)]>,
+    expected_artifact: &str,
 ) -> bool {
-    if !context_env_deps_fresh(state, context_key, source_path, client_env) {
+    if !context_files_fresh(state, context_key, source_path, since) {
         return false;
     }
-    context_files_fresh(state, context_key, source_path, since)
-}
-
-/// True when every recorded env-dep value for the context matches the
-/// current request env (or the context has none recorded — the common
-/// case).
-pub(super) fn context_env_deps_fresh(
-    state: &SharedState,
-    context_key: &ContextKey,
-    source_path: &Path,
-    client_env: Option<&[(String, String)]>,
-) -> bool {
-    let Some(deps) = state.dep_graph.load().get_rustc_env_deps(context_key) else {
-        return true;
-    };
-    let includes = state
-        .dep_graph
-        .load()
-        .get_includes(context_key)
-        .unwrap_or_default();
-    deps.iter().all(|(name, recorded_hash)| {
-        let current = rustc_env_dep_cache_value(client_env, name, source_path, &includes);
-        crate::depgraph::hash_env_dep_value(current.as_deref()) == *recorded_hash
-    })
+    let graph = state.dep_graph.load();
+    let includes = graph.get_includes(context_key).unwrap_or_default();
+    graph
+        .try_fast_hit_for_artifact_with_env(
+            context_key,
+            expected_artifact,
+            |path| {
+                state
+                    .cache_system
+                    .metadata()
+                    .get_cached_hash_if_stat_valid(&path.into())
+            },
+            |name| rustc_env_dep_cache_value(client_env, name, source_path, &includes),
+        )
+        .is_some()
 }
 
 /// Look up an artifact by key, falling through to the on-disk

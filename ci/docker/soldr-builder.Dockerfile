@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 #
-# Persistent build environment for soldr-cli (static, x86_64-unknown-linux-musl).
+# Persistent build environment for soldr-cli (x86_64-unknown-linux-gnu).
 #
-# This image is NOT a one-shot builder — it carries the rust toolchain + musl
-# headers + git, but the actual source mount and target/ cache come from
+# This image is NOT a one-shot builder — it carries the rust toolchain + GNU
+# build tools + git, but the actual source mount and target/ cache come from
 # host-side volumes at run time. That makes source-only changes a cargo
 # recompile (seconds) instead of a Docker layer-cache miss (minutes).
 #
@@ -15,19 +15,14 @@
 #     -v <repo>/.perf-local/binaries/soldr:/out \
 #     zccache-perf-soldr-builder
 #
-# Why musl: the resulting binary is static, so it runs on the (glibc) runner
-# image without any libc compatibility worry.
+# Match the runner ABI: soldr selects managed tools from its compiled host
+# target. A musl binary runs on glibc but selects unsupported musl LLVM tools.
 
-FROM rust:1.95.0-alpine
+FROM rust:1.95.0-slim-bookworm
 
-# musl-dev: musl libc headers (the `+crt-static` target needs them).
-# git: cargo's git-dep resolution + Cargo.lock fetch.
-# ca-certificates: HTTPS to crates.io.
-RUN apk add --no-cache musl-dev git ca-certificates
-
-# Add the musl target once at image-build time so per-run cargo invocations
-# don't pay the download cost.
-RUN rustup target add x86_64-unknown-linux-musl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates \
+    && apt-get clean
 
 # The orchestrator mounts a persistent /target so cargo incremental wins
 # across runs. CARGO_TARGET_DIR redirects all build output there without
@@ -40,7 +35,7 @@ ENV CARGO_HOME=/cargo-home
 
 WORKDIR /src
 
-# Entrypoint: build soldr-cli for musl, then publish the static binary
+# Entrypoint: build soldr-cli for GNU, then publish the binary
 # to /out/soldr where the runner image can volume-mount it.
 #
 # Exit non-zero if /src is not bind-mounted (the image is useless without
@@ -54,8 +49,8 @@ if [ ! -f /src/Cargo.toml ]; then
     exit 2
 fi
 mkdir -p /out
-cargo build --release --target x86_64-unknown-linux-musl -p soldr-cli
-cp "${CARGO_TARGET_DIR}/x86_64-unknown-linux-musl/release/soldr" /out/soldr
+cargo build --release --target x86_64-unknown-linux-gnu -p soldr-cli
+cp "${CARGO_TARGET_DIR}/x86_64-unknown-linux-gnu/release/soldr" /out/soldr
 echo "wrote /out/soldr  ($(stat -c %s /out/soldr) bytes)"
 EOF
 RUN chmod +x /usr/local/bin/build.sh

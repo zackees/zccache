@@ -367,7 +367,25 @@ fn copy_staged_generation(
     let root = destination.join(STAGED_ROOT);
     let key_dir = root.join(key);
     let target = key_dir.join(generation_name);
-    fs::create_dir_all(&target)?;
+    fs::create_dir_all(&key_dir)?;
+    if target.exists() {
+        // An earlier import may have published this immutable generation
+        // before its index commit. Validate and reuse it, including read-only
+        // outputs, instead of truncating already committed payload files.
+        let manifest = load_manifest(&target.join("manifest.bin"), key, generation_name)?;
+        if generation_digest(key, &manifest.outputs) != generation_name {
+            return Err(invalid_data("existing generation manifest digest mismatch"));
+        }
+        verify_generation_outputs(&PublishedGeneration {
+            dir: target.into(),
+            outputs: manifest.outputs,
+        })?;
+        publish_snapshot_pointer(destination, key, generation_name, sizes)?;
+        return Ok(true);
+    }
+    let pending = tempfile::Builder::new()
+        .prefix(".snapshot-generation-")
+        .tempdir_in(&key_dir)?;
     let manifest = generation.dir.join("manifest.bin");
     for path in paths
         .iter()
@@ -377,9 +395,14 @@ fn copy_staged_generation(
         let name = path
             .file_name()
             .ok_or_else(|| invalid_data("staged file has no name"))?;
-        let copied = target.join(name);
+        let copied = pending.path().join(name);
         copy_snapshot_file(path, &copied)?;
     }
+    // Never expose a partially copied generation. A crash before rename
+    // leaves only an unreferenced temporary directory; a retry uses a new one.
+    kernal_api::platform::fs::sync_directory_if_supported(pending.path())?;
+    kernal_api::platform::fs::replacement::rename_generation(pending.path(), &target)?;
+    kernal_api::platform::fs::sync_directory_if_supported(&key_dir)?;
     publish_snapshot_pointer(destination, key, generation_name, sizes)?;
     Ok(true)
 }
@@ -412,7 +435,20 @@ fn publish_snapshot_pointer(
     let mut pointer_file = fs::File::create(&pointer)?;
     std::io::Write::write_all(&mut pointer_file, generation.as_bytes())?;
     pointer_file.sync_all()?;
-    resolve_staged_artifact_files(destination, key, sizes)?;
+    let (verified, _) = validated_staged_generation(destination, key, sizes)?
+        .ok_or_else(|| invalid_data("snapshot generation disappeared"))?;
+    // Runtime materialization requires durable integrity sidecars as well as
+    // the manifest. Derive them only from the just-verified copied outputs;
+    // never trust or transport a stale source sidecar. This destination is
+    // private until the containing snapshot is published.
+    for output in verified.outputs {
+        let blob = verified.dir.join(format!("output-{}", output.index));
+        let digest = kernal_api::hash::Blake3Digest::from_hex(&output.digest_hex)
+            .map_err(|error| invalid_data(error.to_string()))?;
+        let mut sidecar = fs::File::create(crate::blob_digest::sidecar_path(&blob))?;
+        std::io::Write::write_all(&mut sidecar, digest.as_bytes())?;
+        sidecar.sync_all()?;
+    }
     for directory in [&target, &key_dir, &root] {
         kernal_api::platform::fs::sync_directory_if_supported(directory)?;
     }

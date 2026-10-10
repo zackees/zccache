@@ -1348,6 +1348,25 @@ Issue: https://github.com/zackees/zccache/issues/1578
 - [ ] Review and validate the final committed planner/parallelism slice before push.
 # Shared CI compiler-store snapshots (ci.yml#362)
 
+## Freshness prerequisite — zccache#1935
+
+- [x] Retain real compiler RED for immediate same-size edits, both imported
+      and ordinary stores; classify the false hit as `HIT_REQUEST`.
+- [x] Retain depgraph RED where measured hashes contradict journal silence.
+- [x] Share hash precedence across the three verdict paths; require the
+      metadata alias's candidate artifact key to still match its inputs.
+- [ ] Qualify stat-checked fast-entry inputs for source, headers, force-includes
+      and externs with watcher events absent; preserve original artifact identity.
+- [ ] Qualify real imported replay plus immediate source-edit miss, affected
+      suites, full local gate and the existing performance matrix before release.
+
+- [x] Real compiler replay RED: imported manifest/payload/index validate, but
+      runtime evicts output-0 because transport omitted `.cowhash` sidecars.
+- [ ] Share the sidecar naming owner and regenerate sidecars from verified
+      manifest digests in private snapshot publication; qualify real replay.
+- [ ] Include dependency context through its owning API so a fresh imported
+      store can hit without the diagnostic test's manual depgraph copy.
+
 - [x] Observe an isolated RED test retaining multi-output metadata and verdicts.
 - [x] Export staged-v2, pack and flat payloads using the existing layout resolver.
 - [x] Reject corrupt payloads and preserve prior committed snapshots (isolated test).
@@ -1383,3 +1402,33 @@ The review correction passed 128 artifact tests (one ignored), six writer
 lease tests, one CLI test and focused warnings-denied Clippy in isolation.
 The same primary reviewer confirmed the fix and returned clean. Full repository
 qualification remains required before publication.
+
+### #1935 performance qualification: transitive dependency alignment
+
+- [x] Confirm matrix attempt on 7f14c3e4 stopped before cells: kernal-api
+  requires running-process =4.10.16, while Soldr pins =4.10.14.
+- [x] Reproduce missing transitive alignment in the existing harness tests.
+- [x] Extend the existing pin owner to use unique registry lockfile versions;
+  preserve non-exact requirements and refuse to infer ambiguous versions/sources.
+- [x] Pass all 73 pinning and local performance harness tests.
+- [x] Review, commit, and retry all eight sanctioned matrix cells on 6b6022cf.
+  All eight failed setup: musl-built Soldr selected unsupported managed LLVM
+  inside the Debian GNU runner. These are invalid samples, not timing regressions.
+- [x] Reproduce builder/runner ABI mismatch and lost failed-cell evidence.
+- [x] Align the Soldr builder with the GNU runner and retain stderr, final JSON,
+  and reports even on failure, preserving the original scenario exit status.
+- [x] Pass 85 harness tests, including failed/successful and malformed JSON cases,
+  plus RED/GREEN simultaneous scenario/tee failures preserving the scenario status.
+- [ ] Review and commit the harness correction; rebuild images and retry all eight cells.
+- [ ] Qualify the final changed source through the complete local gate.
+
+### #1935 native compiler-journal evidence
+
+- [x] Confirm the GNU matrix's first restored medium cell is infrastructure-valid
+  but has zero warm hits and 171 misses; do not classify it as qualified reuse.
+- [x] Locate the real native journal under daemon-state/<instance>/<version>/logs
+  in the running owned container. The legacy logs copy omitted that journal.
+- [x] Reproduce missing journal retention across all six scenario/status cases.
+- [x] Extend the existing recursive evidence collector to retain native journals
+  with their original relative paths, including on failed scenarios.
+- [ ] Review and commit; qualify the final source with retained native miss evidence.
