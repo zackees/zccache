@@ -453,13 +453,62 @@ fn issue_1191_hard_pressure_preserves_seconds_old_artifacts() {
         now,
         FilesystemSpace {
             capacity_bytes: 100 * GIB,
-            free_bytes: 19 * GIB,
+            free_bytes: 4 * GIB,
         },
         &entries,
         0,
     );
     assert_eq!(plan.pressure, MaintenancePressure::Hard);
     assert!(plan.selected.is_empty());
+}
+
+/// bosn#503: a 1.8 TiB host with 40 GiB free sits below its 92 GiB low-space
+/// mark with a recovery reserve the cache can never reach. Low free space must
+/// not evict a restored cache that is in use; only idle entries go.
+#[test]
+fn low_but_not_critical_free_space_keeps_recent_entries() {
+    let now = SystemTime::UNIX_EPOCH + 100 * DAY;
+    let entries = vec![
+        artifact("restored", 10 * GIB, now, Duration::from_secs(60 * 60)),
+        artifact("idle", GIB, now, 5 * DAY),
+    ];
+    let plan = plan_maintenance(
+        MaintenancePolicy::default(),
+        MaintenanceKind::Pressure,
+        now,
+        FilesystemSpace {
+            capacity_bytes: 1830 * GIB,
+            free_bytes: 40 * GIB,
+        },
+        &entries,
+        0,
+    );
+    assert_eq!(plan.pressure, MaintenancePressure::Soft);
+    assert_eq!(plan.selected, vec!["idle"]);
+}
+
+#[test]
+fn critical_free_space_still_evicts_entries_past_the_publication_grace() {
+    let now = SystemTime::UNIX_EPOCH + 100 * DAY;
+    let entries = vec![artifact(
+        "restored",
+        10 * GIB,
+        now,
+        Duration::from_secs(60 * 60),
+    )];
+    let plan = plan_maintenance(
+        MaintenancePolicy::default(),
+        MaintenanceKind::Pressure,
+        now,
+        FilesystemSpace {
+            capacity_bytes: 1830 * GIB,
+            free_bytes: 10 * GIB,
+        },
+        &entries,
+        0,
+    );
+    assert_eq!(plan.pressure, MaintenancePressure::Hard);
+    assert_eq!(plan.selected, vec!["restored"]);
 }
 
 #[test]
