@@ -1498,9 +1498,9 @@ dependencies = [
 
 [[package]]
 name = "kernal-api"
-version = "0.1.26"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f18d3cbb9bd8f6a590cf9b5a75297c542786fcef93bb3ff7245eb8f8b1b09561"
+checksum = "c336b505d128d200505a553e4fffd438be6f15262223cdd76f14134a67c4e5be"
 dependencies = [
  "blake3",
  "crash-handler",
@@ -1789,9 +1789,9 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-pprof"
-version = "0.9.4"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f51af22471c0f8e22c9d9413bf4d3cec756ad6ee02179a923b346fcef74af670"
+checksum = "d26c55d67571b57373a078262cb6efb4f8a2ff0719157c452217e604c6bd7306"
 dependencies = [
  "cc",
 ]
