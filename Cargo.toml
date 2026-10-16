@@ -39,7 +39,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.15.4"
+version = "1.15.5"
 edition = "2021"
 rust-version = "1.95.0"
 license = "AGPL-3.0-only"
@@ -70,7 +70,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 regex = "1"
 serde_json = "1"
 sha2 = "0.10"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 ruzstd = "0.7"
@@ -86,7 +86,7 @@ sevenz-rust = { package = "sevenz-rust2", version = "0.22.2" }
 # Exact pin: kernal-api is below 1.0, so every consumer pins the same published
 # release (kernal-api COMPATIBILITY.md). 0.1.26 adds automatic APE loading
 # for compiler spawns; no local path or patch override remains.
-kernal-api = { version = "=0.1.26", default-features = false }
+kernal-api = { version = "=0.1.30", default-features = false }
 zccache = { path = "crates/zccache" }
 zccache-artifact = { path = "crates/zccache-artifact" }
 zccache-audit = { path = "crates/zccache-audit" }

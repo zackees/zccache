@@ -152,7 +152,7 @@ pub(super) fn extract_zip(archive_path: &Path, destination: &Path) -> Result<(),
         let name = entry
             .enclosed_name()
             .map(|p| p.to_path_buf())
-            .ok_or_else(|| format!("unsafe zip entry: {}", entry.name()))?;
+            .ok_or_else(|| format!("unsafe zip entry: {}", entry_display_name(&entry)))?;
         let out_path = safe_join(destination, &name)?;
         if entry.is_dir() {
             fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
@@ -162,7 +162,7 @@ pub(super) fn extract_zip(archive_path: &Path, destination: &Path) -> Result<(),
             if (mode & 0o170000) == 0o120000 {
                 return Err(format!(
                     "zip symlink entries are not allowed: {}",
-                    entry.name()
+                    entry_display_name(&entry)
                 ));
             }
         }
@@ -230,4 +230,13 @@ pub(super) fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     } else {
         fs::remove_file(path).map_err(|e| e.to_string())
     }
+}
+
+/// Entry name for an error message. zip 9 reports an undecodable name as an
+/// error rather than a lossy string; an error message still needs a label.
+fn entry_display_name<R: io::Read>(entry: &zip::read::ZipFile<'_, R>) -> String {
+    entry
+        .name()
+        .map(|name| name.into_owned())
+        .unwrap_or_else(|error| format!("<undecodable name: {error}>"))
 }
