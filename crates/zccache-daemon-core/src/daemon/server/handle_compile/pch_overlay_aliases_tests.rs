@@ -1,6 +1,6 @@
 //! Alias identity and scanner destination regressions.
 
-use super::{coalesce_roots, strip_scan_outputs};
+use super::{coalesce_roots, scan_driver_args, strip_scan_outputs};
 
 #[test]
 fn existing_hardlinked_roots_share_one_snapshot_and_conflicts_refuse() {
@@ -154,5 +154,31 @@ fn unsupported_forwarding_and_missing_values_are_refused() {
             false
         )
         .is_err());
+    }
+}
+
+#[test]
+fn dependency_scan_is_explicitly_preprocessing_for_native_launchers() {
+    let mut scan = strip(&[
+        "-c",
+        "-Werror=unused-command-line-argument",
+        "--",
+        "-source.cpp",
+    ]);
+    scan.splice(
+        1..1,
+        ["-M".to_owned(), "-MF".to_owned(), "private.d".to_owned()],
+    );
+    for response in [None, Some("@private-scan.rsp".to_owned())] {
+        let driver = scan_driver_args(&scan, response.clone());
+        // clang-tool-chain's native launcher classifies the literal driver
+        // argv before Clang expands response files. -M alone is not a
+        // recognized compile-only action, so it injects unused linker flags.
+        assert_eq!(driver.first().map(String::as_str), Some("-E"));
+        if let Some(file) = response {
+            assert_eq!(driver, ["-E".to_owned(), file]);
+        } else {
+            assert_eq!(&driver[1..], scan);
+        }
     }
 }

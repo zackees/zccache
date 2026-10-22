@@ -649,6 +649,11 @@ meaning. Inputs outside the permitted checkout root remain ineligible.
 `[PCH_INPUT_VIEW_PENDING]` logs drift seen on a producer hit;
 `[PCH_INPUT_VIEW]` logs snapshots created for a consumer. Snapshot preparation
 failures and changed loaded inputs fail the compile with a rebuild diagnostic.
+The alias dependency scan passes an explicit `-E` driver action alongside
+`-M`. The action stays outside any generated response file so native compiler
+launchers classify the scan as preprocessing and do not inject linker flags.
+Strict warning flags and PCH input validation remain in force.
+
 Cache hits for consumer objects need no compiler view. Both cacheable and
 uncacheable compiler executions support the private view, and both PCH
 producers and consumers must pass through zccache.

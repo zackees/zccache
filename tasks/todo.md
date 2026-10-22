@@ -1,3 +1,12 @@
+# Native-launcher PCH alias scan
+
+- [x] Reproduce CTC 1.5.9 injecting linker rpath flags for an `-M`-only scan
+  under strict unused-command-line warnings; explicit `-E` passes.
+- [x] Preserve explicit preprocessing outside response files and before `--`.
+- [x] Add direct/response transport regression without weakening PCH checks.
+- [x] Bump workspace and lockfile release metadata to 1.15.7.
+- [ ] Complete the isolated local gate and publish the linked repair PR.
+
 # #1116 container summary handoff
 
 - [x] Reproduce the real Linux campaign failure: root-owned 0644 summary,

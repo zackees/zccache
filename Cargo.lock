@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -3926,7 +3926,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-artifact"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "bincode",
  "dashmap",
@@ -3948,7 +3948,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-audit"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -3958,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -3967,7 +3967,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-cli-core"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "bincode",
  "bytes",
@@ -4011,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-compile-trace"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "zccache-audit",
  "zccache-core",
@@ -4019,7 +4019,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-compiler"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "clang",
  "kernal-api",
@@ -4033,7 +4033,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-core"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "dashmap",
  "kernal-api",
@@ -4047,7 +4047,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-daemon-core"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -4087,7 +4087,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-depgraph"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "bincode",
  "dashmap",
@@ -4107,7 +4107,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "kernal-api",
  "reqwest",
@@ -4120,7 +4120,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-download-protocol"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "bincode",
  "bytes",
@@ -4133,7 +4133,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "kernal-api",
  "rayon",
@@ -4149,7 +4149,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fingerprint-py"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "pyo3",
  "pyo3-build-config",
@@ -4159,7 +4159,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-fscache"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "bincode",
  "dashmap",
@@ -4175,7 +4175,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-gha"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "reqwest",
  "serde",
@@ -4186,7 +4186,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-hash"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "kernal-api",
  "serde",
@@ -4195,7 +4195,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-ipc"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "bytes",
  "dashmap",
@@ -4214,7 +4214,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-protocol"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "bytes",
  "kernal-api",
@@ -4231,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-symbols"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "tempfile",
  "zccache-core",
@@ -4239,7 +4239,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-test-support"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "tempfile",
  "zccache-audit",
@@ -4248,7 +4248,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "kernal-api",
  "rayon",
@@ -4261,7 +4261,7 @@ dependencies = [
 
 [[package]]
 name = "zccache-watcher-py"
-version = "1.15.6"
+version = "1.15.7"
 dependencies = [
  "pyo3",
  "pyo3-build-config",

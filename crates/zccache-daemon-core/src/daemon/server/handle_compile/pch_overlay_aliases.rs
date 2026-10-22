@@ -71,11 +71,10 @@ pub(in crate::daemon::server) async fn extend_overlay_aliases(
     )
     .map_err(|error| fail(error.to_string()))?;
     let mut builder = kernal_api::SpawnSpec::new(compiler.as_path()).current_dir(cwd);
-    builder = if let Some(response) = &response {
-        builder.arg(response.at_arg())
-    } else {
-        builder.args(&scan_args)
-    };
+    builder = builder.args(scan_driver_args(
+        &scan_args,
+        response.as_ref().map(|file| file.at_arg()),
+    ));
     let builder = super::super::client_env::apply_client_env_builder(
         builder,
         client_env,
@@ -193,6 +192,17 @@ fn coalesce_roots(
         mappings.push((original, snapshot));
     }
     Ok(mappings)
+}
+
+/// Keep the preprocessing action visible to compiler launchers, including when
+/// the remaining flags are transported through a response file.
+fn scan_driver_args(args: &[String], response: Option<String>) -> Vec<String> {
+    // -M implies preprocessing to Clang itself, but not to launchers that
+    // select link behavior from literal -c/-S/-E actions. Keep -E outside any
+    // response file: launchers need not expand Clang's response-file syntax.
+    let mut driver = vec!["-E".to_owned()];
+    driver.extend(response.map_or_else(|| args.to_vec(), |file| vec![file]));
+    driver
 }
 
 /// Remove compile actions and every user-selected dependency/output destination.
